@@ -972,6 +972,34 @@ fn variable_type_builtins_cover_objects_references_and_casts() {
 }
 
 #[test]
+fn intval_warns_and_returns_one_for_objects() {
+    let mut output = OutputBuffer::new();
+    let entry = BuiltinRegistry::new()
+        .get("intval")
+        .expect("builtin exists");
+    let mut context = BuiltinContext::new(&mut output);
+    let object = Value::Object(ObjectRef::new_with_display_name(
+        &empty_class("NumericObject"),
+        "NumericObject",
+    ));
+
+    let result = (entry.function())(&mut context, vec![object], RuntimeSourceSpan::default())
+        .expect("object conversion continues after its warning");
+    let diagnostics = context.take_diagnostics();
+
+    assert_eq!(result, Value::Int(1));
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].id(),
+        "E_PHP_RUNTIME_OBJECT_NUMERIC_CAST_WARNING"
+    );
+    assert_eq!(
+        diagnostics[0].message(),
+        "Object of class NumericObject could not be converted to int"
+    );
+}
+
+#[test]
 fn string_cast_builtins_warn_for_array_to_string() {
     let mut output = OutputBuffer::new();
 
@@ -2125,7 +2153,7 @@ fn directory_handles_read_rewind_and_close_with_sorted_entries() {
             capabilities.clone(),
             &mut resources,
         ),
-        Value::Bool(true)
+        Value::Null
     );
     assert_eq!(
         call_with_fs_resources(
@@ -4959,6 +4987,35 @@ fn strtok_warns_after_multi_trailing_delimiter_grace_false() {
 }
 
 #[test]
+fn strtr_three_string_form_transforms_in_release_builds() {
+    let mut output = OutputBuffer::new();
+    assert_eq!(
+        call(
+            "strtr",
+            vec![
+                Value::string("Requests"),
+                Value::string("\\"),
+                Value::string("/"),
+            ],
+            &mut output,
+        ),
+        Value::string("Requests")
+    );
+    assert_eq!(
+        call(
+            "strtr",
+            vec![
+                Value::string("Namespace\\Class"),
+                Value::string("\\"),
+                Value::string("/"),
+            ],
+            &mut output,
+        ),
+        Value::string("Namespace/Class")
+    );
+}
+
+#[test]
 fn string_split_replace_case_and_padding_builtins_work() {
     let mut output = OutputBuffer::new();
 
@@ -5963,12 +6020,13 @@ fn native_url_query_parsers_preserve_typed_structure() {
             ) -> Result<(), E>,
         ) -> Result<Option<Self::Output>, E> {
             let mut values: Vec<Native> = Vec::new();
-            let mut push = |_: &mut Self, value| {
-                values.push(value);
-                Some(())
-            };
-            build(self, &mut push)?;
-            drop(push);
+            {
+                let mut push = |_: &mut Self, value| {
+                    values.push(value);
+                    Some(())
+                };
+                build(self, &mut push)?;
+            }
             Ok(Some(Native::Array(values)))
         }
 
@@ -5980,19 +6038,20 @@ fn native_url_query_parsers_preserve_typed_structure() {
             ) -> Result<(), E>,
         ) -> Result<Option<Self::Output>, E> {
             let mut values: Vec<(Vec<u8>, Native)> = Vec::new();
-            let mut push = |_: &mut Self, key: &[u8], value| {
-                if let Some((_, previous)) = values
-                    .iter_mut()
-                    .find(|(existing, _)| existing.as_slice() == key)
-                {
-                    *previous = value;
-                } else {
-                    values.push((key.to_vec(), value));
-                }
-                Some(())
-            };
-            build(self, &mut push)?;
-            drop(push);
+            {
+                let mut push = |_: &mut Self, key: &[u8], value| {
+                    if let Some((_, previous)) = values
+                        .iter_mut()
+                        .find(|(existing, _)| existing.as_slice() == key)
+                    {
+                        *previous = value;
+                    } else {
+                        values.push((key.to_vec(), value));
+                    }
+                    Some(())
+                };
+                build(self, &mut push)?;
+            }
             Ok(Some(Native::Object(values)))
         }
 

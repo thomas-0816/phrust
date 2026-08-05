@@ -131,6 +131,17 @@ impl LoweringContext<'_> {
             }
             HirStmtKind::Expr { expr } => {
                 if let Some(expr) = expr {
+                    let generated_call_boundary = self.expr_contains(module, expr, |kind| {
+                        matches!(
+                            kind,
+                            php_semantics::hir::HirExprKind::Call { .. }
+                                | php_semantics::hir::HirExprKind::BuiltinCall { .. }
+                                | php_semantics::hir::HirExprKind::MethodCall { .. }
+                                | php_semantics::hir::HirExprKind::New { .. }
+                                | php_semantics::hir::HirExprKind::Include { .. }
+                                | php_semantics::hir::HirExprKind::Eval { .. }
+                        )
+                    });
                     if expr_stmt_is_side_effect_free_bare_variable(module, expr) {
                         return block;
                     }
@@ -162,6 +173,18 @@ impl LoweringContext<'_> {
                             expr,
                             span,
                         );
+                        if generated_call_boundary {
+                            // A completed call/include/eval statement is a
+                            // natural exception and generated-continuation
+                            // boundary. Keeping that edge in the source IR
+                            // lets exact backend-limit recovery partition long
+                            // call sequences without arbitrary instruction
+                            // chunking; ordinary compilation still emits one
+                            // machine function for the complete PHP function.
+                            let next = builder.append_block(function);
+                            self.jump_if_open(builder, function, value.block, next, span);
+                            return next;
+                        }
                         return value.block;
                     }
                 }

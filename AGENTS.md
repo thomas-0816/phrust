@@ -3,6 +3,22 @@
 This replaces the generic warm runtime. It does not add another
 optimization layer around it.
 
+## Generated execution tiers
+
+Every ordinary PHP function has a semantically complete Generic Cranelift
+body and may also have an Optimizing Cranelift body. Both tiers use the same
+native value representation and generated-function ABI. An optimizing miss or
+deoptimization enters Generic Cranelift, never a Rust PHP-function executor.
+
+Rust may remain on cold compile, publication, resolution, extension, FFI,
+reflection/debug, and outer-result boundaries. Runtime calls from generated
+code must be exact typed leaves; operation-ID helpers are forbidden. Cold Rust
+may resolve a userland target but may not execute its PHP body.
+
+The existing warm WordPress contract remains c1 p50 at most 80 ms and p95 at
+most 100 ms. The sharper strategic target is at most 2.0x a simultaneously
+measured PHP-FPM control; report the absolute contract and ratio separately.
+
 ## Non-negotiable architecture
 
 For every operation family in scope, implementation means:
@@ -10,7 +26,7 @@ For every operation family in scope, implementation means:
 1. direct CLIF;
 2. direct access to a stable native data representation;
 3. a compiled native call; or
-4. one native transition to a baseline continuation.
+4. one native transition to a Generic Cranelift continuation.
 
 Adding a helper, wrapper, adapter, inline fast path before an old fallback,
 or a second ABI that calls the first ABI does not count as implementation.
@@ -33,8 +49,8 @@ or a second ABI that calls the first ABI does not count as implementation.
 When a replacement is added, the old production warm path for that operation
 must be deleted in the same tranche.
 
-Compatibility code may remain only in the baseline-native tier and must not be
-imported by optimizing artifacts.
+Compatibility code may remain only in explicitly cold services and must not be
+imported by Generic or Optimizing artifacts.
 
 ## No semantic compromise
 

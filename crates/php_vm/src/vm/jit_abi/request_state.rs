@@ -45,7 +45,7 @@ impl NativeFunctionNameScope {
         }
     }
 
-    pub(super) fn contains(&self, name: &str) -> bool {
+    pub(crate) fn contains(&self, name: &str) -> bool {
         let mut scope = Some(self);
         while let Some(current) = scope {
             if current.names.contains(name) {
@@ -135,10 +135,6 @@ impl NativeRegisteredExtensionRequestState {
         self.pcntl.is_fork_child()
     }
 
-    pub(super) fn sysvshm_object_destroyed(&self, object_id: u64) -> bool {
-        self.sysvshm.object_destroyed(object_id)
-    }
-
     pub(super) fn mb_internal_encoding_ptr(&mut self) -> *mut String {
         std::ptr::from_mut(&mut self.mb_internal_encoding)
     }
@@ -155,33 +151,6 @@ impl NativeRegisteredExtensionRequestState {
 
     pub(super) fn filesystem_ptr(&mut self) -> *mut php_runtime::api::FilesystemRuntimeState {
         std::ptr::from_mut(&mut self.filesystem)
-    }
-
-    pub(super) fn bind<'a>(&'a mut self, context: &mut php_runtime::api::BuiltinContext<'a>) {
-        context.set_apcu_request_state(&mut self.state, self.apcu);
-        context.set_strtok_state(&mut self.strtok);
-        context.set_iconv_state(&mut self.iconv);
-        context.set_opcache_state(&mut self.opcache);
-        context.set_soap_state(&mut self.soap);
-        context.set_openssl_error_state(&mut self.openssl);
-        context.set_gettext_state(&mut self.gettext);
-        context.set_shmop_state(&mut self.shmop);
-        context.set_readline_state(&mut self.readline);
-        context.set_sysvmsg_state(&mut self.sysvmsg);
-        context.set_sysvsem_state(&mut self.sysvsem);
-        context.set_sysvshm_state(&mut self.sysvshm);
-        context.set_pcntl_state(&mut self.pcntl);
-        context.set_ftp_state(&mut self.ftp);
-        context.set_imap_state(&mut self.imap);
-        context.set_ldap_state(&mut self.ldap);
-        context.set_ssh2_state(&mut self.ssh2);
-        context.set_socket_state(&mut self.sockets);
-        context.set_filesystem_state(&mut self.filesystem);
-        context.set_stream_context_state(&mut self.stream_context);
-        context.set_bcmath_scale_state(&mut self.bcmath_scale);
-        context.set_mb_internal_encoding_state(&mut self.mb_internal_encoding);
-        context.set_mb_substitute_character_state(&mut self.mb_substitute_character);
-        context.set_postgres_state(&mut self.postgres);
     }
 }
 

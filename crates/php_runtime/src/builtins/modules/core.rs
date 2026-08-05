@@ -37,8 +37,8 @@ pub(in crate::builtins::modules) use encoding::{
     direct_hash_hmac_into, direct_hash_hmac_output_length, direct_hash_into,
     direct_hash_output_length, direct_html_entity_decode_into,
     direct_html_entity_decode_output_length, direct_html_escape_into,
-    direct_html_escape_output_length, format_array_values, hash_digest_bytes,
-    hash_digest_bytes_with_options, hex_encode, hex_nibble, hmac_digest_bytes,
+    direct_html_escape_output_length, direct_html_translation_table_entries, format_array_values,
+    hash_digest_bytes, hash_digest_bytes_with_options, hex_encode, hex_nibble, hmac_digest_bytes,
     hmac_hash_algorithm_value_error, html_entity_decode_with_flags, html_escape_with_options,
     html_translation_table, htmlentities_escape_with_options, htmlspecialchars_decode_with_flags,
     parse_hash_options,
@@ -870,6 +870,25 @@ pub(in crate::builtins::modules) fn builtin_mail(
 /// back-to-back calls always differ even within the same microsecond.
 static UNIQID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Builds one PHP-compatible `uniqid()` byte string without materializing a
+/// runtime `Value`.
+pub fn native_uniqid(prefix: &[u8], more_entropy: bool) -> Option<Vec<u8>> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    let mut out = prefix.to_vec();
+    let sec = now.as_secs() & 0xFFFF_FFFF;
+    let usec = now.subsec_micros();
+    out.extend_from_slice(format!("{sec:08x}{usec:05x}").as_bytes());
+    if more_entropy {
+        let counter = UNIQID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mixed = u64::from(now.subsec_nanos())
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(counter);
+        let entropy = (mixed % 1_000_000_000) as f64 / 100_000_000.0;
+        out.extend_from_slice(format!("{entropy:.8}").as_bytes());
+    }
+    Some(out)
+}
+
 pub(in crate::builtins::modules) fn builtin_uniqid(
     _context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
@@ -878,7 +897,7 @@ pub(in crate::builtins::modules) fn builtin_uniqid(
     if args.len() > 2 {
         return Err(arity_error("uniqid", "zero to two argument(s)"));
     }
-    let mut out = match args.first() {
+    let prefix = match args.first() {
         Some(value) => string_arg("uniqid", value)?.into_bytes(),
         None => Vec::new(),
     };
@@ -886,24 +905,8 @@ pub(in crate::builtins::modules) fn builtin_uniqid(
         Some(value) => to_bool(value).map_err(|message| conversion_error("uniqid", message))?,
         None => false,
     };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| value_error("uniqid", "system time is before UNIX epoch"))?;
-    // PHP: "%s%08x%05x" of seconds (low 32 bits) and microseconds.
-    let sec = now.as_secs() & 0xFFFF_FFFF;
-    let usec = now.subsec_micros();
-    out.extend_from_slice(format!("{sec:08x}{usec:05x}").as_bytes());
-    if more_entropy {
-        // PHP appends "%.8F" of a small random float; we derive a value in
-        // [0, 10) from the sub-microsecond clock and a per-call counter so it
-        // is well-formed (always 10 chars) and unique between calls.
-        let counter = UNIQID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mixed = u64::from(now.subsec_nanos())
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(counter);
-        let entropy = (mixed % 1_000_000_000) as f64 / 100_000_000.0;
-        out.extend_from_slice(format!("{entropy:.8}").as_bytes());
-    }
+    let out = native_uniqid(&prefix, more_entropy)
+        .ok_or_else(|| value_error("uniqid", "system time is before UNIX epoch"))?;
     Ok(Value::string(out))
 }
 
@@ -935,16 +938,19 @@ pub(in crate::builtins::modules) fn builtin_phpinfo(
     if let Some(flags) = args.first() {
         let _ = int_arg("phpinfo", flags)?;
     }
+    context.output().write_bytes(&native_phpinfo_output());
+    Ok(Value::Bool(true))
+}
+
+/// Builds the deterministic Value-free phpinfo payload used by the native
+/// output leaf and the cold compatibility service.
+pub fn native_phpinfo_output() -> Vec<u8> {
     let jit = if pcre::is_jit_available() {
         "enabled"
     } else {
         "disabled"
     };
-    context.output().write_bytes(b"pcre\n");
-    context
-        .output()
-        .write_bytes(format!("PCRE JIT Support => {jit}\n").as_bytes());
-    Ok(Value::Bool(true))
+    format!("pcre\nPCRE JIT Support => {jit}\n").into_bytes()
 }
 
 pub(in crate::builtins::modules) fn builtin_token_get_all(
@@ -1295,9 +1301,9 @@ pub(in crate::builtins::modules) fn builtin_assert(
 }
 
 pub(in crate::builtins::modules) fn builtin_intval(
-    _context: &mut BuiltinContext<'_>,
+    context: &mut BuiltinContext<'_>,
     args: Vec<Value>,
-    _span: RuntimeSourceSpan,
+    span: RuntimeSourceSpan,
 ) -> BuiltinResult {
     if !(1..=2).contains(&args.len()) {
         return Err(arity_error("intval", "one or two argument(s)"));
@@ -1308,6 +1314,17 @@ pub(in crate::builtins::modules) fn builtin_intval(
         .transpose()?
         .unwrap_or(10);
     let value = args.first().expect("checked arity");
+    if let Value::Object(object) = deref_value(value) {
+        context.php_warning(
+            "E_PHP_RUNTIME_OBJECT_NUMERIC_CAST_WARNING",
+            format!(
+                "Object of class {} could not be converted to int",
+                object.display_name()
+            ),
+            span,
+        );
+        return Ok(Value::Int(1));
+    }
     let Value::String(text) = deref_value(value) else {
         return to_int(value)
             .map(Value::Int)
@@ -5935,7 +5952,6 @@ where
                     "E_PHP_RUNTIME_PRINTF_LENGTH",
                     format!("builtin {name} formatted output is too large"),
                 )
-                .into()
             })?;
             continue;
         }
@@ -5950,7 +5966,6 @@ where
                     "E_PHP_RUNTIME_PRINTF_LENGTH",
                     format!("builtin {name} formatted output is too large"),
                 )
-                .into()
             })?;
             format_index += 1;
             continue;
@@ -5979,7 +5994,6 @@ where
                 "E_PHP_RUNTIME_PRINTF_LENGTH",
                 format!("builtin {name} formatted output is too large"),
             )
-            .into()
         })?;
     }
 

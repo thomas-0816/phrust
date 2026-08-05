@@ -27,7 +27,7 @@ impl VmWorkerState {
         {
             let callee_signatures =
                 linked_external_function_signatures(unit, callee, external_signatures);
-            self.prepare_native_baseline_entry(unit, callee, options, &callee_signatures)?;
+            self.prepare_native_generic_entry(unit, callee, options, &callee_signatures)?;
         }
         Ok(())
     }
@@ -50,7 +50,7 @@ impl VmWorkerState {
             })?;
             let deployment = unit.prepared_deployment_image();
             let baseline = deployment
-                .native_function_entries
+                .generic_function_entries
                 .get(function.index())
                 .ok_or_else(|| {
                     format!(
@@ -80,11 +80,17 @@ impl VmWorkerState {
                 unit.publish_preferred_function_metadata(function, handle);
             }
             self.prepare_native_direct_callees(unit, handle, options, external_signatures)?;
+            self.record_native_publication_result(
+                unit,
+                function,
+                NativeOptimizationPolicy::Generic,
+                "published-generic",
+            );
             return Ok(());
         }
         let root_signatures =
             linked_external_function_signatures(unit, function, external_signatures);
-        self.prepare_native_baseline_entry(unit, function, options, &root_signatures)?;
+        self.prepare_native_generic_entry(unit, function, options, &root_signatures)?;
         if !handle.region_state_metadata().is_some_and(|metadata| {
             metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Optimizing
         }) {
@@ -115,6 +121,12 @@ impl VmWorkerState {
             })?;
         unit.publish_preferred_function_metadata(function, handle);
         preferred.store(address, std::sync::atomic::Ordering::Release);
+        self.record_native_publication_result(
+            unit,
+            function,
+            NativeOptimizationPolicy::Optimizing,
+            "published-preferred",
+        );
         Ok(())
     }
 }
@@ -169,21 +181,9 @@ impl Vm {
             php_jit::JIT_RUNTIME_ABI_HASH,
             runtime,
             |types, value| {
-                let class = context
-                    .materialize_outer_result(value)
-                    .ok()
-                    .and_then(super::native_exception_fields)
-                    .map(|(class, _, _)| class);
-                class.is_some_and(|class| {
-                    types.iter().any(|type_| {
-                        type_.eq_ignore_ascii_case(&class)
-                            || type_.eq_ignore_ascii_case("Throwable")
-                            || (type_.eq_ignore_ascii_case("Exception")
-                                && class.ends_with("Exception"))
-                            || (type_.eq_ignore_ascii_case("Error")
-                                && (class == "Error" || class.ends_with("Error")))
-                    })
-                })
+                types
+                    .iter()
+                    .any(|type_| context.direct_object_is_a(value, type_))
             },
         );
         let outcome =
@@ -294,9 +294,21 @@ impl Vm {
                 Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. })
                     if status == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 =>
                 {
-                    let operation =
-                        context.instruction_kind_debug(state.function_id, state.continuation_id);
-                    let message = context
+                    if state.control_reserved == php_jit::JIT_NATIVE_RUNTIME_FATAL_DETAIL
+                        && let Some(message) = super::jit_abi::publish_explicit_native_runtime_fatal(
+                            &mut context,
+                            state.function_id,
+                            state.continuation_id,
+                        )
+                    {
+                        VmResult::fatal(
+                            std::mem::take(&mut context.output),
+                            context.diagnostic.take(),
+                            message,
+                        )
+                    } else {
+                        let operation = context.instruction_kind_debug_for_state(&state);
+                        let message = context
                         .diagnostic
                         .as_ref()
                         .map_or_else(
@@ -314,25 +326,26 @@ impl Vm {
                             },
                             |diagnostic| diagnostic.message().to_owned(),
                         );
-                    if context.diagnostic.as_ref().is_some_and(|diagnostic| {
-                        diagnostic.severity() == php_runtime::api::RuntimeSeverity::FatalError
-                    }) && context
-                        .output
-                        .as_bytes()
-                        .windows(b"Fatal error".len())
-                        .any(|window| window == b"Fatal error")
-                    {
-                        VmResult::fatal(
-                            std::mem::take(&mut context.output),
-                            context.diagnostic.take(),
-                            message,
-                        )
-                    } else {
-                        VmResult::runtime_error(
-                            std::mem::take(&mut context.output),
-                            context.diagnostic.take(),
-                            message,
-                        )
+                        if context.diagnostic.as_ref().is_some_and(|diagnostic| {
+                            diagnostic.severity() == php_runtime::api::RuntimeSeverity::FatalError
+                        }) && context
+                            .output
+                            .as_bytes()
+                            .windows(b"Fatal error".len())
+                            .any(|window| window == b"Fatal error")
+                        {
+                            VmResult::fatal(
+                                std::mem::take(&mut context.output),
+                                context.diagnostic.take(),
+                                message,
+                            )
+                        } else {
+                            VmResult::runtime_error(
+                                std::mem::take(&mut context.output),
+                                context.diagnostic.take(),
+                                message,
+                            )
+                        }
                     }
                 }
                 Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. })
@@ -340,11 +353,14 @@ impl Vm {
                 {
                     VmResult::success(std::mem::take(&mut context.output), None)
                 }
-                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. }) => {
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. }) => {
                     VmResult::runtime_error(
                         std::mem::take(&mut context.output),
                         context.diagnostic.take(),
-                        format!("cached native entry returned status {status}"),
+                        format!(
+                            "cached native entry returned status {status} at function {} continuation {}",
+                            state.function_id, state.continuation_id,
+                        ),
                     )
                 }
                 Err(error) => VmResult::compile_error(

@@ -2,7 +2,8 @@
 
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-pub(crate) const BASELINE_FUNCTION_SPECIALIZATION: &str = "streaming-baseline-v7-borrowed-locals";
+pub(crate) const GENERIC_FUNCTION_SPECIALIZATION: &str =
+    "streaming-generic-v9-direct-native-callable-entry";
 pub(crate) const OPTIMIZING_FUNCTION_SPECIALIZATION: &str = "ssa-optimizing-v1";
 
 /// Constructs the exact symbolic publication key used by declaration and
@@ -25,12 +26,12 @@ pub fn native_function_key(
         compiler_tier: if optimizing {
             "optimizing".to_owned()
         } else {
-            "baseline".to_owned()
+            "generic".to_owned()
         },
         version: if optimizing {
             OPTIMIZING_FUNCTION_SPECIALIZATION
         } else {
-            BASELINE_FUNCTION_SPECIALIZATION
+            GENERIC_FUNCTION_SPECIALIZATION
         }
         .to_owned(),
         invalidation_generation,
@@ -51,8 +52,8 @@ pub struct NativeFunctionKey {
 /// Target slot selected by the compiler tier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeFunctionTier {
-    Baseline,
-    Optimized,
+    Generic,
+    Optimizing,
 }
 
 /// Publication state for diagnostics and safe invalidation.
@@ -88,7 +89,7 @@ impl NativeIndirectionState {
 pub struct NativeIndirectionCell {
     key: NativeFunctionKey,
     generation: AtomicU64,
-    baseline_target: AtomicUsize,
+    generic_target: AtomicUsize,
     optimized_target: AtomicUsize,
     state: AtomicU8,
 }
@@ -99,7 +100,7 @@ impl NativeIndirectionCell {
         Self {
             generation: AtomicU64::new(key.invalidation_generation),
             key,
-            baseline_target: AtomicUsize::new(0),
+            generic_target: AtomicUsize::new(0),
             optimized_target: AtomicUsize::new(0),
             state: AtomicU8::new(NativeIndirectionState::Declared as u8),
         }
@@ -112,8 +113,8 @@ impl NativeIndirectionCell {
 
     pub fn publish(&self, tier: NativeFunctionTier, generation: u64, address: usize) {
         match tier {
-            NativeFunctionTier::Baseline => self.baseline_target.store(address, Ordering::Release),
-            NativeFunctionTier::Optimized => {
+            NativeFunctionTier::Generic => self.generic_target.store(address, Ordering::Release),
+            NativeFunctionTier::Optimizing => {
                 self.optimized_target.store(address, Ordering::Release);
             }
         }
@@ -136,7 +137,7 @@ impl NativeIndirectionCell {
         self.state
             .store(NativeIndirectionState::Failed as u8, Ordering::Release);
         self.optimized_target.store(0, Ordering::Release);
-        self.baseline_target.store(0, Ordering::Release);
+        self.generic_target.store(0, Ordering::Release);
     }
 
     pub(crate) fn reset_declared(&self) {
@@ -155,8 +156,8 @@ impl NativeIndirectionCell {
         }
         let optimized = self.optimized_target.load(Ordering::Acquire);
         (optimized != 0).then_some(optimized).or_else(|| {
-            let baseline = self.baseline_target.load(Ordering::Acquire);
-            (baseline != 0).then_some(baseline)
+            let generic = self.generic_target.load(Ordering::Acquire);
+            (generic != 0).then_some(generic)
         })
     }
 
@@ -165,16 +166,16 @@ impl NativeIndirectionCell {
         self.state
             .store(NativeIndirectionState::Retired as u8, Ordering::Release);
         self.optimized_target.store(0, Ordering::Release);
-        self.baseline_target.store(0, Ordering::Release);
+        self.generic_target.store(0, Ordering::Release);
     }
 
     /// Retires one code tier while keeping the other tier callable.
     pub(crate) fn retire_tier(&self, tier: NativeFunctionTier) {
         match tier {
-            NativeFunctionTier::Baseline => self.baseline_target.store(0, Ordering::Release),
-            NativeFunctionTier::Optimized => self.optimized_target.store(0, Ordering::Release),
+            NativeFunctionTier::Generic => self.generic_target.store(0, Ordering::Release),
+            NativeFunctionTier::Optimizing => self.optimized_target.store(0, Ordering::Release),
         }
-        if self.baseline_target.load(Ordering::Acquire) == 0
+        if self.generic_target.load(Ordering::Acquire) == 0
             && self.optimized_target.load(Ordering::Acquire) == 0
         {
             self.state
@@ -197,7 +198,7 @@ mod tests {
             deployment_unit: "unit-a".to_owned(),
             function_id: 7,
             signature_hash: 11,
-            compiler_tier: "baseline".to_owned(),
+            compiler_tier: "generic".to_owned(),
             version: "v1".to_owned(),
             invalidation_generation: 3,
         }
@@ -212,7 +213,7 @@ mod tests {
         assert_eq!(cell.state(), NativeIndirectionState::Queued);
         cell.mark_compiling();
         assert_eq!(cell.state(), NativeIndirectionState::Compiling);
-        cell.publish(NativeFunctionTier::Baseline, 3, 0x1234);
+        cell.publish(NativeFunctionTier::Generic, 3, 0x1234);
         assert_eq!(cell.resolve(11, 3), Some(0x1234));
         assert_eq!(cell.resolve(12, 3), None);
         assert_eq!(cell.resolve(11, 4), None);
@@ -234,8 +235,21 @@ mod tests {
     fn symbolic_key_is_stable_for_declaration_and_publication() {
         let key = native_function_key("unit-a", 7, 2, 5, false, 3);
         assert_eq!(key.function_id, 7);
-        assert_eq!(key.compiler_tier, "baseline");
-        assert_eq!(key.version, BASELINE_FUNCTION_SPECIALIZATION);
+        assert_eq!(key.compiler_tier, "generic");
+        assert_eq!(key.version, GENERIC_FUNCTION_SPECIALIZATION);
         assert_ne!(key.signature_hash, 0);
+    }
+
+    #[test]
+    fn generic_publication_cell_breaks_recursive_compile_cycles() {
+        let cell = NativeIndirectionCell::new(key());
+        cell.publish(NativeFunctionTier::Generic, 3, 0x1234);
+
+        // A recursive or mutually recursive compile resolves the already
+        // published Generic target instead of descending into compilation.
+        assert_eq!(cell.resolve(11, 3), Some(0x1234));
+
+        cell.publish(NativeFunctionTier::Optimizing, 3, 0x5678);
+        assert_eq!(cell.resolve(11, 3), Some(0x5678));
     }
 }

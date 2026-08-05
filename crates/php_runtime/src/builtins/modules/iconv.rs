@@ -672,6 +672,52 @@ struct ConversionTarget {
     transliterate: bool,
 }
 
+/// Value-free result of one exact native `iconv` conversion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeIconvConversion {
+    Converted(Vec<u8>),
+    EncodingTooLong,
+    WrongEncoding { from: String, to: String },
+    InvalidInput,
+    Unrepresentable,
+}
+
+/// Converts authoritative native string bytes with `iconv`'s encoding aliases
+/// and `//IGNORE`/`//TRANSLIT` target options.
+#[doc(hidden)]
+pub fn native_iconv_convert(
+    from_bytes: &[u8],
+    to_bytes: &[u8],
+    input: &[u8],
+) -> NativeIconvConversion {
+    let from_raw = String::from_utf8_lossy(from_bytes).into_owned();
+    let to_raw = String::from_utf8_lossy(to_bytes).into_owned();
+    if iconv_encoding_too_long(&from_raw) || iconv_encoding_too_long(&to_raw) {
+        return NativeIconvConversion::EncodingTooLong;
+    }
+    let Some(from) = canonical_encoding(&from_raw) else {
+        return NativeIconvConversion::WrongEncoding {
+            from: from_raw,
+            to: conversion_base(&to_raw).to_owned(),
+        };
+    };
+    let Some(to) = parse_conversion_target(&to_raw) else {
+        return NativeIconvConversion::WrongEncoding {
+            from: from_raw,
+            to: conversion_base(&to_raw).to_owned(),
+        };
+    };
+    let Ok(text) = string_for_encoding("iconv", input, from, "#3 ($string)") else {
+        return NativeIconvConversion::InvalidInput;
+    };
+    bytes_for_encoding(&text, to.encoding)
+        .or_else(|| bytes_for_encoding_with_options(&text, to))
+        .map_or(
+            NativeIconvConversion::Unrepresentable,
+            NativeIconvConversion::Converted,
+        )
+}
+
 fn raw_encoding_arg(name: &str, value: &Value) -> Result<String, crate::builtins::BuiltinError> {
     Ok(string_arg(name, value)?.to_string_lossy())
 }

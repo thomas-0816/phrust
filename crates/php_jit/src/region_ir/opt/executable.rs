@@ -152,9 +152,61 @@ pub fn optimize_executable_region(region: &mut RegionGraph) -> ExecutableOptRepo
             report.branches_folded = report.branches_folded.saturating_add(1);
         }
     }
+    prune_unreachable_native_blocks(region, &mut report);
     hoist_loop_invariants(region, &mut report);
     eliminate_dead_moves(region, &mut report);
     report
+}
+
+/// Remove CFG predecessors that became unreachable after publication-time
+/// branch folding.
+///
+/// Keeping such a block's outgoing edge makes a multiply-defined PHP
+/// register look like a live Cranelift phi input. In particular, the dead
+/// truthy arm of `false ?: $fallback` could then supply `false` at the merge.
+/// Exception handlers, OSR headers, and explicit transition entries are
+/// independent native entry roots and therefore remain intact.
+fn prune_unreachable_native_blocks(region: &mut RegionGraph, report: &mut ExecutableOptReport) {
+    let mut roots = BTreeSet::from([php_ir::BlockId::new(0)]);
+    roots.extend(region.osr_entries().into_iter().map(|entry| entry.block));
+    for exception in &region.exception_regions {
+        roots.extend(exception.catch);
+        roots.extend(exception.finally);
+        roots.insert(exception.after);
+    }
+    roots.extend(region.blocks.iter().filter_map(|block| {
+        block
+            .instructions
+            .iter()
+            .any(|instruction| instruction.optimizer_transition_entry)
+            .then_some(block.id)
+    }));
+
+    let mut reachable = BTreeSet::new();
+    let mut work = roots.into_iter().collect::<Vec<_>>();
+    while let Some(block) = work.pop() {
+        if !reachable.insert(block) {
+            continue;
+        }
+        let Some(block) = region.blocks.get(block.index()) else {
+            continue;
+        };
+        work.extend(block.terminator.targets());
+    }
+
+    for block in &mut region.blocks {
+        if reachable.contains(&block.id) {
+            continue;
+        }
+        report.dead_instructions = report
+            .dead_instructions
+            .saturating_add(block.instructions.len() as u64);
+        block.instructions.clear();
+        block.terminator = RegionTerminator::Return {
+            value: RegionOperand::Constant(u32::MAX),
+            finally: None,
+        };
+    }
 }
 
 fn hoist_loop_invariants(region: &mut RegionGraph, report: &mut ExecutableOptReport) {

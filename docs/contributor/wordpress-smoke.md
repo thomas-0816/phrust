@@ -27,6 +27,18 @@ Missing WordPress or database prerequisites are skips, not passes. Generated
 reports land under `target/wordpress-real/` or
 `target/performance/wordpress-root/`.
 
+Build the pinned PHP 8.5.7 oracle through Nix before comparing WordPress
+responses:
+
+```bash
+nix develop -c just build-ref-php
+```
+
+The shared reference recipe includes `mysqlnd` and `mysqli`. WordPress
+preflight automatically adopts `third_party/php-src/sapi/cli/php` and rejects
+that binary if the extension, `mysqli` class, or `mysqli_connect()` capability
+is absent; a minimal tokenizer-only PHP build is not a valid WordPress oracle.
+
 The `web-install-page` phase accepts both the installation form and the
 pre-configuration "Setup Configuration File" page. A WordPress error page is
 still a failure even when the server returned HTTP 200.

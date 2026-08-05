@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             NativeArtifactImage::from_compile_records(identity.clone(), &records)
         },
     )?;
-    let value = artifact.invoke_i64_status_out(0)?;
+    let value = artifact.invoke_native_control(0)?;
     let stats = cache.stats();
     println!(
         "{{\"event\":\"{}\",\"compiled\":{},\"value\":{},\"hits\":{},\"writes\":{},\"rebuilds\":{},\"invalid_artifacts\":{}}}",
@@ -68,11 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn resolve_probe_helper(stable_id: u32) -> Option<usize> {
-    let release = php_jit::lookup_helper_by_name("phrust_native_value_release")?;
-    (stable_id == release.id.0).then_some(probe_value_release as *const () as usize)
+    let poll = php_jit::lookup_helper_by_name("phrust_native_execution_poll")?;
+    (stable_id == poll.id.0).then_some(probe_execution_poll as *const () as usize)
 }
 
-extern "C" fn probe_value_release(_context: u64, _encoded: i64) -> i32 {
+extern "C" fn probe_execution_poll(_context: u64) -> i32 {
     0
 }
 
@@ -113,7 +113,7 @@ fn cache_identity() -> Result<NativeCacheIdentity, Box<dyn std::error::Error>> {
         target_triple: isa.target_triple,
         pointer_width: usize::BITS as u8,
         cpu_feature_fingerprint: isa.feature_fingerprint,
-        optimization_tier: "baseline".to_owned(),
+        optimization_tier: "generic".to_owned(),
         optimization_config_hash: 0,
         php_semantic_config_hash: 0,
     })

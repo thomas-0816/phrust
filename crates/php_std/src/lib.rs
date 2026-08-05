@@ -530,6 +530,12 @@ impl ExtensionRegistry {
         {
             patch_platform_pcntl_constants(pcntl);
         }
+        if let Some(standard) = extensions
+            .iter_mut()
+            .find(|extension| extension.name() == "standard")
+        {
+            patch_phpinfo_constants(standard);
+        }
         Self::from_extensions(extensions)
     }
 
@@ -672,6 +678,25 @@ impl ExtensionRegistry {
             }
         }
         None
+    }
+}
+
+fn patch_phpinfo_constants(standard: &mut ExtensionDescriptor) {
+    for (name, value) in [
+        ("INFO_GENERAL", constants::INFO_GENERAL),
+        ("INFO_CREDITS", constants::INFO_CREDITS),
+        ("INFO_CONFIGURATION", constants::INFO_CONFIGURATION),
+        ("INFO_MODULES", constants::INFO_MODULES),
+        ("INFO_ENVIRONMENT", constants::INFO_ENVIRONMENT),
+        ("INFO_VARIABLES", constants::INFO_VARIABLES),
+        ("INFO_LICENSE", constants::INFO_LICENSE),
+        ("INFO_ALL", constants::INFO_ALL),
+    ] {
+        standard.constants.push(ConstantDescriptor::with_value(
+            name,
+            "standard",
+            ConstantValue::Int(value),
+        ));
     }
 }
 
@@ -2100,6 +2125,14 @@ mod tests {
             "PATHINFO_BASENAME",
             "PATHINFO_EXTENSION",
             "PATHINFO_FILENAME",
+            "INFO_GENERAL",
+            "INFO_CREDITS",
+            "INFO_CONFIGURATION",
+            "INFO_MODULES",
+            "INFO_ENVIRONMENT",
+            "INFO_VARIABLES",
+            "INFO_LICENSE",
+            "INFO_ALL",
             "INI_USER",
             "INI_PERDIR",
             "INI_SYSTEM",

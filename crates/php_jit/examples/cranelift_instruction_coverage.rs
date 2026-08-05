@@ -1,31 +1,31 @@
 use php_jit::region_ir::{
-    BASELINE_INSTRUCTION_MANIFEST, BASELINE_TERMINATOR_MANIFEST, BaselineLoweringClass,
-    BaselineLoweringManifestEntry,
+    GENERIC_INSTRUCTION_MANIFEST, GENERIC_TERMINATOR_MANIFEST, GenericLoweringClass,
+    GenericLoweringManifestEntry,
 };
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
-fn class(entry: &BaselineLoweringManifestEntry) -> String {
+fn class(entry: &GenericLoweringManifestEntry) -> String {
     match entry.class {
-        BaselineLoweringClass::DirectClif => "direct_clif".to_owned(),
-        BaselineLoweringClass::TypedRuntimeHelper(helper) => {
+        GenericLoweringClass::DirectClif => "direct_clif".to_owned(),
+        GenericLoweringClass::TypedRuntimeHelper(helper) => {
             format!("typed_runtime_helper:{}", helper.0)
         }
-        BaselineLoweringClass::NativeControlFlow => "native_control_flow".to_owned(),
-        BaselineLoweringClass::NativeStateMachine => "native_state_machine".to_owned(),
-        BaselineLoweringClass::CompileTimeFatal => "compile_time_fatal".to_owned(),
+        GenericLoweringClass::NativeControlFlow => "native_control_flow".to_owned(),
+        GenericLoweringClass::NativeStateMachine => "native_state_machine".to_owned(),
+        GenericLoweringClass::CompileTimeFatal => "compile_time_fatal".to_owned(),
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = Path::new("target/cranelift-only");
     fs::create_dir_all(output)?;
-    let entries = BASELINE_INSTRUCTION_MANIFEST
+    let entries = GENERIC_INSTRUCTION_MANIFEST
         .iter()
         .map(|entry| ("instruction", entry))
         .chain(
-            BASELINE_TERMINATOR_MANIFEST
+            GENERIC_TERMINATOR_MANIFEST
                 .iter()
                 .map(|entry| ("terminator", entry)),
         )
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (index, (kind, entry)) in entries.iter().enumerate() {
         let class = class(entry);
         let helper = match entry.class {
-            BaselineLoweringClass::TypedRuntimeHelper(id) => id.0.to_string(),
+            GenericLoweringClass::TypedRuntimeHelper(id) => id.0.to_string(),
             _ => String::new(),
         };
         writeln!(

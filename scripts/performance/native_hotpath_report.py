@@ -106,7 +106,7 @@ def direct_ratio(counters: dict[str, Any]) -> tuple[int, int, float]:
 
 def production_lowering(counters: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
-    for site, operation_local_transition in counter_map(
+    for site, _executions in counter_map(
         counters,
         "production_lowering_by_site",
         "native_production_lowering_by_site",
@@ -123,7 +123,6 @@ def production_lowering(counters: dict[str, Any]) -> list[dict[str, Any]]:
                 "continuation": int(continuation),
                 "operation": operation,
                 "class": lowering_class,
-                "operation_local_transition": operation_local_transition != 0,
             }
         )
     return sorted(
@@ -210,7 +209,7 @@ def main() -> int:
     optimizing_entry_executions = number(
         after, "optimizing_entry_executions", "native_optimizing_entry_executions"
     )
-    baseline_hot_time_share_pct = (
+    generic_hot_time_share_pct = (
         0.0
         if execution_time == 0
         else 100.0
@@ -222,13 +221,10 @@ def main() -> int:
         {
             "schema_version": 1,
             "production_lowering": lowering_rows,
-            "operation_local_transition_metadata_count": sum(
-                1 for row in lowering_rows if row["operation_local_transition"]
-            ),
-            "operation_local_transition_executions": operation_transition_executions,
-            "baseline_hot_time_share_pct": baseline_hot_time_share_pct,
-            "baseline_entry_executions": number(
-                after, "baseline_entry_executions", "native_baseline_entry_executions"
+            "local_generic_continuation_executions": operation_transition_executions,
+            "generic_hot_time_share_pct": generic_hot_time_share_pct,
+            "generic_entry_executions": number(
+                after, "generic_entry_executions", "native_generic_entry_executions"
             ),
             "optimizing_entry_executions": optimizing_entry_executions,
         },
@@ -239,8 +235,8 @@ def main() -> int:
             "schema_version": 1,
             "count_by_reason": transition_by_reason,
             "time_nanos_by_reason": transition_time_by_reason,
-            "operation_local_transition_executions": operation_transition_executions,
-            "operation_local_transition_time_nanos": operation_transition_time,
+            "local_generic_continuation_executions": operation_transition_executions,
+            "local_generic_continuation_time_nanos": operation_transition_time,
         },
     )
     write_json(

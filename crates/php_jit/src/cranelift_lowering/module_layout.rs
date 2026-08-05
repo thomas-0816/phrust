@@ -4,45 +4,27 @@
 //! built before Cranelift lowering so compile breadth and structural cost are
 //! explicit and testable instead of being inferred from a module afterwards.
 
-use crate::region_ir::{RegionBlock, RegionGraph, RegionTerminator, baseline_instruction_lowering};
-use php_ir::instruction::TerminatorKind;
-use php_ir::{BlockId, FunctionId, InstrId};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::region_ir::{RegionBlock, RegionGraph, RegionTerminator, generic_instruction_lowering};
+use php_ir::{BlockId, FunctionId};
+use std::collections::BTreeSet;
 
-pub const BASELINE_FRAGMENT_MAX_PHP_BLOCKS: usize = 64;
+pub const NATIVE_FRAGMENT_HARD_MAX_PHP_BLOCKS: usize = 64;
 /// Persistent schema for deterministic native fragment boundaries and frame
 /// traffic. Increment whenever planning can change emitted fragment code.
-pub const NATIVE_FRAGMENT_PLAN_SCHEMA_VERSION: u32 = 10;
+pub const NATIVE_FRAGMENT_PLAN_SCHEMA_VERSION: u32 = 11;
 // These ceilings are intentionally below the backend's final CLIF admission
 // limits. Planning must leave enough headroom for helper continuations,
 // resume loaders, and frontend SSA edge splitting. The finished CLIF function
 // is checked again before `define_function` can enter regalloc2.
-pub const BASELINE_FRAGMENT_MAX_IR_INSTRUCTIONS: usize = 400;
-pub const BASELINE_SINGLE_BLOCK_MAX_IR_INSTRUCTIONS: usize = 512;
-pub const BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS: usize = 450;
-pub const BASELINE_SINGLE_BLOCK_MAX_ESTIMATED_CLIF_BLOCKS: usize = 537;
-pub const BASELINE_FRAGMENT_MAX_ESTIMATED_LIVE_SET: usize = 384;
-pub const BASELINE_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM: usize = 4_096;
+pub const NATIVE_FRAGMENT_HARD_MAX_IR_INSTRUCTIONS: usize = 400;
+pub const NATIVE_SINGLE_BLOCK_HARD_MAX_IR_INSTRUCTIONS: usize = 512;
+pub const NATIVE_FRAGMENT_HARD_MAX_ESTIMATED_CLIF_BLOCKS: usize = 450;
+pub const NATIVE_SINGLE_BLOCK_HARD_MAX_ESTIMATED_CLIF_BLOCKS: usize = 537;
+pub const NATIVE_FRAGMENT_HARD_MAX_ESTIMATED_LIVE_SET: usize = 384;
+pub const NATIVE_FRAGMENT_HARD_MAX_SAFEPOINT_LIVE_SUM: usize = 4_096;
 pub const OPTIMIZING_REGION_MAX_PHP_BLOCKS: usize = 256;
 pub const OPTIMIZING_REGION_MAX_IR_INSTRUCTIONS: usize = 1_500;
 pub const OPTIMIZING_REGION_MAX_VIRTUAL_VALUES: usize = 768;
-// A Region block must already be a comfortably bounded unit before the
-// fragment planner groups blocks. Exact CLIF preflight can refine a fragment
-// between Region blocks, but it cannot split one PHP instruction. Keeping a
-// source block at the old 128/450 ceilings allowed one underestimated chunk
-// to consume the complete 70% pre-regalloc margin and become structurally
-// unsplittable. These are chunk ceilings, not whole-fragment ceilings: the
-// planner may still group several cheap chunks and exact preflight can split
-// those groups again without rebuilding PHP semantics.
-const MAX_BASELINE_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT: usize = 16;
-// Exact optimizing lowering can expand a straight-line string/array chain by
-// roughly two orders of magnitude in CLIF blocks.  A 31-instruction WordPress
-// concat chunk already crosses the 70% pre-regalloc margin by itself, leaving
-// exact refinement with no inter-block cut.  Sixteen keeps each chunk
-// independently preflightable while the fragment planner remains free to
-// group adjacent cheap chunks into one compiled function.
-const MAX_OPTIMIZING_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT: usize = 16;
-const MAX_REGION_BLOCK_ESTIMATED_CLIF_BLOCKS: usize = 192;
 // A baseline frame exit validates/releases every materialized lifecycle owner.
 // Each owner can introduce a kind test plus guarded validate/commit branches,
 // so counting only the PHP terminator made cleanup-heavy return blocks appear
@@ -51,24 +33,8 @@ const MAX_REGION_BLOCK_ESTIMATED_CLIF_BLOCKS: usize = 192;
 // instruction, not an additional runtime helper or operation fallback.
 const ESTIMATED_FRAME_EXIT_CLIF_BLOCKS_PER_LOCAL: usize = 8;
 
-fn maximum_region_block_instructions(
-    tier: crate::region_ir::NativeCompilerTier,
-    _block: &RegionBlock,
-) -> usize {
-    if tier == crate::region_ir::NativeCompilerTier::Baseline {
-        // Baseline lowering may expand calls, ownership, references, locals,
-        // and typed control into substantially more CLIF than the cheap
-        // source estimate predicts. Region chunks are only potential exact
-        // preflight cut points: the fragment planner still groups cheap
-        // adjacent chunks, so this bound does not force a native transition.
-        MAX_BASELINE_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
-    } else {
-        MAX_OPTIMIZING_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
-    }
-}
-
 fn estimated_instruction_clif_blocks(instruction: &crate::region_ir::RegionInstruction) -> usize {
-    let manifest = baseline_instruction_lowering(&instruction.source_kind);
+    let manifest = generic_instruction_lowering(&instruction.source_kind);
     let operation_cost = match &instruction.kind {
         // The generic call trampoline allocates argument and call frames,
         // branches on the call result, and releases both frames on the normal
@@ -78,7 +44,7 @@ fn estimated_instruction_clif_blocks(instruction: &crate::region_ir::RegionInstr
         // order of magnitude.
         crate::region_ir::RegionInstructionKind::NativeCall(call) => 12_usize
             .saturating_add(call.operands.len())
-            .min(BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS),
+            .min(NATIVE_FRAGMENT_HARD_MAX_ESTIMATED_CLIF_BLOCKS),
         // Locals and value copies may carry reference, ownership, and
         // lifecycle guards even when the source instruction is not itself a
         // safepoint. Account for those continuation blocks up front so exact
@@ -141,244 +107,6 @@ fn estimated_instruction_clif_blocks(instruction: &crate::region_ir::RegionInstr
     operation_cost.saturating_add(continuation_state_cost)
 }
 
-fn region_block_instruction_ranges(
-    block: &RegionBlock,
-    maximum_instructions: usize,
-    forced_boundaries: Option<&BTreeSet<usize>>,
-) -> Vec<(usize, usize)> {
-    if block.instructions.is_empty() {
-        return vec![(0, 0)];
-    }
-    if !region_block_requires_split(block, maximum_instructions)
-        && forced_boundaries.is_none_or(BTreeSet::is_empty)
-    {
-        return vec![(0, block.instructions.len())];
-    }
-
-    let mut ranges = Vec::new();
-    let mut start = 0_usize;
-    let mut estimated_blocks = 1_usize;
-    // Balance count-driven chunks instead of leaving a tiny tail. Exact
-    // preflight can then bisect a previously underestimated Region block at
-    // a useful boundary rather than peeling off an almost-empty fragment.
-    let count_chunks = block.instructions.len().div_ceil(maximum_instructions);
-    let balanced_instruction_limit = block.instructions.len().div_ceil(count_chunks.max(1));
-    let terminator_cost = estimated_terminator_clif_blocks(block);
-    let isolate_terminator = terminator_cost > MAX_REGION_BLOCK_ESTIMATED_CLIF_BLOCKS;
-    for (index, instruction) in block.instructions.iter().enumerate() {
-        let instruction_cost = estimated_instruction_clif_blocks(instruction).saturating_add(
-            usize::from(!isolate_terminator && index + 1 == block.instructions.len())
-                .saturating_mul(terminator_cost),
-        );
-        let instruction_count = index.saturating_sub(start);
-        if index > start
-            && (forced_boundaries.is_some_and(|boundaries| boundaries.contains(&index))
-                || instruction_count >= balanced_instruction_limit
-                || estimated_blocks.saturating_add(instruction_cost)
-                    > MAX_REGION_BLOCK_ESTIMATED_CLIF_BLOCKS)
-        {
-            ranges.push((start, index));
-            start = index;
-            estimated_blocks = 1;
-        }
-        estimated_blocks = estimated_blocks.saturating_add(instruction_cost);
-    }
-    ranges.push((start, block.instructions.len()));
-    if isolate_terminator {
-        // A terminator is a real structural cut opportunity even when its
-        // source block has only one instruction. Materialize an empty final
-        // Region block so exact preflight can place ownership-heavy
-        // Return/Exit cleanup in its own compiled baseline continuation.
-        ranges.push((block.instructions.len(), block.instructions.len()));
-    }
-    ranges
-}
-
-pub(super) fn split_oversized_region_blocks(region: RegionGraph) -> RegionGraph {
-    split_region_blocks_at_boundaries(region, &BTreeMap::new())
-}
-
-pub(super) fn split_region_blocks_at_boundaries(
-    mut region: RegionGraph,
-    forced_boundaries: &BTreeMap<BlockId, BTreeSet<usize>>,
-) -> RegionGraph {
-    if region.blocks.iter().all(|block| {
-        !region_block_requires_split(
-            block,
-            maximum_region_block_instructions(region.compile_metadata.tier, block),
-        ) && forced_boundaries
-            .get(&block.id)
-            .is_none_or(BTreeSet::is_empty)
-    }) {
-        return region;
-    }
-
-    let mut next_block = 0_u32;
-    let chunk_ids = region
-        .blocks
-        .iter()
-        .map(|block| {
-            let maximum_instructions =
-                maximum_region_block_instructions(region.compile_metadata.tier, block);
-            let chunks = region_block_instruction_ranges(
-                block,
-                maximum_instructions,
-                forced_boundaries.get(&block.id),
-            )
-            .len();
-            (0..chunks)
-                .map(|_| {
-                    let id = BlockId::new(next_block);
-                    next_block = next_block.saturating_add(1);
-                    id
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let first_block = chunk_ids
-        .iter()
-        .enumerate()
-        .map(|(index, chunks)| (BlockId::new(index as u32), chunks[0]))
-        .collect::<BTreeMap<_, _>>();
-    let mut next_continuation = region
-        .blocks
-        .iter()
-        .flat_map(|block| {
-            block
-                .instructions
-                .iter()
-                .map(|instruction| instruction.continuation_id)
-                .chain(std::iter::once(block.terminator_continuation_id))
-        })
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let mut instruction_owner = BTreeMap::<(BlockId, InstrId), BlockId>::new();
-    let mut blocks = Vec::with_capacity(next_block as usize);
-
-    for (old_index, block) in region.blocks.iter().enumerate() {
-        let old_id = BlockId::new(old_index as u32);
-        let maximum_instructions =
-            maximum_region_block_instructions(region.compile_metadata.tier, block);
-        let ranges = region_block_instruction_ranges(
-            block,
-            maximum_instructions,
-            forced_boundaries.get(&old_id),
-        );
-        for (chunk_index, (start, end)) in ranges.into_iter().enumerate() {
-            let id = chunk_ids[old_index][chunk_index];
-            let instructions = block.instructions[start..end].to_vec();
-            for instruction in &instructions {
-                instruction_owner.insert((old_id, instruction.id), id);
-            }
-            let is_last = chunk_index + 1 == chunk_ids[old_index].len();
-            let entry_live_locals = if chunk_index == 0 {
-                block.entry_live_locals.clone()
-            } else if start == block.instructions.len() {
-                block.terminator_live_locals.clone()
-            } else {
-                instructions
-                    .first()
-                    .map(|instruction| instruction.live_locals.clone())
-                    .unwrap_or_default()
-            };
-            let entry_state_locals = if chunk_index == 0 {
-                block.entry_state_locals.clone()
-            } else if start == block.instructions.len() {
-                block.terminator_state_locals.clone()
-            } else {
-                entry_live_locals.clone()
-            };
-            let (
-                source_terminator,
-                terminator,
-                terminator_span,
-                continuation,
-                live,
-                live_registers,
-                state,
-            ) = if is_last {
-                (
-                    remap_source_terminator(&block.source_terminator, &first_block),
-                    remap_region_terminator(&block.terminator, &first_block),
-                    block.terminator_span,
-                    block.terminator_continuation_id,
-                    block.terminator_live_locals.clone(),
-                    block.terminator_live_registers.clone(),
-                    block.terminator_state_locals.clone(),
-                )
-            } else {
-                let target = chunk_ids[old_index][chunk_index + 1];
-                let (next_live, next_state) = if end == block.instructions.len() {
-                    (
-                        block.terminator_live_locals.clone(),
-                        block.terminator_state_locals.clone(),
-                    )
-                } else {
-                    let live = block.instructions[end].live_locals.clone();
-                    (live.clone(), live)
-                };
-                let continuation = next_continuation;
-                next_continuation = next_continuation.saturating_add(1);
-                (
-                    TerminatorKind::Jump { target },
-                    RegionTerminator::Jump { target },
-                    instructions
-                        .last()
-                        .map_or(block.terminator_span, |instruction| instruction.span),
-                    continuation,
-                    next_live.clone(),
-                    None,
-                    next_state,
-                )
-            };
-            blocks.push(RegionBlock {
-                id,
-                source_block: old_id,
-                entry_continuation_id: if start == 0 {
-                    block.entry_continuation_id
-                } else if start == block.instructions.len() {
-                    block.terminator_continuation_id
-                } else {
-                    block.instructions[start].continuation_id
-                },
-                entry_live_locals,
-                entry_state_locals,
-                instructions,
-                terminator_span,
-                terminator_continuation_id: continuation,
-                terminator_live_locals: live,
-                terminator_live_registers: live_registers,
-                terminator_state_locals: state,
-                source_terminator,
-                terminator,
-            });
-        }
-    }
-
-    for exception in &mut region.exception_regions {
-        exception.block = instruction_owner
-            .get(&(exception.block, exception.instruction))
-            .copied()
-            .unwrap_or_else(|| first_block[&exception.block]);
-        exception.protected_blocks = exception
-            .protected_blocks
-            .iter()
-            .flat_map(|block| chunk_ids[block.index()].iter().copied())
-            .collect();
-        exception.catch = exception.catch.map(|block| first_block[&block]);
-        exception.finally = exception.finally.map(|block| first_block[&block]);
-        exception.after = first_block[&exception.after];
-    }
-    region.blocks = blocks;
-    region
-}
-
-fn region_block_requires_split(block: &RegionBlock, maximum_instructions: usize) -> bool {
-    block.instructions.len() > maximum_instructions
-        || estimated_region_block_clif_blocks(block) > MAX_REGION_BLOCK_ESTIMATED_CLIF_BLOCKS
-}
-
 fn estimated_region_block_clif_blocks(block: &RegionBlock) -> usize {
     let estimate = 1_usize
         .saturating_add(
@@ -398,7 +126,7 @@ fn estimated_region_block_clif_blocks(block: &RegionBlock) -> usize {
         // one invalid mega-fragment.
         // Fragment accounting adds its synthetic entry block after summing
         // member blocks, so reserve that final slot here.
-        estimate.min(BASELINE_SINGLE_BLOCK_MAX_ESTIMATED_CLIF_BLOCKS.saturating_sub(1))
+        estimate.min(NATIVE_SINGLE_BLOCK_HARD_MAX_ESTIMATED_CLIF_BLOCKS.saturating_sub(1))
     } else {
         estimate
     }
@@ -520,7 +248,7 @@ fn block_planning_cost(block: &RegionBlock) -> FragmentPlanningCost {
             .instructions
             .iter()
             .filter(|instruction| {
-                baseline_instruction_lowering(&instruction.source_kind).requires_safepoint
+                generic_instruction_lowering(&instruction.source_kind).requires_safepoint
             })
             .map(|instruction| instruction.live_locals.len())
             .sum(),
@@ -539,16 +267,17 @@ impl FragmentPlanningCost {
     }
 
     fn is_within_budget(self) -> bool {
-        self.blocks <= BASELINE_FRAGMENT_MAX_PHP_BLOCKS
-            && (self.instructions <= BASELINE_FRAGMENT_MAX_IR_INSTRUCTIONS
+        self.blocks <= NATIVE_FRAGMENT_HARD_MAX_PHP_BLOCKS
+            && (self.instructions <= NATIVE_FRAGMENT_HARD_MAX_IR_INSTRUCTIONS
                 || (self.blocks == 1
-                    && self.instructions <= BASELINE_SINGLE_BLOCK_MAX_IR_INSTRUCTIONS))
-            && (self.clif_blocks.saturating_add(1) <= BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS
+                    && self.instructions <= NATIVE_SINGLE_BLOCK_HARD_MAX_IR_INSTRUCTIONS))
+            && (self.clif_blocks.saturating_add(1)
+                <= NATIVE_FRAGMENT_HARD_MAX_ESTIMATED_CLIF_BLOCKS
                 || (self.blocks == 1
                     && self.clif_blocks.saturating_add(1)
-                        <= BASELINE_SINGLE_BLOCK_MAX_ESTIMATED_CLIF_BLOCKS))
-            && self.maximum_live_set <= BASELINE_FRAGMENT_MAX_ESTIMATED_LIVE_SET
-            && self.safepoint_live_sum <= BASELINE_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM
+                        <= NATIVE_SINGLE_BLOCK_HARD_MAX_ESTIMATED_CLIF_BLOCKS))
+            && self.maximum_live_set <= NATIVE_FRAGMENT_HARD_MAX_ESTIMATED_LIVE_SET
+            && self.safepoint_live_sum <= NATIVE_FRAGMENT_HARD_MAX_SAFEPOINT_LIVE_SUM
     }
 }
 
@@ -679,92 +408,6 @@ fn cost_aware_fragment_blocks(region: &RegionGraph) -> Vec<Vec<BlockId>> {
     groups
 }
 
-fn remap_source_terminator(
-    terminator: &TerminatorKind,
-    blocks: &BTreeMap<BlockId, BlockId>,
-) -> TerminatorKind {
-    match terminator {
-        TerminatorKind::Jump { target } => TerminatorKind::Jump {
-            target: blocks[target],
-        },
-        TerminatorKind::JumpIfFalse { condition, target } => TerminatorKind::JumpIfFalse {
-            condition: *condition,
-            target: blocks[target],
-        },
-        TerminatorKind::JumpIfTrue { condition, target } => TerminatorKind::JumpIfTrue {
-            condition: *condition,
-            target: blocks[target],
-        },
-        TerminatorKind::JumpIf {
-            condition,
-            if_true,
-            if_false,
-        } => TerminatorKind::JumpIf {
-            condition: *condition,
-            if_true: blocks[if_true],
-            if_false: blocks[if_false],
-        },
-        TerminatorKind::Return {
-            value,
-            by_ref_local,
-        } => TerminatorKind::Return {
-            value: *value,
-            by_ref_local: *by_ref_local,
-        },
-        TerminatorKind::Exit { value } => TerminatorKind::Exit { value: *value },
-    }
-}
-
-fn remap_region_terminator(
-    terminator: &RegionTerminator,
-    blocks: &BTreeMap<BlockId, BlockId>,
-) -> RegionTerminator {
-    match terminator {
-        RegionTerminator::Jump { target } => RegionTerminator::Jump {
-            target: blocks[target],
-        },
-        RegionTerminator::JumpIfFalse {
-            condition,
-            target,
-            fallthrough,
-        } => RegionTerminator::JumpIfFalse {
-            condition: *condition,
-            target: blocks[target],
-            fallthrough: blocks[fallthrough],
-        },
-        RegionTerminator::JumpIfTrue {
-            condition,
-            target,
-            fallthrough,
-        } => RegionTerminator::JumpIfTrue {
-            condition: *condition,
-            target: blocks[target],
-            fallthrough: blocks[fallthrough],
-        },
-        RegionTerminator::JumpIf {
-            condition,
-            if_true,
-            if_false,
-        } => RegionTerminator::JumpIf {
-            condition: *condition,
-            if_true: blocks[if_true],
-            if_false: blocks[if_false],
-        },
-        RegionTerminator::Return { value, finally } => RegionTerminator::Return {
-            value: *value,
-            finally: finally.map(|block| blocks[&block]),
-        },
-        RegionTerminator::ReturnReference { local, finally } => RegionTerminator::ReturnReference {
-            local: *local,
-            finally: finally.map(|block| blocks[&block]),
-        },
-        RegionTerminator::Exit { value, finally } => RegionTerminator::Exit {
-            value: *value,
-            finally: finally.map(|block| blocks[&block]),
-        },
-    }
-}
-
 /// One bounded internal native fragment of a single PHP function.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeFragmentPlan {
@@ -779,16 +422,16 @@ pub struct NativeFragmentPlan {
 impl NativeFragmentPlan {
     #[must_use]
     pub fn is_within_budget(&self) -> bool {
-        self.blocks.len() <= BASELINE_FRAGMENT_MAX_PHP_BLOCKS
-            && (self.ir_instructions <= BASELINE_FRAGMENT_MAX_IR_INSTRUCTIONS
+        self.blocks.len() <= NATIVE_FRAGMENT_HARD_MAX_PHP_BLOCKS
+            && (self.ir_instructions <= NATIVE_FRAGMENT_HARD_MAX_IR_INSTRUCTIONS
                 || (self.blocks.len() == 1
-                    && self.ir_instructions <= BASELINE_SINGLE_BLOCK_MAX_IR_INSTRUCTIONS))
-            && (self.estimated_clif_blocks <= BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS
+                    && self.ir_instructions <= NATIVE_SINGLE_BLOCK_HARD_MAX_IR_INSTRUCTIONS))
+            && (self.estimated_clif_blocks <= NATIVE_FRAGMENT_HARD_MAX_ESTIMATED_CLIF_BLOCKS
                 || (self.blocks.len() == 1
                     && self.estimated_clif_blocks
-                        <= BASELINE_SINGLE_BLOCK_MAX_ESTIMATED_CLIF_BLOCKS))
-            && self.maximum_estimated_live_set <= BASELINE_FRAGMENT_MAX_ESTIMATED_LIVE_SET
-            && self.safepoint_live_set_sum <= BASELINE_FRAGMENT_MAX_SAFEPOINT_LIVE_SUM
+                        <= NATIVE_SINGLE_BLOCK_HARD_MAX_ESTIMATED_CLIF_BLOCKS))
+            && self.maximum_estimated_live_set <= NATIVE_FRAGMENT_HARD_MAX_ESTIMATED_LIVE_SET
+            && self.safepoint_live_set_sum <= NATIVE_FRAGMENT_HARD_MAX_SAFEPOINT_LIVE_SUM
     }
 }
 
@@ -906,7 +549,7 @@ impl NativeCompilePlan {
             let start = group.first()?.index();
             let end = group.last()?.index().checked_add(1)?;
             let cut = (start + 1..end).min_by_key(|cut| {
-                let left_cost = fragment_boundary_cost(
+                let left_boundary_cost = fragment_boundary_cost(
                     region,
                     &successors,
                     &live_in,
@@ -914,7 +557,7 @@ impl NativeCompilePlan {
                     start,
                     *cut,
                 );
-                let right_cost = fragment_boundary_cost(
+                let right_boundary_cost = fragment_boundary_cost(
                     region,
                     &successors,
                     &live_in,
@@ -922,12 +565,39 @@ impl NativeCompilePlan {
                     *cut,
                     end,
                 );
-                let balance = cut.saturating_sub(start).abs_diff(end.saturating_sub(*cut));
+                let left = fragment_plan_for_blocks(
+                    region,
+                    0,
+                    region.blocks[start..*cut]
+                        .iter()
+                        .map(|block| block.id)
+                        .collect(),
+                );
+                let right = fragment_plan_for_blocks(
+                    region,
+                    0,
+                    region.blocks[*cut..end]
+                        .iter()
+                        .map(|block| block.id)
+                        .collect(),
+                );
+                let clif_balance = left
+                    .estimated_clif_blocks
+                    .abs_diff(right.estimated_clif_blocks);
+                let instruction_balance = left.ir_instructions.abs_diff(right.ir_instructions);
                 // Exact recovery must make structural progress first. Giving
                 // frame traffic priority can repeatedly peel off one cheap
                 // block while leaving nearly the complete oversized CLIF
-                // graph intact, forcing another full lowering round.
-                (balance, left_cost.saturating_add(right_cost), *cut)
+                // graph intact, forcing another full lowering round. Balance
+                // the planner's backend-expansion estimate rather than raw
+                // block count; call and exception blocks have very different
+                // generated costs.
+                (
+                    clif_balance,
+                    instruction_balance,
+                    left_boundary_cost.saturating_add(right_boundary_cost),
+                    *cut,
+                )
             })?;
             let offset = cut.saturating_sub(start);
             let right = replacement[split_position].split_off(offset);
@@ -946,11 +616,11 @@ impl NativeCompilePlan {
             .enumerate()
             .map(|(id, blocks)| fragment_plan_for_blocks(region, id, blocks))
             .collect();
-        refined
-            .fragments
-            .iter()
-            .all(NativeFragmentPlan::is_within_budget)
-            .then_some(refined)
+        // This path is driven by exact finished-CLIF measurement. The source
+        // estimator must not veto the measured natural partition or replace
+        // it with arbitrary instruction chunks; the caller immediately
+        // preflights every child against the real backend ceilings.
+        Some(refined)
     }
 
     /// Builds the mandatory plan for one already verified Region graph.
@@ -965,7 +635,7 @@ impl NativeCompilePlan {
             .iter()
             .copied()
             .filter(|instruction| {
-                baseline_instruction_lowering(&instruction.source_kind).requires_safepoint
+                generic_instruction_lowering(&instruction.source_kind).requires_safepoint
             })
             .collect::<Vec<_>>();
         let safepoint_live_set_sum = safepoints
@@ -983,7 +653,7 @@ impl NativeCompilePlan {
             .max()
             .unwrap_or(0)
             .max(region.params.len());
-        // The baseline admission plan only needs a conservative phi-cost
+        // The function-scoped admission plan only needs a conservative phi-cost
         // estimate. Building full dominator/frontier SSA here made every cold
         // function pay optimizing-tier analysis before fragmentation. Every
         // materialized local at a multi-predecessor block is a safe upper
@@ -1054,24 +724,14 @@ impl NativeCompilePlan {
             .saturating_add(resume_dispatch_points.saturating_mul(2))
             .saturating_add(estimated_helper_branches.saturating_mul(2))
             .saturating_add(4);
-        let whole_region_optimizing = region.compile_metadata.tier
-            == crate::region_ir::NativeCompilerTier::Optimizing
-            && region.blocks.len() <= OPTIMIZING_REGION_MAX_PHP_BLOCKS
-            && instructions.len() <= OPTIMIZING_REGION_MAX_IR_INSTRUCTIONS
-            && region.register_count as usize <= OPTIMIZING_REGION_MAX_VIRTUAL_VALUES;
-        let fragments = if whole_region_optimizing {
-            vec![fragment_plan_for_blocks(
-                region,
-                0,
-                region.blocks.iter().map(|block| block.id).collect(),
-            )]
-        } else {
-            cost_aware_fragment_blocks(region)
-                .into_iter()
-                .enumerate()
-                .map(|(id, blocks)| fragment_plan_for_blocks(region, id, blocks))
-                .collect()
-        };
+        // A plan always begins as one complete PHP machine function. Only an
+        // exact finished-CLIF hard-limit result may call
+        // `for_bounded_fragments` or `refine_fragment_into` later.
+        let fragments = vec![fragment_plan_for_blocks(
+            region,
+            0,
+            region.blocks.iter().map(|block| block.id).collect(),
+        )];
 
         Self {
             function: region.function,
@@ -1114,10 +774,8 @@ fn fragment_plan_for_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::region_ir::{BaselineRegionBuilder, CompileMetadata, NativeCompilerTier};
-    use php_ir::{
-        BinaryOp, FunctionFlags, InstructionKind, IrBuilder, IrSpan, LocalId, Operand, UnitId,
-    };
+    use crate::region_ir::{CompileMetadata, GenericRegionBuilder, NativeCompilerTier};
+    use php_ir::{FunctionFlags, IrBuilder, IrSpan, UnitId};
 
     #[test]
     fn compile_plan_contains_exactly_the_requested_function() {
@@ -1130,12 +788,12 @@ mod tests {
             builder.terminate_return(function, block, None, span);
         }
         let unit = builder.finish();
-        let region = BaselineRegionBuilder::build(
+        let region = GenericRegionBuilder::build(
             &unit,
             FunctionId::new(1),
             &CompileMetadata {
                 ir_fingerprint: "plan-test".to_owned(),
-                tier: NativeCompilerTier::Baseline,
+                tier: NativeCompilerTier::Generic,
                 helper_abi_hash: 0,
                 target_cpu: "test".to_owned(),
                 semantic_config_hash: 0,
@@ -1152,503 +810,5 @@ mod tests {
         assert_eq!(plan.fragments[0].blocks, vec![BlockId::new(0)]);
         assert!(plan.fragments[0].is_within_budget());
         assert!(plan.permits_whole_region_optimization());
-    }
-
-    #[test]
-    fn oversized_straight_line_block_is_split_before_planning() {
-        let mut builder = IrBuilder::new(UnitId::new(2));
-        let file = builder.add_file("straight-line.php");
-        let span = IrSpan::new(file, 0, 1);
-        let function = builder.start_function("straight_line", FunctionFlags::default(), span);
-        let block = builder.append_block(function);
-        let mut result = None;
-        for value in 0..1_601 {
-            let constant = builder.add_constant(php_ir::IrConstant::Int(value));
-            let register = builder.alloc_register(function);
-            builder.emit_load_const(function, block, register, constant, span);
-            result = Some(register);
-        }
-        builder.terminate_return(function, block, result.map(php_ir::Operand::Register), span);
-        let unit = builder.finish();
-        let region = BaselineRegionBuilder::build(
-            &unit,
-            function,
-            &CompileMetadata {
-                ir_fingerprint: "split-test".to_owned(),
-                tier: NativeCompilerTier::Baseline,
-                helper_abi_hash: 0,
-                target_cpu: "test".to_owned(),
-                semantic_config_hash: 0,
-                dependency_identity: "test".to_owned(),
-            },
-        )
-        .unwrap();
-        let region = split_oversized_region_blocks(region);
-        region.verify().unwrap();
-        assert_eq!(region.blocks.len(), 101);
-        assert!(region.blocks.iter().all(|block| {
-            block.instructions.len() <= MAX_BASELINE_REGION_BLOCK_INSTRUCTIONS_BEFORE_SPLIT
-        }));
-        let plan = NativeCompilePlan::for_region(&region);
-        assert_eq!(plan, NativeCompilePlan::for_region(&region));
-        assert!(
-            plan.fragments
-                .iter()
-                .all(NativeFragmentPlan::is_within_budget)
-        );
-        assert!(plan.fragments.iter().all(|fragment| {
-            fragment
-                .blocks
-                .windows(2)
-                .all(|blocks| blocks[1].raw() == blocks[0].raw().saturating_add(1))
-        }));
-        let mut coarse = plan.clone();
-        coarse.fragments = vec![fragment_plan_for_blocks(
-            &region,
-            0,
-            vec![region.blocks[0].id, region.blocks[1].id],
-        )];
-        let refined = coarse
-            .refine_fragment_into(&region, 0, 2)
-            .expect("multi-block fragment can be refined");
-        assert_eq!(
-            refined,
-            coarse
-                .refine_fragment_into(&region, 0, 2)
-                .expect("refinement is deterministic")
-        );
-        assert_eq!(refined.fragments.len(), 2);
-        assert!(
-            refined
-                .fragments
-                .iter()
-                .all(NativeFragmentPlan::is_within_budget)
-        );
-    }
-
-    #[test]
-    fn baseline_underestimated_block_keeps_a_balanced_exact_preflight_cut() {
-        let mut builder = IrBuilder::new(UnitId::new(5));
-        let file = builder.add_file("balanced-preflight-cut.php");
-        let span = IrSpan::new(file, 0, 1);
-        let function =
-            builder.start_function("balanced_preflight_cut", FunctionFlags::default(), span);
-        let block = builder.append_block(function);
-        for value in 0..25 {
-            let constant = builder.add_constant(php_ir::IrConstant::Int(value));
-            let register = builder.alloc_register(function);
-            builder.emit_load_const(function, block, register, constant, span);
-        }
-        let call_result = builder.alloc_register(function);
-        builder.emit(
-            function,
-            block,
-            InstructionKind::CallFunction {
-                dst: call_result,
-                name: "runtime_call".to_owned(),
-                args: Vec::new(),
-            },
-            span,
-        );
-        builder.terminate_return(
-            function,
-            block,
-            Some(php_ir::Operand::Register(call_result)),
-            span,
-        );
-        let unit = builder.finish();
-        let region = BaselineRegionBuilder::build(
-            &unit,
-            function,
-            &CompileMetadata {
-                ir_fingerprint: "balanced-preflight-cut".to_owned(),
-                tier: NativeCompilerTier::Baseline,
-                helper_abi_hash: 0,
-                target_cpu: "test".to_owned(),
-                semantic_config_hash: 0,
-                dependency_identity: "test".to_owned(),
-            },
-        )
-        .unwrap();
-        let region = split_oversized_region_blocks(region);
-        region.verify().unwrap();
-
-        assert_eq!(region.blocks.len(), 2);
-        assert_eq!(
-            region
-                .blocks
-                .iter()
-                .map(|block| block.instructions.len())
-                .collect::<Vec<_>>(),
-            vec![13, 13]
-        );
-        let plan = NativeCompilePlan::for_region(&region);
-        let mut coarse = plan.clone();
-        coarse.fragments = vec![fragment_plan_for_blocks(
-            &region,
-            0,
-            region.blocks.iter().map(|block| block.id).collect(),
-        )];
-        assert!(
-            coarse.refine_fragment_into(&region, 0, 2).is_some(),
-            "exact preflight must be able to refine an underestimated source block"
-        );
-    }
-
-    #[test]
-    fn optimizing_straight_line_block_keeps_exact_preflight_cut_points() {
-        let mut builder = IrBuilder::new(UnitId::new(7));
-        let file = builder.add_file("optimizing-preflight-cut.php");
-        let span = IrSpan::new(file, 0, 1);
-        let function =
-            builder.start_function("optimizing_preflight_cut", FunctionFlags::default(), span);
-        let block = builder.append_block(function);
-        let mut result = None;
-        for value in 0..92 {
-            let constant = builder.add_constant(php_ir::IrConstant::Int(value));
-            let register = builder.alloc_register(function);
-            builder.emit_load_const(function, block, register, constant, span);
-            result = Some(register);
-        }
-        builder.terminate_return(function, block, result.map(php_ir::Operand::Register), span);
-        let unit = builder.finish();
-        let region = BaselineRegionBuilder::build(
-            &unit,
-            function,
-            &CompileMetadata {
-                ir_fingerprint: "optimizing-preflight-cut".to_owned(),
-                tier: NativeCompilerTier::Optimizing,
-                helper_abi_hash: 0,
-                target_cpu: "test".to_owned(),
-                semantic_config_hash: 0,
-                dependency_identity: "test".to_owned(),
-            },
-        )
-        .unwrap();
-        let region = split_oversized_region_blocks(region);
-        region.verify().unwrap();
-
-        assert_eq!(
-            region
-                .blocks
-                .iter()
-                .map(|block| block.instructions.len())
-                .collect::<Vec<_>>(),
-            vec![16, 16, 16, 16, 16, 12]
-        );
-        let plan = NativeCompilePlan::for_region(&region);
-        let mut coarse = plan.clone();
-        coarse.fragments = vec![fragment_plan_for_blocks(
-            &region,
-            0,
-            region.blocks.iter().map(|block| block.id).collect(),
-        )];
-        assert!(coarse.refine_fragment_into(&region, 0, 3).is_some());
-    }
-
-    #[test]
-    fn baseline_non_call_block_keeps_exact_preflight_cut_points() {
-        let mut builder = IrBuilder::new(UnitId::new(6));
-        let file = builder.add_file("baseline-non-call-preflight-cut.php");
-        let span = IrSpan::new(file, 0, 1);
-        let function = builder.start_function(
-            "baseline_non_call_preflight_cut",
-            FunctionFlags::default(),
-            span,
-        );
-        let block = builder.append_block(function);
-        let mut result = None;
-        for value in 0..28 {
-            let constant = builder.add_constant(php_ir::IrConstant::Int(value));
-            let register = builder.alloc_register(function);
-            builder.emit_load_const(function, block, register, constant, span);
-            result = Some(register);
-        }
-        builder.terminate_return(function, block, result.map(php_ir::Operand::Register), span);
-        let unit = builder.finish();
-        let region = BaselineRegionBuilder::build(
-            &unit,
-            function,
-            &CompileMetadata {
-                ir_fingerprint: "baseline-non-call-preflight-cut".to_owned(),
-                tier: NativeCompilerTier::Baseline,
-                helper_abi_hash: 0,
-                target_cpu: "test".to_owned(),
-                semantic_config_hash: 0,
-                dependency_identity: "test".to_owned(),
-            },
-        )
-        .unwrap();
-        let region = split_oversized_region_blocks(region);
-        region.verify().unwrap();
-
-        assert_eq!(
-            region
-                .blocks
-                .iter()
-                .map(|block| block.instructions.len())
-                .collect::<Vec<_>>(),
-            vec![14, 14]
-        );
-        let plan = NativeCompilePlan::for_region(&region);
-        let mut coarse = plan.clone();
-        coarse.fragments = vec![fragment_plan_for_blocks(
-            &region,
-            0,
-            region.blocks.iter().map(|block| block.id).collect(),
-        )];
-        assert!(coarse.refine_fragment_into(&region, 0, 2).is_some());
-    }
-
-    #[test]
-    fn cleanup_heavy_return_keeps_a_cut_before_its_final_value() {
-        let mut builder = IrBuilder::new(UnitId::new(8));
-        let file = builder.add_file("cleanup-heavy-return.php");
-        let span = IrSpan::new(file, 0, 1);
-        let function =
-            builder.start_function("cleanup_heavy_return", FunctionFlags::default(), span);
-        let block = builder.append_block(function);
-        for index in 0..126 {
-            builder.intern_local(function, format!("owner_{index}"));
-        }
-        let mut result = None;
-        for value in 0..2 {
-            let constant = builder.add_constant(php_ir::IrConstant::Int(value));
-            let register = builder.alloc_register(function);
-            builder.emit_load_const(function, block, register, constant, span);
-            result = Some(register);
-        }
-        builder.terminate_return(function, block, result.map(php_ir::Operand::Register), span);
-        let unit = builder.finish();
-        let mut region = BaselineRegionBuilder::build(
-            &unit,
-            function,
-            &CompileMetadata {
-                ir_fingerprint: "cleanup-heavy-return".to_owned(),
-                tier: NativeCompilerTier::Baseline,
-                helper_abi_hash: 0,
-                target_cpu: "test".to_owned(),
-                semantic_config_hash: 0,
-                dependency_identity: "test".to_owned(),
-            },
-        )
-        .unwrap();
-        let materialized = (0..126).map(LocalId::new).collect::<Vec<_>>();
-        region.blocks[0].terminator_live_locals = materialized.clone();
-        region.blocks[0].terminator_state_locals = materialized;
-
-        let region = split_oversized_region_blocks(region);
-        region.verify().unwrap();
-
-        assert_eq!(
-            region
-                .blocks
-                .iter()
-                .map(|block| block.instructions.len())
-                .collect::<Vec<_>>(),
-            vec![2, 0]
-        );
-        assert!(matches!(
-            region.blocks[0].terminator,
-            RegionTerminator::Jump { .. }
-        ));
-        assert!(matches!(
-            region.blocks[1].terminator,
-            RegionTerminator::Return { .. }
-        ));
-        assert_eq!(region.blocks[1].entry_live_locals.len(), 126);
-        assert_eq!(region.blocks[1].entry_state_locals.len(), 126);
-        assert!(
-            estimated_region_block_clif_blocks(&region.blocks[1])
-                <= BASELINE_SINGLE_BLOCK_MAX_ESTIMATED_CLIF_BLOCKS
-        );
-        assert_eq!(
-            estimated_region_block_clif_blocks(&region.blocks[1]),
-            BASELINE_SINGLE_BLOCK_MAX_ESTIMATED_CLIF_BLOCKS - 1
-        );
-        assert!(
-            NativeCompilePlan::for_region(&region)
-                .fragments
-                .iter()
-                .all(NativeFragmentPlan::is_within_budget)
-        );
-    }
-
-    #[test]
-    fn safepoint_state_breadth_creates_region_cut_points() {
-        let mut builder = IrBuilder::new(UnitId::new(9));
-        let file = builder.add_file("wide-safepoint-state.php");
-        let span = IrSpan::new(file, 0, 1);
-        let function =
-            builder.start_function("wide_safepoint_state", FunctionFlags::default(), span);
-        let block = builder.append_block(function);
-        for index in 0..41 {
-            builder.intern_local(function, format!("live_{index}"));
-        }
-        let left = builder.intern_constant(php_ir::IrConstant::Int(1));
-        let right = builder.intern_constant(php_ir::IrConstant::Int(2));
-        let mut result = None;
-        for index in 0..8 {
-            let sum = builder.alloc_register(function);
-            builder.emit(
-                function,
-                block,
-                InstructionKind::Binary {
-                    dst: sum,
-                    op: BinaryOp::Add,
-                    lhs: Operand::Constant(left),
-                    rhs: Operand::Constant(right),
-                },
-                span,
-            );
-            result = Some(sum);
-            if index != 7 {
-                let loaded = builder.alloc_register(function);
-                builder.emit_load_const(function, block, loaded, left, span);
-            }
-        }
-        builder.terminate_return(function, block, result.map(Operand::Register), span);
-        let unit = builder.finish();
-        let mut region = BaselineRegionBuilder::build(
-            &unit,
-            function,
-            &CompileMetadata {
-                ir_fingerprint: "wide-safepoint-state".to_owned(),
-                tier: NativeCompilerTier::Baseline,
-                helper_abi_hash: 0,
-                target_cpu: "test".to_owned(),
-                semantic_config_hash: 0,
-                dependency_identity: "test".to_owned(),
-            },
-        )
-        .unwrap();
-        let live = (0..41).map(LocalId::new).collect::<Vec<_>>();
-        for instruction in &mut region.blocks[0].instructions {
-            instruction.live_locals = live.clone();
-        }
-        assert_eq!(region.blocks[0].instructions.len(), 15);
-
-        let region = split_oversized_region_blocks(region);
-        region.verify().unwrap();
-
-        assert!(region.blocks.len() > 1);
-        assert!(
-            region
-                .blocks
-                .iter()
-                .all(|block| block.instructions.len() < 15)
-        );
-        assert!(
-            region
-                .blocks
-                .iter()
-                .all(|block| estimated_region_block_clif_blocks(block)
-                    <= BASELINE_SINGLE_BLOCK_MAX_ESTIMATED_CLIF_BLOCKS)
-        );
-        assert!(
-            NativeCompilePlan::for_region(&region)
-                .fragments
-                .iter()
-                .all(NativeFragmentPlan::is_within_budget)
-        );
-    }
-
-    #[test]
-    fn optimizing_plan_uses_its_own_whole_region_budget() {
-        let mut builder = IrBuilder::new(UnitId::new(4));
-        let file = builder.add_file("optimizing-plan.php");
-        let span = IrSpan::new(file, 0, 1);
-        let function = builder.start_function("optimizing_plan", FunctionFlags::default(), span);
-        let block = builder.append_block(function);
-        let mut result = None;
-        for value in 0..480 {
-            let constant = builder.add_constant(php_ir::IrConstant::Int(value));
-            let register = builder.alloc_register(function);
-            builder.emit_load_const(function, block, register, constant, span);
-            result = Some(register);
-        }
-        builder.terminate_return(function, block, result.map(php_ir::Operand::Register), span);
-        let unit = builder.finish();
-        let mut region = BaselineRegionBuilder::build(
-            &unit,
-            function,
-            &CompileMetadata {
-                ir_fingerprint: "optimizing-plan-test".to_owned(),
-                tier: NativeCompilerTier::Baseline,
-                helper_abi_hash: 0,
-                target_cpu: "test".to_owned(),
-                semantic_config_hash: 0,
-                dependency_identity: "test".to_owned(),
-            },
-        )
-        .unwrap();
-        region = split_oversized_region_blocks(region);
-
-        let baseline = NativeCompilePlan::for_region(&region);
-        assert!(baseline.fragments.len() > 1);
-
-        region.compile_metadata.tier = NativeCompilerTier::Optimizing;
-        let optimizing = NativeCompilePlan::for_region(&region);
-        assert_eq!(optimizing.fragments.len(), 1);
-        assert!(optimizing.permits_whole_region_optimization());
-        assert_eq!(optimizing.fragments[0].blocks.len(), region.blocks.len());
-    }
-
-    #[test]
-    fn call_dense_block_is_split_by_lowering_cost_before_cranelift() {
-        let mut builder = IrBuilder::new(UnitId::new(3));
-        let file = builder.add_file("call-dense.php");
-        let span = IrSpan::new(file, 0, 1);
-        let function = builder.start_function("call_dense", FunctionFlags::default(), span);
-        let block = builder.append_block(function);
-        for _ in 0..100 {
-            let result = builder.alloc_register(function);
-            builder.emit(
-                function,
-                block,
-                InstructionKind::CallFunction {
-                    dst: result,
-                    name: "runtime_call".to_owned(),
-                    args: Vec::new(),
-                },
-                span,
-            );
-            builder.emit(
-                function,
-                block,
-                InstructionKind::Discard {
-                    src: php_ir::Operand::Register(result),
-                },
-                span,
-            );
-        }
-        builder.terminate_return(function, block, None, span);
-        let unit = builder.finish();
-        let region = BaselineRegionBuilder::build(
-            &unit,
-            function,
-            &CompileMetadata {
-                ir_fingerprint: "call-cost-split-test".to_owned(),
-                tier: NativeCompilerTier::Baseline,
-                helper_abi_hash: 0,
-                target_cpu: "test".to_owned(),
-                semantic_config_hash: 0,
-                dependency_identity: "test".to_owned(),
-            },
-        )
-        .unwrap();
-        let region = split_oversized_region_blocks(region);
-        region.verify().unwrap();
-
-        assert!(region.blocks.len() > 1);
-        assert!(region.blocks.iter().all(|block| {
-            estimated_region_block_clif_blocks(block) <= BASELINE_FRAGMENT_MAX_ESTIMATED_CLIF_BLOCKS
-        }));
-        assert!(
-            NativeCompilePlan::for_region(&region)
-                .fragments
-                .iter()
-                .all(NativeFragmentPlan::is_within_budget)
-        );
     }
 }

@@ -1,5 +1,5 @@
-use super::baseline_native_builtins::format_native_php_diagnostic;
-use super::{dereference_native_callable_value, native_backtrace_frame};
+use super::cold_services::format_native_php_diagnostic;
+use super::native_backtrace_frame;
 
 #[test]
 #[allow(unsafe_code)]
@@ -18,7 +18,7 @@ fn fixed_callable_plan_publishes_walk_reference_and_return_contract() {
     let callback = builder.start_function("walk_callback", FunctionFlags::default(), span);
     for (index, by_ref, type_) in [
         (0, true, Some(IrReturnType::Int)),
-        (1, false, None),
+        (1, true, None),
         (2, false, Some(IrReturnType::Int)),
     ] {
         let local = builder.intern_local(callback, format!("argument_{index}"));
@@ -48,10 +48,11 @@ fn fixed_callable_plan_publishes_walk_reference_and_return_contract() {
     builder.register_function_name("walk_callback", callback);
 
     let compiled = crate::compiled_unit::CompiledUnit::new(builder.finish());
-    let plan = super::native_fixed_callable_plan(&compiled, callback, false)
+    let plan = crate::native_exact::native_fixed_callable_plan(&compiled, callback, false)
         .expect("walk callback has one fixed native contract");
     assert_eq!(plan.visible_arity, 3);
     assert!(plan.first_parameter_by_reference);
+    assert_eq!(plan.parameter_by_reference, [3, 0, 0, 0]);
     assert!(!plan.returns_int);
     assert!(plan.returns_string);
     assert!(plan.returns_releasable_scalar);
@@ -64,6 +65,7 @@ fn fixed_callable_plan_publishes_walk_reference_and_return_contract() {
             & php_jit::JIT_NATIVE_PREPARED_CALLABLE_FIRST_PARAMETER_BY_REFERENCE,
         0
     );
+    assert_eq!(owner.native_view.parameter_by_reference, [3, 0, 0, 0]);
     assert_ne!(
         owner.native_view.flags & php_jit::JIT_NATIVE_PREPARED_CALLABLE_RETURNS_RELEASABLE_SCALAR,
         0
@@ -97,6 +99,7 @@ fn fixed_callable_plan_publishes_walk_reference_and_return_contract() {
     let acquired = unsafe { &*(slot.aux as usize as *const super::NativePreparedCallableOwner) };
     assert_eq!(acquired.native_view.function_id, callback.raw());
     assert_eq!(acquired.native_view.reserved, 3);
+    assert_eq!(acquired.native_view.parameter_by_reference, [3, 0, 0, 0]);
     assert_ne!(
         acquired.native_view.flags
             & php_jit::JIT_NATIVE_PREPARED_CALLABLE_FIRST_PARAMETER_BY_REFERENCE,
@@ -109,6 +112,62 @@ fn fixed_callable_plan_publishes_walk_reference_and_return_contract() {
     );
     assert_ne!(
         acquired.native_view.flags & php_jit::JIT_NATIVE_PREPARED_CALLABLE_RETURNS_STRING,
+        0
+    );
+}
+
+#[test]
+fn fixed_callable_plan_publishes_reference_return_contract() {
+    use php_ir::builder::IrBuilder;
+    use php_ir::{FunctionFlags, IrParam, IrSpan, UnitId};
+
+    let mut builder = IrBuilder::new(UnitId::new(9_940));
+    let file = builder.add_file("native-reference-return-callable-plan.php");
+    let span = IrSpan::new(file, 0, 16);
+    let entry = builder.start_function("main", FunctionFlags::default(), span);
+    let entry_block = builder.append_block(entry);
+    builder.terminate_return(entry, entry_block, None, span);
+    builder.set_entry(entry);
+
+    let method = builder.start_function(
+        "ReferenceOwner::slot",
+        FunctionFlags {
+            is_method: true,
+            ..FunctionFlags::default()
+        },
+        span,
+    );
+    builder.set_returns_by_ref(method, true);
+    builder.intern_local(method, "this");
+    let value = builder.intern_local(method, "value");
+    builder.push_param(
+        method,
+        IrParam {
+            name: "value".to_owned(),
+            local: value,
+            required: true,
+            default: None,
+            type_: None,
+            by_ref: true,
+            variadic: false,
+            attributes: Vec::new(),
+        },
+    );
+    let block = builder.append_block(method);
+    builder.terminate_return_ref(method, block, value, span);
+
+    let compiled = crate::compiled_unit::CompiledUnit::new(builder.finish());
+    let plan = crate::native_exact::native_fixed_callable_plan(&compiled, method, true)
+        .expect("reference-return method has one fixed generated contract");
+    assert!(plan.returns_by_reference);
+    let owner = super::NativePreparedCallableOwner::bound_object(
+        php_jit::jit_encode_runtime_value(php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
+        Box::from(&b"slot"[..]),
+        None,
+        Some(plan),
+    );
+    assert_ne!(
+        owner.native_view.flags & php_jit::JIT_NATIVE_PREPARED_CALLABLE_RETURNS_REFERENCE,
         0
     );
 }
@@ -171,6 +230,385 @@ fn repeated_native_metadata_publication_keeps_current_exception_routes() {
 }
 
 #[test]
+fn native_class_ancestry_is_reused_until_the_symbol_epoch_changes() {
+    use php_ir::builder::IrBuilder;
+    use php_ir::{ClassFlags, FunctionFlags, IrSpan, UnitId};
+
+    let mut builder = IrBuilder::new(UnitId::new(9_941));
+    let file = builder.add_file("native-class-ancestry-cache.php");
+    let span = IrSpan::new(file, 0, 16);
+    let entry = builder.start_function("main", FunctionFlags::default(), span);
+    let block = builder.append_block(entry);
+    builder.terminate_return(entry, block, None, span);
+    builder.set_entry(entry);
+    for (name, parent) in [("base", None), ("child", Some("base"))] {
+        builder.push_class(php_ir::ClassEntry {
+            id: php_ir::ClassId::new(0),
+            name: name.to_owned(),
+            display_name: name.to_owned(),
+            parent: parent.map(str::to_owned),
+            parent_display_name: parent.map(str::to_owned),
+            interfaces: Vec::new(),
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: Vec::new(),
+            enum_cases: Vec::new(),
+            attributes: Vec::new(),
+            enum_backing_type: None,
+            constructor: None,
+            flags: ClassFlags::default(),
+            span,
+        });
+    }
+    let compiled = crate::compiled_unit::CompiledUnit::new(builder.finish());
+    let options = super::super::VmOptions::default();
+    let worker = super::super::VmWorkerState::default();
+    let mut context = super::NativeRequestOwner::new(
+        &compiled,
+        compiled.artifact_identity(),
+        &options,
+        &worker,
+        php_runtime::api::OutputBuffer::new(),
+        std::sync::Arc::new(std::collections::BTreeMap::new()),
+    );
+
+    context.runtime_class_ancestry_cache.borrow_mut().clear();
+    let initial_cache_entries = 0;
+    assert!(super::cold_publication::native_class_is_a(
+        &context, "Child", "Base"
+    ));
+    assert_eq!(
+        context.runtime_class_ancestry_cache.borrow().len(),
+        initial_cache_entries + 1
+    );
+    assert!(super::cold_publication::native_class_is_a(
+        &context, "Child", "Child"
+    ));
+    assert_eq!(
+        context.runtime_class_ancestry_cache.borrow().len(),
+        initial_cache_entries + 1
+    );
+
+    context.external_signature_epoch = context.external_signature_epoch.saturating_add(1);
+    assert!(super::cold_publication::native_class_is_a(
+        &context, "Child", "Base"
+    ));
+    assert_eq!(
+        context.runtime_class_ancestry_cache.borrow().len(),
+        initial_cache_entries + 2
+    );
+}
+
+#[test]
+fn dynamic_optimizer_rejects_unpublished_global_reference_plans() {
+    use php_ir::builder::IrBuilder;
+    use php_ir::{FunctionFlags, InstructionKind, IrSpan, UnitId};
+
+    let mut builder = IrBuilder::new(UnitId::new(9_965));
+    let file = builder.add_file("native-global-publication-contract.php");
+    let span = IrSpan::new(file, 0, 16);
+    let entry = builder.start_function("main", FunctionFlags::default(), span);
+    let global = builder.intern_local(entry, "published_global");
+    let block = builder.append_block(entry);
+    builder.emit(
+        entry,
+        block,
+        InstructionKind::BindGlobal {
+            local: global,
+            name: "published_global".to_owned(),
+        },
+        span,
+    );
+    builder.terminate_return(entry, block, None, span);
+    builder.set_entry(entry);
+
+    let compiled = crate::compiled_unit::CompiledUnit::new(builder.finish());
+    let runtime_state = super::NativeUnitRuntimeState::for_compiled(&compiled);
+    let mut package = super::NativeDynamicUnit {
+        compiled,
+        cross_unit_global_names: std::sync::Arc::from([]),
+        native_entries: std::sync::Arc::new(std::collections::BTreeMap::new()),
+        native_entry_signature_hashes: std::collections::BTreeMap::new(),
+        native_entry_signature_epochs: std::collections::BTreeMap::new(),
+        runtime_state,
+        linked_functions: Box::new([]),
+        published_runtime_view: Box::default(),
+    };
+
+    assert!(
+        !super::cold_dynamic_units::dynamic_function_global_plans_total(&package, entry),
+        "an empty publication slot must reject optimizer entry"
+    );
+
+    let instructions = package
+        .compiled
+        .prepared_continuation_instructions(entry)
+        .expect("global binding has continuation metadata");
+    let continuation = instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction.as_deref().map(|instruction| &instruction.kind),
+                Some(InstructionKind::BindGlobal { .. })
+            )
+        })
+        .expect("global binding continuation exists");
+    let base = package.runtime_state.trusted_property_function_offsets[entry.index()] as usize;
+    package.runtime_state.trusted_global_reference_slots[base + continuation] =
+        php_jit::JitNativeTrustedGlobalReferenceSlot {
+            encoded: php_jit::jit_encode_typed_runtime_value(
+                php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE,
+                php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG,
+            ),
+            reference_identity: 1,
+            state: php_jit::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED,
+            reserved: 0,
+            reserved_wide: 0,
+        };
+
+    assert!(
+        !super::cold_dynamic_units::dynamic_function_global_plans_total(&package, entry),
+        "an outer reference without a total payload fact must reject optimizer entry"
+    );
+
+    package.runtime_state.trusted_global_reference_slots[base + continuation].reserved =
+        php_jit::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PAYLOAD_TOTAL;
+    assert!(
+        super::cold_dynamic_units::dynamic_function_global_plans_total(&package, entry),
+        "a complete direct-reference plan admits optimizer entry"
+    );
+
+    let deployment = package.compiled.prepared_deployment_image();
+    deployment.generic_function_entries[entry.index()]
+        .store(0x1000, std::sync::atomic::Ordering::Release);
+    deployment.preferred_function_entries[entry.index()]
+        .store(0x2000, std::sync::atomic::Ordering::Release);
+    super::cold_dynamic_units::select_baseline_for_global_plan_functions(&package);
+    assert_eq!(
+        deployment.preferred_function_entries[entry.index()]
+            .load(std::sync::atomic::Ordering::Acquire),
+        0x1000,
+        "global identity changes must select baseline before region entry"
+    );
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn dynamic_constant_sites_follow_the_generated_runtime_view() {
+    use php_ir::builder::IrBuilder;
+    use php_ir::{FunctionFlags, IrSpan, UnitId};
+
+    let mut builder = IrBuilder::new(UnitId::new(9_966));
+    let file = builder.add_file("dynamic-constant-sites.php");
+    let span = IrSpan::new(file, 0, 16);
+    let entry = builder.start_function("main", FunctionFlags::default(), span);
+    let block = builder.append_block(entry);
+    builder.terminate_return(entry, block, None, span);
+    builder.set_entry(entry);
+    let compiled = crate::compiled_unit::CompiledUnit::new(builder.finish());
+    let mut runtime_state = super::NativeUnitRuntimeState::for_compiled(&compiled);
+    runtime_state
+        .trusted_dynamic_constant_sites
+        .insert("LATE_CONSTANT".to_owned(), vec![7, 11]);
+    let mut runtime_view = php_jit::JitNativeRuntimeView::default();
+    runtime_view.trusted_constant_slots = 0x1234;
+    let package = super::NativeDynamicUnit {
+        compiled: compiled.clone(),
+        cross_unit_global_names: std::sync::Arc::from([]),
+        native_entries: std::sync::Arc::new(std::collections::BTreeMap::new()),
+        native_entry_signature_hashes: std::collections::BTreeMap::new(),
+        native_entry_signature_epochs: std::collections::BTreeMap::new(),
+        runtime_state,
+        linked_functions: Box::new([]),
+        published_runtime_view: Box::new(runtime_view),
+    };
+    let options = super::super::VmOptions::default();
+    let worker = super::super::VmWorkerState::default();
+    let mut context = super::NativeRequestOwner::new(
+        &compiled,
+        compiled.artifact_identity(),
+        &options,
+        &worker,
+        php_runtime::api::OutputBuffer::new(),
+        std::sync::Arc::new(std::collections::BTreeMap::new()),
+    );
+    context.dynamic_units.push(package);
+    context
+        .trusted_dynamic_constant_sites
+        .insert("LATE_CONSTANT".to_owned(), vec![3]);
+    let capability = super::publish_native_symbol_query(&context);
+
+    let (sites, count) = capability.dynamic_constant_sites("LATE_CONSTANT", 0x1234);
+    assert_eq!(count, 2);
+    // SAFETY: the returned slice belongs to `context`, which remains live for
+    // the duration of this assertion.
+    let sites = unsafe { std::slice::from_raw_parts(sites, count) };
+    assert_eq!(sites, [7, 11]);
+
+    let (sites, count) = capability.dynamic_constant_sites("LATE_CONSTANT", 0x9999);
+    assert_eq!(count, 1);
+    // SAFETY: the fallback slice belongs to `context` above.
+    let sites = unsafe { std::slice::from_raw_parts(sites, count) };
+    assert_eq!(sites, [3]);
+}
+
+#[test]
+fn static_instanceof_plan_includes_canonical_internal_object_layouts() {
+    use php_ir::builder::IrBuilder;
+    use php_ir::{FunctionFlags, InstructionKind, IrConstant, IrSpan, Operand, UnitId};
+
+    let mut builder = IrBuilder::new(UnitId::new(9_966));
+    let file = builder.add_file("native-internal-instanceof-layout.php");
+    let span = IrSpan::new(file, 0, 16);
+    let entry = builder.start_function("main", FunctionFlags::default(), span);
+    let block = builder.append_block(entry);
+    let null = builder.intern_constant(IrConstant::Null);
+    let result = builder.alloc_register(entry);
+    builder.emit(
+        entry,
+        block,
+        InstructionKind::InstanceOf {
+            dst: result,
+            object: Operand::Constant(null),
+            class_name: "mysqli".to_owned(),
+        },
+        span,
+    );
+    builder.terminate_return(entry, block, Some(Operand::Register(result)), span);
+    builder.set_entry(entry);
+
+    let compiled = crate::compiled_unit::CompiledUnit::new(builder.finish());
+    let instructions = compiled
+        .prepared_continuation_instructions(entry)
+        .expect("instanceof continuation metadata");
+    let continuation = instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction.as_deref().map(|instruction| &instruction.kind),
+                Some(InstructionKind::InstanceOf { class_name, .. })
+                    if class_name.eq_ignore_ascii_case("mysqli")
+            )
+        })
+        .expect("mysqli instanceof continuation");
+    let options = super::super::VmOptions::default();
+    let worker = super::super::VmWorkerState::default();
+    let mut context = super::NativeRequestOwner::new(
+        &compiled,
+        compiled.artifact_identity(),
+        &options,
+        &worker,
+        php_runtime::api::OutputBuffer::new(),
+        std::sync::Arc::new(std::collections::BTreeMap::new()),
+    );
+    let mysqli_layout = context
+        .prepared_internal_class_layouts
+        .iter()
+        .cloned()
+        .into_iter()
+        .find_map(|(name, layout_id)| (name == "mysqli").then_some(layout_id))
+        .expect("canonical mysqli layout");
+
+    context.native_metadata_preparation_scope = Some(vec![entry]);
+    context.prepare_trusted_instanceof_plans();
+    context.native_metadata_preparation_scope = None;
+
+    let base = context.trusted_property_function_offsets[entry.index()] as usize;
+    let plan = context.trusted_instanceof_plans[base + continuation];
+    assert_eq!(
+        plan.state,
+        php_jit::JIT_NATIVE_INSTANCEOF_PLAN_PUBLISHED,
+        "static internal target must publish a total native table"
+    );
+    let mut bucket = php_jit::jit_native_instanceof_index(mysqli_layout, plan.mask);
+    for _ in 0..=plan.mask {
+        let candidate =
+            context.trusted_instanceof_entries[plan.entry_offset as usize + bucket as usize];
+        if candidate.layout_id == mysqli_layout {
+            assert_eq!(candidate.result, 1, "mysqli must match its own layout");
+            return;
+        }
+        assert_ne!(
+            candidate.layout_id, 0,
+            "canonical mysqli layout must not fall through to Generic"
+        );
+        bucket = bucket.wrapping_add(1) & plan.mask;
+    }
+    panic!("canonical mysqli layout missing from published instanceof table");
+}
+
+#[test]
+fn direct_reference_publication_rejects_uninitialized_and_unsupported_payloads() {
+    let direct = |index| {
+        php_jit::jit_encode_typed_runtime_value(
+            php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + index,
+            php_jit::JIT_VALUE_RUNTIME_REFERENCE_TAG,
+        )
+    };
+    let mut slots = vec![php_jit::JitNativeValueSlot::default(); 3];
+    slots[0] = php_jit::JitNativeValueSlot {
+        refcount: 1,
+        kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
+        flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+        reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
+        ..php_jit::JitNativeValueSlot::default()
+    };
+
+    assert!(
+        !super::native_reference_ownership::direct_reference_payload_is_total(&slots, direct(0)),
+        "a zero payload must not be interpreted as a direct runtime handle"
+    );
+
+    slots[0].payload = php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED) as u64;
+    assert!(
+        !super::native_reference_ownership::direct_reference_payload_is_total(&slots, direct(0)),
+        "an uninitialized reference payload must remain in baseline"
+    );
+
+    slots[0].payload = 42;
+    assert!(
+        super::native_reference_ownership::direct_reference_payload_is_total(&slots, direct(0)),
+        "a nonzero immediate integer payload is total"
+    );
+
+    slots[0].payload = php_jit::jit_encode_typed_runtime_value(
+        php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + 1,
+        php_jit::JIT_VALUE_RUNTIME_STRING_TAG,
+    ) as u64;
+    slots[1] = php_jit::JitNativeValueSlot {
+        refcount: 1,
+        kind: php_jit::JIT_NATIVE_VALUE_VIEW_ARRAY,
+        flags: php_jit::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
+        aux: 1,
+        ..php_jit::JitNativeValueSlot::default()
+    };
+    assert!(
+        !super::native_reference_ownership::direct_reference_payload_is_total(&slots, direct(0)),
+        "a runtime tag and direct descriptor kind mismatch must remain in baseline"
+    );
+
+    slots[1].kind = php_jit::JIT_NATIVE_VALUE_VIEW_STRING;
+    assert!(
+        super::native_reference_ownership::direct_reference_payload_is_total(&slots, direct(0)),
+        "a live direct string payload is total"
+    );
+
+    slots[1] = php_jit::JitNativeValueSlot {
+        refcount: 1,
+        kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR,
+        flags: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION,
+        reserved: php_jit::JIT_NATIVE_REFERENCE_SCALAR_VIEW_PUBLISHED,
+        payload: direct(0) as u64,
+        ..php_jit::JitNativeValueSlot::default()
+    };
+    slots[0].payload = direct(1) as u64;
+    assert!(
+        !super::native_reference_ownership::direct_reference_payload_is_total(&slots, direct(0)),
+        "cyclic direct-reference payloads must remain in baseline"
+    );
+}
+
+#[test]
 fn exact_execution_poll_uses_only_published_deadline_capability() {
     use php_ir::builder::IrBuilder;
     use php_ir::{FunctionFlags, IrSpan, UnitId};
@@ -203,7 +641,7 @@ fn exact_execution_poll_uses_only_published_deadline_capability() {
     let runtime = context.fast_state;
     let _activation = super::activate_native_context(&mut context);
 
-    let status = super::baseline_runtime_ops::jit_native_execution_poll_abi(runtime);
+    let status = super::native_call_contract::jit_native_execution_poll_abi(runtime);
 
     assert_eq!(status, php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32);
     assert_eq!(
@@ -351,7 +789,7 @@ fn exact_http_response_family_mutates_and_projects_only_native_request_state() {
 
     let missing = php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING);
     let first_result = crate::native_exact::exact_call_dispatch::jit_native_header_abi(
-        runtime, first, missing, missing,
+        runtime, first, missing, missing, missing, 0,
     );
     assert_eq!(first_result.status, php_jit::JitCallStatus::RETURN);
     assert_eq!(first_result.value, php_jit::jit_encode_constant(u32::MAX));
@@ -360,6 +798,8 @@ fn exact_http_response_family_mutates_and_projects_only_native_request_state() {
         second,
         php_jit::jit_encode_constant(php_jit::JIT_VALUE_FALSE),
         201,
+        missing,
+        0,
     );
     assert_eq!(second_result.status, php_jit::JitCallStatus::RETURN);
     assert_eq!(context.http_response.status_code, 201);
@@ -688,6 +1128,63 @@ fn transition_runtime_view_disambiguates_equal_cross_unit_function_ids() {
         target.unit,
         Some(linked_unit),
         "equal dense FunctionIds must not redirect a linked continuation into the caller unit"
+    );
+}
+
+#[test]
+fn fully_prepared_dynamic_unit_reactivation_reuses_its_publication_state() {
+    use php_ir::builder::IrBuilder;
+    use php_ir::{FunctionFlags, IrSpan, UnitId};
+
+    let compiled_unit = |unit_id, source: &str| {
+        let mut builder = IrBuilder::new(UnitId::new(unit_id));
+        let file = builder.add_file(source);
+        let span = IrSpan::new(file, 0, 16);
+        let entry = builder.start_function("main", FunctionFlags::default(), span);
+        let block = builder.append_block(entry);
+        builder.terminate_return(entry, block, None, span);
+        builder.set_entry(entry);
+        crate::compiled_unit::CompiledUnit::new(builder.finish())
+    };
+    let root = compiled_unit(9_948, "native-reactivation-root.php");
+    let linked = compiled_unit(9_949, "native-reactivation-linked.php");
+    let options = super::super::VmOptions::default();
+    let worker = super::super::VmWorkerState::default();
+    let mut context = super::NativeRequestOwner::new(
+        &root,
+        root.artifact_identity(),
+        &options,
+        &worker,
+        php_runtime::api::OutputBuffer::new(),
+        std::sync::Arc::new(std::collections::BTreeMap::new()),
+    );
+    let unit = super::cold_dynamic_units::register_native_dynamic_unit(
+        &mut context,
+        linked,
+        super::NativeIncludeExports::default(),
+    )
+    .expect("linked unit registration");
+    let sentinel = 0x5a5a_1234_u64;
+    let package = &mut context.dynamic_units[unit];
+    assert!(
+        package
+            .runtime_state
+            .prepared_native_metadata_functions
+            .contains(&package.compiled.unit().entry)
+    );
+    assert!(!package.runtime_state.trusted_exception_plans.is_empty());
+    package.runtime_state.trusted_exception_plans[0] = sentinel;
+
+    context
+        .with_active_dynamic_unit(unit, None, |_| ())
+        .expect("prepared unit reactivation");
+
+    assert_eq!(
+        context.dynamic_units[unit]
+            .runtime_state
+            .trusted_exception_plans[0],
+        sentinel,
+        "a binding-only reactivation must not rebuild already-current function plans"
     );
 }
 
@@ -1022,6 +1519,10 @@ fn object_cast_maps_authoritative_array_properties_and_preserves_identity() {
                 direct_object_owners: owners.as_mut_ptr() as usize as u64,
                 ..php_jit::JitNativeRuntimeView::default()
             },
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         ..super::NativeRequestFastState::default()
     };
@@ -1117,7 +1618,8 @@ fn dynamic_property_slot_resolver_reserves_one_stable_stdclass_tombstone() {
     slots[0] = php_jit::JitNativeValueSlot {
         refcount: 1,
         kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT,
-        flags: php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION,
+        flags: php_jit::JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION
+            | php_jit::JIT_NATIVE_OBJECT_ALLOWS_DYNAMIC_PROPERTIES,
         reserved: u32::try_from(declared_count).expect("declared count"),
         payload: layout_id,
         aux: declared_slots as usize as u64,
@@ -1143,6 +1645,10 @@ fn dynamic_property_slot_resolver_reserves_one_stable_stdclass_tombstone() {
                 direct_object_owners: owners.as_mut_ptr() as usize as u64,
                 ..php_jit::JitNativeRuntimeView::default()
             },
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         ..super::NativeRequestFastState::default()
     };
@@ -1191,6 +1697,18 @@ fn dynamic_property_slot_resolver_reserves_one_stable_stdclass_tombstone() {
         property_value,
     );
     assert_eq!(second.value, first.value);
+
+    let fixed_name = b"fixed_name";
+    let fixed = crate::native_exact::exact_runtime_ops::jit_native_named_dynamic_property_slot_abi(
+        std::ptr::from_mut(&mut fast_state),
+        object_value,
+        fixed_name.as_ptr() as usize as i64,
+        fixed_name.len() as i64,
+    );
+    assert_eq!(fixed.status, php_jit::JitCallStatus::RETURN);
+    let fixed_cell = fixed.value as usize as *mut php_runtime::api::NativeDeclaredPropertySlot;
+    assert!(!fixed_cell.is_null());
+    assert_eq!(unsafe { (*fixed_cell).initialized }, 0);
 }
 
 #[test]
@@ -1324,6 +1842,10 @@ fn dynamic_property_test_slot_rejects_unpublished_magic_and_visibility_shapes() 
                 direct_object_owners: owners.as_mut_ptr() as usize as u64,
                 ..php_jit::JitNativeRuntimeView::default()
             },
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         ..super::NativeRequestFastState::default()
     };
@@ -1363,7 +1885,8 @@ fn dynamic_property_test_slot_rejects_unpublished_magic_and_visibility_shapes() 
 
 #[test]
 fn native_http_build_query_reads_recursive_direct_arrays() {
-    let mut slots = vec![php_jit::JitNativeValueSlot::default(); 6];
+    let mut buffers = super::NativeRequestBuffers::default();
+    *buffers.direct_value_next = 6;
     let array_value = |index: u32| {
         php_jit::jit_encode_typed_runtime_value(
             php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE + index,
@@ -1380,7 +1903,7 @@ fn native_http_build_query_reads_recursive_direct_arrays() {
     let nested_key = b"nested key";
     let skipped_key = b"skip";
     for (index, bytes) in [(2, hello.as_slice()), (3, nested_key), (4, skipped_key)] {
-        slots[index] = php_jit::JitNativeValueSlot {
+        buffers.direct_value_slots[index] = php_jit::JitNativeValueSlot {
             refcount: 1,
             kind: php_jit::JIT_NATIVE_VALUE_VIEW_STRING,
             flags: php_jit::JIT_NATIVE_STRING_VIEW_ABI_VERSION,
@@ -1393,7 +1916,7 @@ fn native_http_build_query_reads_recursive_direct_arrays() {
         key: 1,
         value: php_jit::jit_encode_constant(php_jit::JIT_VALUE_TRUE),
     }];
-    slots[1] = php_jit::JitNativeValueSlot {
+    buffers.direct_value_slots[1] = php_jit::JitNativeValueSlot {
         refcount: 1,
         kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
         flags: php_jit::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION,
@@ -1415,7 +1938,7 @@ fn native_http_build_query_reads_recursive_direct_arrays() {
             value: php_jit::jit_encode_constant(u32::MAX),
         },
     ];
-    slots[0] = php_jit::JitNativeValueSlot {
+    buffers.direct_value_slots[0] = php_jit::JitNativeValueSlot {
         refcount: 1,
         kind: php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY,
         flags: php_jit::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION,
@@ -1430,9 +1953,28 @@ fn native_http_build_query_reads_recursive_direct_arrays() {
             runtime_view_pointer: 0,
             runtime_view: php_jit::JitNativeRuntimeView {
                 abi_version: php_jit::JIT_RUNTIME_ABI_VERSION,
-                direct_value_slots: slots.as_mut_ptr() as usize as u64,
+                direct_value_slots: buffers.direct_value_slots.as_mut_ptr() as usize as u64,
+                direct_value_next: std::ptr::from_mut(buffers.direct_value_next.as_mut()) as usize
+                    as u64,
+                direct_value_free_head: std::ptr::from_mut(buffers.direct_value_free_head.as_mut())
+                    as usize as u64,
+                direct_value_reused_bytes: std::ptr::from_mut(
+                    buffers.direct_value_reused_bytes.as_mut(),
+                ) as usize as u64,
+                direct_string_bytes: buffers.direct_string_bytes.as_mut_ptr() as usize as u64,
+                direct_string_next: std::ptr::from_mut(buffers.direct_string_next.as_mut()) as usize
+                    as u64,
+                direct_string_free_heads: buffers.direct_string_free_heads.as_mut_ptr() as usize
+                    as u64,
+                direct_string_reused_bytes: std::ptr::from_mut(
+                    buffers.direct_string_reused_bytes.as_mut(),
+                ) as usize as u64,
                 ..php_jit::JitNativeRuntimeView::default()
             },
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         ..super::NativeRequestFastState::default()
     };
@@ -1504,6 +2046,10 @@ fn exact_parse_str_publishes_keyed_native_array_through_direct_reference() {
             flags: 0,
             runtime_view_pointer: 0,
             runtime_view,
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         configuration: super::NativeConfigurationCapability {
             ini_registry: std::ptr::from_mut(&mut ini),
@@ -1740,7 +2286,7 @@ fn exact_string_rewrite_and_json_consume_authoritative_native_arrays() {
             .native_string_view(encoded.value)
             .expect("numeric-check json_encode publishes bytes")
     };
-    assert_eq!(encoded_bytes, b"1.0");
+    assert_eq!(encoded_bytes, b"1");
 
     let encoded = crate::native_exact::exact_call_dispatch::jit_native_json_encode_abi(
         runtime,
@@ -1942,6 +2488,10 @@ fn exact_serialization_roundtrip_never_materializes_the_value_plane() {
             flags: 0,
             runtime_view_pointer: 0,
             runtime_view,
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         configuration: super::NativeConfigurationCapability {
             ini_registry: std::ptr::from_mut(&mut ini),
@@ -2654,6 +3204,10 @@ fn exact_key_preserving_sorts_reorder_authoritative_entries_in_place() {
                 direct_value_slots: slots.as_mut_ptr() as usize as u64,
                 ..php_jit::JitNativeRuntimeView::default()
             },
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         ..super::NativeRequestFastState::default()
     };
@@ -2745,126 +3299,26 @@ fn exact_count_family_traverses_only_authoritative_direct_arrays() {
     let missing = php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING);
 
     let shallow =
-        crate::native_exact::exact_runtime_ops::jit_native_count_abi(runtime, array(0), missing);
+        crate::native_exact::exact_runtime_ops::jit_native_count_abi(runtime, array(0), missing, 0);
     assert_eq!(shallow.status, php_jit::JitCallStatus::RETURN);
     assert_eq!(shallow.value, 2);
 
     let recursive =
-        crate::native_exact::exact_runtime_ops::jit_native_sizeof_abi(runtime, array(0), 1);
+        crate::native_exact::exact_runtime_ops::jit_native_sizeof_abi(runtime, array(0), 1, 0);
     assert_eq!(recursive.status, php_jit::JitCallStatus::RETURN);
     assert_eq!(recursive.value, 5);
 
     let invalid_mode =
-        crate::native_exact::exact_runtime_ops::jit_native_count_abi(runtime, array(0), 2);
+        crate::native_exact::exact_runtime_ops::jit_native_count_abi(runtime, array(0), 2, 0);
     assert_eq!(invalid_mode.status, php_jit::JitCallStatus::ABI_MISMATCH);
-    let scalar = crate::native_exact::exact_runtime_ops::jit_native_count_abi(runtime, 42, missing);
+    let scalar =
+        crate::native_exact::exact_runtime_ops::jit_native_count_abi(runtime, 42, missing, 0);
     assert_eq!(scalar.status, php_jit::JitCallStatus::ABI_MISMATCH);
 
     nested_entries[0].value = array(0);
     let recursive_cycle =
-        crate::native_exact::exact_runtime_ops::jit_native_count_abi(runtime, array(0), 1);
+        crate::native_exact::exact_runtime_ops::jit_native_count_abi(runtime, array(0), 1, 0);
     assert_eq!(recursive_cycle.status, php_jit::JitCallStatus::ABI_MISMATCH);
-}
-
-#[test]
-fn baseline_count_scalar_failure_remains_typed_throw_control() {
-    use php_ir::builder::IrBuilder;
-    use php_ir::{FunctionFlags, IrSpan, UnitId};
-
-    let mut builder = IrBuilder::new(UnitId::new(9_955));
-    let file = builder.add_file("baseline-count-scalar.php");
-    let span = IrSpan::new(file, 0, 1);
-    let entry = builder.start_function("main", FunctionFlags::default(), span);
-    let block = builder.append_block(entry);
-    builder.terminate_return(entry, block, None, span);
-    builder.set_entry(entry);
-    let compiled = crate::compiled_unit::CompiledUnit::new(builder.finish());
-    let options = super::super::VmOptions::default();
-    let worker = super::super::VmWorkerState::default();
-    let mut context = super::NativeRequestOwner::new(
-        &compiled,
-        compiled.artifact_identity(),
-        &options,
-        &worker,
-        php_runtime::api::OutputBuffer::new(),
-        std::sync::Arc::new(std::collections::BTreeMap::new()),
-    );
-    let source = php_ir::Instruction {
-        id: php_ir::InstrId::new(0),
-        span,
-        kind: php_ir::InstructionKind::Nop,
-    };
-
-    let outcome = super::baseline_native_builtins::execute_baseline_native_builtin_control(
-        &mut context,
-        "sizeof",
-        &[42],
-        &source,
-        None,
-        None,
-    );
-    assert!(matches!(
-        outcome,
-        Err(super::NativeCallControl::Throw { ref class, .. }) if class == "TypeError"
-    ));
-
-    let sizeof_entry = php_runtime::api::BuiltinRegistry::new()
-        .get("sizeof")
-        .expect("sizeof builtin");
-    let prepared = crate::compiled_unit::PreparedNativeBuiltin::for_entry(sizeof_entry, 1, true);
-    let prepared_outcome = super::baseline_native_builtins::execute_baseline_native_builtin_control(
-        &mut context,
-        "sizeof",
-        &[42],
-        &source,
-        None,
-        Some(prepared),
-    );
-    assert!(matches!(
-        prepared_outcome,
-        Err(super::NativeCallControl::Throw { ref class, .. }) if class == "TypeError"
-    ));
-
-    let runtime = context.fast_state;
-    let _activation = super::activate_native_context(&mut context);
-    let mut out = php_jit::JitCallResult::default();
-    let status = super::baseline_call_dispatch::finish_native_dispatch_outcome(
-        runtime,
-        Some(outcome),
-        Some(span),
-        std::ptr::null_mut(),
-        std::ptr::from_mut(&mut out),
-    );
-    assert_eq!(status, php_jit::JitCallStatus::THROW.0 as i32);
-    assert_ne!(out.value.payload, 0);
-    assert!(super::baseline_call_support::native_catch_matches(
-        &mut context,
-        &["TypeError".to_owned()],
-        out.value.payload as i64,
-    ));
-
-    let mut direct_out = php_jit::JitCallResult::default();
-    let mut transition_state = php_jit::JitDeoptState::default();
-    let direct_status = super::baseline_call_dispatch::jit_baseline_native_builtin_dispatch_abi(
-        runtime,
-        sizeof_entry.dense_id(),
-        entry.raw(),
-        span.file.raw(),
-        span.start,
-        span.end,
-        [42_i64].as_ptr(),
-        1,
-        std::ptr::null(),
-        0,
-        std::ptr::from_mut(&mut transition_state),
-        std::ptr::from_mut(&mut direct_out),
-    );
-    assert_eq!(
-        direct_status,
-        php_jit::JitCallStatus::THROW.0 as i32,
-        "{direct_out:#?}"
-    );
-    assert_ne!(direct_out.value.payload, 0);
 }
 
 #[test]
@@ -2928,6 +3382,10 @@ fn exact_array_multisort_applies_one_permutation_to_all_native_arrays() {
                 direct_value_slots: slots.as_mut_ptr() as usize as u64,
                 ..php_jit::JitNativeRuntimeView::default()
             },
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         ..super::NativeRequestFastState::default()
     };
@@ -3155,13 +3613,13 @@ fn native_request_pool_reuses_only_reset_worker_owned_buffers() {
 #[test]
 fn nested_native_activation_restores_the_outer_fast_state_view() {
     let outer_view = php_jit::JitNativeRuntimeView {
-        trusted_function_entries: 0x1110,
-        trusted_function_entry_count: 30,
+        trusted_generic_function_entries: 0x1110,
+        trusted_generic_function_entry_count: 30,
         ..php_jit::JitNativeRuntimeView::default()
     };
     let inner_view = php_jit::JitNativeRuntimeView {
-        trusted_function_entries: 0x2220,
-        trusted_function_entry_count: 64,
+        trusted_generic_function_entries: 0x2220,
+        trusted_generic_function_entry_count: 64,
         ..php_jit::JitNativeRuntimeView::default()
     };
     let outer_header = php_jit::JitNativeFastStateHeader {
@@ -3169,6 +3627,10 @@ fn nested_native_activation_restores_the_outer_fast_state_view() {
         flags: 0,
         runtime_view_pointer: 0,
         runtime_view: outer_view,
+        trace_frames: 0,
+        trace_depth: 0,
+        trace_capacity: 0,
+        trace_reserved: 0,
     };
     let mut fast_state = super::NativeRequestFastState {
         header: outer_header,
@@ -3185,6 +3647,7 @@ fn nested_native_activation_restores_the_outer_fast_state_view() {
     let _outer_runtime_view = php_jit::activate_native_runtime_view(outer_view);
     fast_state.header.runtime_view = inner_view;
     super::ACTIVE_BASELINE_CONTEXT.with(|active| active.set(inner_cold));
+    let mut trace_depth = 0_u32;
 
     let inner = super::NativeRequestActivationGuard {
         _runtime_view: php_jit::activate_native_runtime_view(inner_view),
@@ -3192,16 +3655,24 @@ fn nested_native_activation_restores_the_outer_fast_state_view() {
         previous_header: outer_header,
         previous_execution_scope: std::ptr::null(),
         previous_baseline_context: outer_cold,
+        trace_depth: std::ptr::from_mut(&mut trace_depth),
+        previous_trace_depth: 0,
     };
     drop(inner);
 
     assert_eq!(
-        fast_state.header.runtime_view.trusted_function_entries,
-        outer_view.trusted_function_entries
+        fast_state
+            .header
+            .runtime_view
+            .trusted_generic_function_entries,
+        outer_view.trusted_generic_function_entries
     );
     assert_eq!(
-        fast_state.header.runtime_view.trusted_function_entry_count,
-        outer_view.trusted_function_entry_count
+        fast_state
+            .header
+            .runtime_view
+            .trusted_generic_function_entry_count,
+        outer_view.trusted_generic_function_entry_count
     );
     assert_eq!(
         super::ACTIVE_BASELINE_CONTEXT
@@ -3352,6 +3823,10 @@ fn exact_native_array_comparison_handlers_traverse_authoritative_entries() {
                 direct_value_slots: slots.as_mut_ptr() as usize as u64,
                 ..php_jit::JitNativeRuntimeView::default()
             },
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         ..super::NativeRequestFastState::default()
     };
@@ -3547,6 +4022,10 @@ fn exact_native_object_comparison_uses_identity_and_authoritative_slots() {
                 direct_object_owners: owners.as_mut_ptr() as usize as u64,
                 ..php_jit::JitNativeRuntimeView::default()
             },
+            trace_frames: 0,
+            trace_depth: 0,
+            trace_capacity: 0,
+            trace_reserved: 0,
         },
         ..super::NativeRequestFastState::default()
     };
@@ -3631,137 +4110,6 @@ fn exact_native_object_comparison_uses_identity_and_authoritative_slots() {
 }
 
 #[test]
-fn positional_builtin_arguments_do_not_require_rebinding() {
-    use php_ir::instruction::{IrCallArg, IrCallArgValueKind};
-
-    let argument = |name, unpack| IrCallArg {
-        name,
-        value: php_ir::Operand::Constant(php_ir::ConstId::new(0)),
-        unpack,
-        value_kind: IrCallArgValueKind::Direct,
-        by_ref_local: None,
-        by_ref_dim: None,
-        by_ref_property: None,
-        by_ref_property_dim: None,
-    };
-    let positional = [argument(None, false)];
-    let named = [argument(Some("value".to_owned()), false)];
-    let unpacked = [argument(None, true)];
-
-    assert!(!super::baseline_call_support::native_builtin_arguments_require_binding(None));
-    assert!(
-        !super::baseline_call_support::native_builtin_arguments_require_binding(Some(&positional))
-    );
-    assert!(super::baseline_call_support::native_builtin_arguments_require_binding(Some(&named)));
-    assert!(
-        super::baseline_call_support::native_builtin_arguments_require_binding(Some(&unpacked))
-    );
-}
-
-#[test]
-fn normalized_builtin_names_borrow_the_common_lowercase_form() {
-    use std::borrow::Cow;
-
-    assert!(matches!(
-        super::baseline_native_builtins::normalized_native_builtin_name("array_key_exists"),
-        Cow::Borrowed("array_key_exists")
-    ));
-    assert!(matches!(
-        super::baseline_native_builtins::normalized_native_builtin_name("\\strlen"),
-        Cow::Borrowed("strlen")
-    ));
-    assert_eq!(
-        super::baseline_native_builtins::normalized_native_builtin_name("StrLen"),
-        Cow::<str>::Owned("strlen".to_owned())
-    );
-}
-
-#[test]
-fn plain_local_fetch_fast_path_keeps_observable_values_on_the_slow_path() {
-    let null = php_jit::jit_encode_constant(u32::MAX);
-    let uninitialized = php_jit::jit_encode_constant(php_jit::JIT_VALUE_UNINITIALIZED);
-
-    assert_eq!(
-        super::baseline_runtime_ops::fast_plain_local_fetch(42, false),
-        Some(42)
-    );
-    assert_eq!(
-        super::baseline_runtime_ops::fast_plain_local_fetch(null, false),
-        Some(null)
-    );
-    assert_eq!(
-        super::baseline_runtime_ops::fast_plain_local_fetch(uninitialized, false),
-        None
-    );
-    assert_eq!(
-        super::baseline_runtime_ops::fast_plain_local_fetch(uninitialized, true),
-        Some(null)
-    );
-    assert_eq!(
-        super::baseline_runtime_ops::fast_plain_local_fetch(php_jit::jit_encode_constant(3), true),
-        None
-    );
-    assert_eq!(
-        super::baseline_runtime_ops::fast_plain_local_fetch(
-            php_jit::jit_encode_runtime_value(3),
-            true
-        ),
-        None
-    );
-}
-
-#[test]
-fn immediate_scalar_fast_paths_preserve_native_slot_encoding() {
-    use super::baseline_runtime_ops::{
-        fast_baseline_binary, fast_native_cast, fast_native_compare, fast_native_truthy,
-        fast_native_unary,
-    };
-
-    let null = php_jit::jit_encode_constant(u32::MAX);
-    let false_value = php_jit::jit_encode_constant(php_jit::JIT_VALUE_FALSE);
-    let true_value = php_jit::jit_encode_constant(php_jit::JIT_VALUE_TRUE);
-    let runtime = php_jit::jit_encode_runtime_value(7);
-
-    assert_eq!(fast_native_truthy(0), Some(false));
-    assert_eq!(fast_native_truthy(-7), Some(true));
-    assert_eq!(fast_native_truthy(null), Some(false));
-    assert_eq!(fast_native_truthy(true_value), Some(true));
-    assert_eq!(fast_native_truthy(runtime), None);
-
-    assert_eq!(fast_native_unary(1, 7), Some(-7));
-    assert_eq!(fast_native_unary(1, i64::MIN), None);
-    assert_eq!(fast_native_unary(2, false_value), Some(true_value));
-    assert_eq!(fast_baseline_binary(0, 20, 22), Some(42));
-    assert_eq!(fast_baseline_binary(0, i64::MAX, 1), None);
-    assert_eq!(fast_baseline_binary(0, 0x7ff0_ffff_ffff_ffff, 1), None);
-    assert_eq!(fast_native_unary(3, !0x7ff1_0000_0000_0000), None);
-    assert_eq!(fast_baseline_binary(3, 8, 2), Some(4));
-    assert_eq!(fast_baseline_binary(3, 7, 2), None);
-    assert_eq!(fast_baseline_binary(10, 1, -1), None);
-
-    assert_eq!(fast_native_compare(4, 2, 3), Some(true_value));
-    assert_eq!(fast_native_compare(8, 3, 2), Some(1));
-    assert_eq!(fast_native_compare(0, runtime, 1), None);
-    assert_eq!(fast_native_cast(0, 0), Some(false_value));
-    assert_eq!(fast_native_cast(1, true_value), Some(1));
-    assert_eq!(fast_native_cast(6, runtime), Some(null));
-}
-
-#[test]
-fn callable_resolution_dereferences_nested_php_references() {
-    let inner = php_runtime::api::ReferenceCell::new(php_runtime::api::Value::String(
-        php_runtime::api::PhpString::from_bytes(b"Fixture::run".to_vec()),
-    ));
-    let outer = php_runtime::api::ReferenceCell::new(php_runtime::api::Value::Reference(inner));
-    let value = dereference_native_callable_value(php_runtime::api::Value::Reference(outer));
-
-    assert!(matches!(
-        value,
-        php_runtime::api::Value::String(name) if name.as_bytes() == b"Fixture::run"
-    ));
-}
-
-#[test]
 fn native_php_diagnostics_match_cli_and_http_rendering() {
     let cli = format_native_php_diagnostic(
         "Deprecated",
@@ -3833,16 +4181,6 @@ fn native_backtrace_lines_use_the_retained_source_index() {
     assert_eq!(metadata.trace_line, 3);
 
     let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn direct_value_slots_keep_cold_iterator_state_out_of_line() {
-    let value_bytes = std::mem::size_of::<php_runtime::api::Value>();
-    let slot_bytes = std::mem::size_of::<super::NativeColdIterator>();
-    assert!(
-        slot_bytes <= value_bytes.saturating_add(std::mem::size_of::<usize>()),
-        "native value arena slot grew to {slot_bytes} bytes for a {value_bytes}-byte PHP value"
-    );
 }
 
 #[test]
@@ -3958,6 +4296,10 @@ fn exact_native_tree_has_a_compiler_enforced_cold_state_firewall() {
             include_str!("native/fast_state_impl.rs"),
         ),
         (
+            "native/capability_impl.rs",
+            include_str!("native/capability_impl.rs"),
+        ),
+        (
             "native/exact_call_dispatch.rs",
             include_str!("native/exact_call_dispatch.rs"),
         ),
@@ -3981,7 +4323,7 @@ fn exact_native_tree_has_a_compiler_enforced_cold_state_firewall() {
     for (name, source) in native_sources {
         for forbidden in [
             "NativeRequestColdState",
-            "baseline_value_plane",
+            "cold_value_plane",
             "decode_baseline_value",
             "encode_baseline_value",
             "use php_runtime::api::Value",
@@ -4006,11 +4348,16 @@ fn cold_request_state_is_physically_outside_the_common_native_abi_source() {
     let common = include_str!("../jit_abi.rs");
     let cold = include_str!("cold_request_state.rs");
     assert!(!common.contains("struct NativeRequestColdState"));
+    assert!(!common.contains("struct NativeRequestOwner"));
+    assert!(!common.contains("impl<'a> NativeRequestOwner"));
+    assert!(!common.contains("fn published("));
     assert!(cold.contains("struct NativeRequestColdState"));
+    assert!(cold.contains("struct NativeRequestOwner"));
+    assert!(cold.contains("impl<'a> NativeRequestOwner"));
     assert!(!cold.contains("php_runtime::api::Value"));
     assert!(!cold.contains("decode_baseline_value"));
     assert!(!cold.contains("encode_baseline_value"));
-    let value_plane = include_str!("baseline_value_plane.rs");
+    let value_plane = include_str!("cold_value_plane.rs");
     assert!(value_plane.contains("fn decode_baseline_value"));
     assert!(value_plane.contains("fn encode_baseline_value"));
 }

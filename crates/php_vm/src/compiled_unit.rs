@@ -17,7 +17,6 @@ use std::{
 };
 
 static NEXT_COMPILED_UNIT_CACHE_ID: AtomicU64 = AtomicU64::new(1);
-static PREPARED_BUILTIN_DEFINITIONS: OnceLock<Box<[PreparedBuiltinDefinition]>> = OnceLock::new();
 
 /// Authoritative IR unit handed to the native execution coordinator.
 #[derive(Clone)]
@@ -218,10 +217,12 @@ pub(crate) struct PreparedDeploymentNativeImage {
     /// code uses these records for literal string keys without decoding a
     /// Rust `Value` or allocating a request-local string handle.
     pub constant_views: Box<[php_jit::JitNativeConstantView]>,
+    pub function_contract_views: Box<[php_jit::JitNativeFunctionContractView]>,
+    _declared_function_contracts: Box<[PreparedNativeFunctionContracts]>,
     /// Dense baseline publication cells indexed by `FunctionId`. Generated
     /// code uses these only for an exact continuation after an optimizing
     /// callee side exit.
-    pub native_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
+    pub generic_function_entries: Box<[std::sync::atomic::AtomicUsize]>,
     /// Dense ordinary-call cells indexed by `FunctionId`. Every published
     /// baseline initializes its cell and an optimizing publication atomically
     /// replaces that target, so generated calls never select a tier.
@@ -235,7 +236,32 @@ pub(crate) struct PreparedDeploymentNativeImage {
     /// Process-stable direct baseline-entry counters indexed by `FunctionId`.
     /// Baseline CLIF updates these counters and the request-completion
     /// coordinator consumes them to select optimizing candidates.
-    pub baseline_function_entry_counts: Box<[std::sync::atomic::AtomicU64]>,
+    pub generic_function_entry_counts: Box<[std::sync::atomic::AtomicU64]>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedNativeParameterContract {
+    pub function_name: Arc<str>,
+    pub parameter_name: Arc<str>,
+    pub position: usize,
+    pub type_: php_ir::IrReturnType,
+    pub by_ref: bool,
+    pub span: IrSpan,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedNativeReturnContract {
+    pub function_name: Arc<str>,
+    pub type_: php_ir::IrReturnType,
+    pub returns_by_ref: bool,
+    pub span: IrSpan,
+}
+
+#[derive(Debug)]
+struct PreparedNativeFunctionContracts {
+    return_contract: Option<Box<PreparedNativeReturnContract>>,
+    parameter_contracts: Box<[Option<Box<PreparedNativeParameterContract>>]>,
+    parameter_contract_pointers: Box<[u64]>,
 }
 
 impl PreparedUnit {
@@ -285,7 +311,6 @@ pub(crate) enum PreparedClassValidation {
 struct PreparedExternalFunctionCalls {
     by_function: Box<[Box<[PreparedExternalFunctionCall]>]>,
     whole_unit: Box<[PreparedExternalFunctionCall]>,
-    method_link_indexes: BTreeMap<(FunctionId, php_ir::InstrId), u32>,
     linked_function_count: usize,
 }
 
@@ -311,6 +336,9 @@ pub(crate) struct PreparedExternalFunctionCall {
 pub(crate) struct PreparedNativeFunctionMetadata {
     pub name: Arc<str>,
     pub params: Arc<[php_ir::IrParam]>,
+    /// Immutable lexical-local names consumed by exact frame-projection
+    /// leaves such as compact() and get_defined_vars().
+    pub local_names: Arc<[String]>,
     pub span: IrSpan,
     pub trace_function: Arc<str>,
     pub trace_class: Option<Arc<str>>,
@@ -320,12 +348,13 @@ pub(crate) struct PreparedNativeFunctionMetadata {
     pub capture_count: usize,
     pub implicit_closure_this: bool,
     pub instance_method: bool,
+    pub native_binding_plan: php_jit::JitNativeFunctionBindingPlan,
+    _native_parameter_bindings: Box<[php_jit::JitNativeParameterBinding]>,
 }
 
 #[derive(Debug)]
 struct PreparedNativeFunctionIndexes {
     continuation_instructions: Arc<[Option<Arc<php_ir::Instruction>>]>,
-    callsites: Arc<[Option<Arc<NativeCallSiteDescriptor>>]>,
     property_sites: Arc<[Option<PreparedNativePropertySite>]>,
     closure_sites: Arc<[Option<Arc<PreparedNativeClosureSite>>]>,
     global_sites: Arc<[Option<Arc<str>>]>,
@@ -333,9 +362,13 @@ struct PreparedNativeFunctionIndexes {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedNativePropertySite {
-    pub class_index: u32,
+    pub class_index: Option<u32>,
     pub property: Arc<str>,
     pub required_state: u32,
+    pub dynamic_stdclass: bool,
+    /// The assigned SSA value is already an exact member of the declaration's
+    /// type and therefore needs neither coercion nor a runtime type lookup.
+    pub direct_typed_assignment: bool,
 }
 
 /// Immutable exact allocation metadata for one `MakeClosure` continuation.
@@ -355,332 +388,6 @@ pub(crate) struct PreparedNativeClosureSite {
     pub returns_int: bool,
     pub returns_string: bool,
     pub returns_releasable_scalar: bool,
-}
-
-/// Typed operation selected by one native callsite descriptor.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NativeCallSiteKind {
-    Function,
-    Method,
-    StaticMethod,
-    Closure,
-    Callable,
-    Pipe,
-    Constructor,
-    DynamicConstructor,
-    Semantic,
-}
-
-/// Immutable callsite metadata prepared once with the compiled unit.
-///
-/// Generated code passes the stable continuation ID. The runtime resolves it
-/// directly to this descriptor, so it never scans blocks or reconstructs an IR
-/// instruction on the request path. `semantic_instruction` is retained only as
-/// the typed semantic payload for operation helpers that have not yet split
-/// their source-location argument from their operation-specific metadata.
-#[derive(Debug)]
-pub(crate) struct NativeCallSiteDescriptor {
-    pub kind: NativeCallSiteKind,
-    pub span: IrSpan,
-    pub target_symbol: Option<Arc<str>>,
-    pub target_class: Option<Arc<str>>,
-    pub target_function: Option<FunctionId>,
-    /// Stable builtin entry resolved once with immutable callsite metadata.
-    /// Generated code and this immutable table are published together, so the
-    /// warm path needs neither a registry lookup nor redundant ID validation.
-    pub direct_builtin: Option<PreparedNativeBuiltin>,
-    pub arguments: Arc<[php_ir::instruction::IrCallArg]>,
-    pub argument_operand_offset: usize,
-    pub pic_slot: u64,
-    /// Immutable request-publication slot reserved for a monomorphic method
-    /// target owned by another compiled unit.
-    pub external_method_link_index: Option<u32>,
-    semantic_instruction: Arc<php_ir::Instruction>,
-    method_pic: PersistentNativeMethodPic,
-}
-
-/// Immutable builtin metadata resolved while preparing a native callsite.
-///
-/// Direct builtin calls use this record for dispatch and validation without
-/// repeating registry and generated-arginfo hash lookups on every invocation.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PreparedNativeBuiltin {
-    pub entry: php_runtime::api::BuiltinEntry,
-    pub metadata: Option<&'static php_std::generated::arginfo::GeneratedFunctionMetadata>,
-    pub type_info: Option<&'static php_std::arginfo::FunctionArgInfo>,
-    /// The immutable positional callsite was checked against the published
-    /// arginfo once. PHP-visible value/type checks still run where required,
-    /// but warm execution does not recount the same signature parameters.
-    pub fixed_arity_validated: bool,
-}
-
-#[derive(Clone, Copy)]
-struct PreparedBuiltinDefinition {
-    entry: php_runtime::api::BuiltinEntry,
-    metadata: Option<&'static php_std::generated::arginfo::GeneratedFunctionMetadata>,
-    type_info: Option<&'static php_std::arginfo::FunctionArgInfo>,
-}
-
-impl PreparedNativeBuiltin {
-    pub(crate) fn for_entry(
-        entry: php_runtime::api::BuiltinEntry,
-        argument_count: usize,
-        positional: bool,
-    ) -> Self {
-        let definition = prepared_builtin_definitions()
-            .get(entry.dense_id() as usize)
-            .copied()
-            .filter(|definition| definition.entry.dense_id() == entry.dense_id())
-            .expect("published builtin dense ID must resolve to its prepared definition");
-        Self::from_definition(definition, argument_count, positional)
-    }
-
-    pub(crate) fn for_dense_id(
-        dense_id: u32,
-        argument_count: usize,
-        positional: bool,
-    ) -> Option<Self> {
-        let definition = prepared_builtin_definitions()
-            .get(dense_id as usize)
-            .copied()?;
-        (definition.entry.dense_id() == dense_id)
-            .then(|| Self::from_definition(definition, argument_count, positional))
-    }
-
-    fn from_definition(
-        definition: PreparedBuiltinDefinition,
-        argument_count: usize,
-        positional: bool,
-    ) -> Self {
-        let PreparedBuiltinDefinition {
-            entry,
-            metadata,
-            type_info,
-        } = definition;
-        Self {
-            entry,
-            metadata,
-            type_info,
-            fixed_arity_validated: positional
-                && prepared_builtin_arity_is_valid(entry.name(), metadata, argument_count),
-        }
-    }
-}
-
-fn prepared_builtin_definitions() -> &'static [PreparedBuiltinDefinition] {
-    PREPARED_BUILTIN_DEFINITIONS.get_or_init(|| {
-        php_runtime::api::BuiltinRegistry::new()
-            .entries()
-            .iter()
-            .copied()
-            .map(|entry| {
-                let metadata = php_std::arginfo::function_metadata_indexed(entry.name());
-                let type_info = metadata
-                    .filter(|metadata| {
-                        matches!(metadata.extension, "hash" | "json" | "pcre" | "tokenizer")
-                            && !metadata.params.iter().any(|parameter| {
-                                parameter
-                                    .type_decl
-                                    .split('|')
-                                    .any(|atom| atom.trim() == "callable")
-                            })
-                    })
-                    .and_then(|_| php_std::arginfo::function_arginfo_indexed(entry.name()));
-                PreparedBuiltinDefinition {
-                    entry,
-                    metadata,
-                    type_info,
-                }
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-    })
-}
-
-impl NativeCallSiteDescriptor {
-    pub(crate) fn semantic_instruction(&self) -> &php_ir::Instruction {
-        self.semantic_instruction.as_ref()
-    }
-
-    pub(crate) fn lookup_method_pic(
-        &self,
-        receiver_class: &str,
-        method: &str,
-        class_layout_epoch: u64,
-        method_table_epoch: u64,
-    ) -> Option<(FunctionId, bool)> {
-        self.method_pic.lookup(
-            receiver_class,
-            method,
-            class_layout_epoch,
-            method_table_epoch,
-        )
-    }
-
-    pub(crate) fn install_method_pic(
-        &self,
-        receiver_class: &str,
-        method: &str,
-        class_layout_epoch: u64,
-        method_table_epoch: u64,
-        function: FunctionId,
-        is_static: bool,
-    ) -> bool {
-        self.method_pic.install(PersistentNativeMethodPicEntry {
-            receiver_class: Arc::from(receiver_class),
-            method: Arc::from(method),
-            class_layout_epoch,
-            method_table_epoch,
-            target: PersistentNativeMethodPicTarget::Local {
-                function,
-                is_static,
-            },
-        })
-    }
-
-    pub(crate) fn install_external_method_pic(
-        &self,
-        receiver_class: &str,
-        method: &str,
-        class_layout_epoch: u64,
-        method_table_epoch: u64,
-        signature: php_jit::JitExternalFunctionSignature,
-    ) -> bool {
-        self.method_pic.install(PersistentNativeMethodPicEntry {
-            receiver_class: Arc::from(receiver_class),
-            method: Arc::from(method),
-            class_layout_epoch,
-            method_table_epoch,
-            target: PersistentNativeMethodPicTarget::Linked(signature),
-        })
-    }
-}
-
-const PERSISTENT_NATIVE_METHOD_PIC_LIMIT: usize = 4;
-
-#[derive(Debug)]
-struct PersistentNativeMethodPicEntry {
-    receiver_class: Arc<str>,
-    method: Arc<str>,
-    class_layout_epoch: u64,
-    method_table_epoch: u64,
-    target: PersistentNativeMethodPicTarget,
-}
-
-#[derive(Debug, PartialEq)]
-enum PersistentNativeMethodPicTarget {
-    Local {
-        function: FunctionId,
-        is_static: bool,
-    },
-    Linked(php_jit::JitExternalFunctionSignature),
-}
-
-#[derive(Debug)]
-struct PersistentNativeMethodPic {
-    entries:
-        [std::sync::OnceLock<PersistentNativeMethodPicEntry>; PERSISTENT_NATIVE_METHOD_PIC_LIMIT],
-    megamorphic: std::sync::atomic::AtomicBool,
-}
-
-impl Default for PersistentNativeMethodPic {
-    fn default() -> Self {
-        Self {
-            entries: std::array::from_fn(|_| std::sync::OnceLock::new()),
-            megamorphic: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-}
-
-impl PersistentNativeMethodPic {
-    fn monomorphic(&self) -> Option<&PersistentNativeMethodPicEntry> {
-        if self.megamorphic.load(std::sync::atomic::Ordering::Acquire) {
-            return None;
-        }
-        let mut entries = self.entries.iter().filter_map(std::sync::OnceLock::get);
-        let entry = entries.next()?;
-        entries.next().is_none().then_some(entry)
-    }
-}
-
-impl PersistentNativeMethodPic {
-    fn matches(
-        entry: &PersistentNativeMethodPicEntry,
-        receiver_class: &str,
-        method: &str,
-        class_layout_epoch: u64,
-        method_table_epoch: u64,
-    ) -> bool {
-        entry.receiver_class.eq_ignore_ascii_case(receiver_class)
-            && entry.method.eq_ignore_ascii_case(method)
-            && entry.class_layout_epoch == class_layout_epoch
-            && entry.method_table_epoch == method_table_epoch
-    }
-
-    fn lookup(
-        &self,
-        receiver_class: &str,
-        method: &str,
-        class_layout_epoch: u64,
-        method_table_epoch: u64,
-    ) -> Option<(FunctionId, bool)> {
-        if self.megamorphic.load(std::sync::atomic::Ordering::Acquire) {
-            return None;
-        }
-        self.entries.iter().find_map(|entry| {
-            let entry = entry.get()?;
-            Self::matches(
-                entry,
-                receiver_class,
-                method,
-                class_layout_epoch,
-                method_table_epoch,
-            )
-            .then_some(match &entry.target {
-                PersistentNativeMethodPicTarget::Local {
-                    function,
-                    is_static,
-                } => Some((*function, *is_static)),
-                PersistentNativeMethodPicTarget::Linked(_) => None,
-            })
-            .flatten()
-        })
-    }
-
-    fn install(&self, mut candidate: PersistentNativeMethodPicEntry) -> bool {
-        if self.megamorphic.load(std::sync::atomic::Ordering::Acquire) {
-            return false;
-        }
-        loop {
-            for entry in &self.entries {
-                if let Some(entry) = entry.get()
-                    && Self::matches(
-                        entry,
-                        &candidate.receiver_class,
-                        &candidate.method,
-                        candidate.class_layout_epoch,
-                        candidate.method_table_epoch,
-                    )
-                {
-                    if entry.target == candidate.target {
-                        return true;
-                    }
-                    self.megamorphic
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    return false;
-                }
-            }
-            let Some(empty) = self.entries.iter().find(|entry| entry.get().is_none()) else {
-                self.megamorphic
-                    .store(true, std::sync::atomic::Ordering::Release);
-                return false;
-            };
-            match empty.set(candidate) {
-                Ok(()) => return true,
-                Err(returned) => candidate = returned,
-            }
-        }
-    }
 }
 
 /// Number of immutable preparation passes performed for a compiled unit.
@@ -730,6 +437,101 @@ impl CompiledUnit {
                     .entry(Arc::<str>::from(entry.name.to_ascii_lowercase()))
                     .or_insert(entry.function);
             }
+            let declared_function_contracts = unit
+                .functions
+                .iter()
+                .map(|function| {
+                    let is_generator = function.flags.is_generator
+                        || function.blocks.iter().any(|block| {
+                            block.instructions.iter().any(|instruction| {
+                                matches!(
+                                    instruction.kind,
+                                    php_ir::instruction::InstructionKind::Yield { .. }
+                                        | php_ir::instruction::InstructionKind::YieldFrom { .. }
+                                )
+                            })
+                        });
+                    let mut return_spans = function
+                        .blocks
+                        .iter()
+                        .filter_map(|block| block.terminator.as_ref())
+                        .filter_map(|terminator| {
+                            matches!(
+                                terminator.kind,
+                                php_ir::instruction::TerminatorKind::Return { .. }
+                            )
+                            .then_some(terminator.span)
+                        });
+                    let first_return_span = return_spans.next();
+                    let return_span = match (first_return_span, return_spans.next()) {
+                        (Some(span), None) => span,
+                        _ => function.span,
+                    };
+                    let return_contract = (!is_generator)
+                        .then(|| function.return_type.as_ref())
+                        .flatten()
+                        .map(|type_| {
+                            Box::new(PreparedNativeReturnContract {
+                                function_name: Arc::from(function.name.as_str()),
+                                type_: type_.clone(),
+                                returns_by_ref: function.returns_by_ref,
+                                span: return_span,
+                            })
+                        });
+                    let parameter_contracts = function
+                        .params
+                        .iter()
+                        .enumerate()
+                        .map(|(position, parameter)| {
+                            parameter.type_.as_ref().map(|type_| {
+                                Box::new(PreparedNativeParameterContract {
+                                    function_name: Arc::from(function.name.as_str()),
+                                    parameter_name: Arc::from(parameter.name.as_str()),
+                                    position,
+                                    type_: type_.clone(),
+                                    by_ref: parameter.by_ref,
+                                    span: function.span,
+                                })
+                            })
+                        })
+                        .collect::<Box<[_]>>();
+                    let parameter_contract_pointers = parameter_contracts
+                        .iter()
+                        .map(|contract| {
+                            contract
+                                .as_deref()
+                                .map_or(0, |contract| std::ptr::from_ref(contract) as usize as u64)
+                        })
+                        .collect();
+                    PreparedNativeFunctionContracts {
+                        return_contract,
+                        parameter_contracts,
+                        parameter_contract_pointers,
+                    }
+                })
+                .collect::<Box<[_]>>();
+            let function_contract_views = declared_function_contracts
+                .iter()
+                .enumerate()
+                .map(
+                    |(index, contracts)| php_jit::JitNativeFunctionContractView {
+                        return_contract: contracts
+                            .return_contract
+                            .as_deref()
+                            .map_or(0, |contract| std::ptr::from_ref(contract) as usize as u64),
+                        parameter_contracts: contracts.parameter_contract_pointers.as_ptr() as usize
+                            as u64,
+                        parameter_count: u32::try_from(contracts.parameter_contracts.len())
+                            .unwrap_or(u32::MAX),
+                        reserved: 0,
+                        trace_metadata: self
+                            .prepared_native_function_metadata_ptr(php_ir::FunctionId::new(
+                                u32::try_from(index).unwrap_or(u32::MAX),
+                            ))
+                            .map_or(0, |metadata| metadata as usize as u64),
+                    },
+                )
+                .collect();
             PreparedDeploymentNativeImage {
                 function_exports: Arc::new(function_exports),
                 exported_classes: Arc::new(
@@ -783,7 +585,9 @@ impl CompiledUnit {
                         _ => php_jit::JitNativeConstantView::default(),
                     })
                     .collect(),
-                native_function_entries: (0..unit.functions.len())
+                function_contract_views,
+                _declared_function_contracts: declared_function_contracts,
+                generic_function_entries: (0..unit.functions.len())
                     .map(|_| std::sync::atomic::AtomicUsize::new(0))
                     .collect(),
                 preferred_function_entries: (0..unit.functions.len())
@@ -792,7 +596,7 @@ impl CompiledUnit {
                 preferred_function_metadata: std::sync::RwLock::new(
                     (0..unit.functions.len()).map(|_| None).collect(),
                 ),
-                baseline_function_entry_counts: (0..unit.functions.len())
+                generic_function_entry_counts: (0..unit.functions.len())
                     .map(|_| std::sync::atomic::AtomicU64::new(0))
                     .collect(),
             }
@@ -1057,16 +861,19 @@ impl CompiledUnit {
                 .continuation_index_runs
                 .fetch_add(1, Ordering::Relaxed);
             let mut function_instructions = Vec::new();
-            let mut function_callsites = Vec::new();
             let mut function_property_sites = Vec::new();
             let mut function_closure_sites = Vec::new();
             let mut function_global_sites = Vec::new();
             let metadata = php_jit::region_ir::CompileMetadata::default();
-            if let Ok(region) = php_jit::region_ir::BaselineRegionBuilder::build(
+            if let Ok(region) = php_jit::region_ir::GenericRegionBuilder::build(
                 &self.inner.unit,
                 function,
                 &metadata,
             ) {
+                let value_flow = php_jit::region_ir::analyze_executable_value_flow(
+                    &region,
+                    &self.inner.unit.constants,
+                );
                 for block in &region.blocks {
                     for instruction in &block.instructions {
                             let semantic_instruction = Arc::new(php_ir::Instruction {
@@ -1087,26 +894,130 @@ impl CompiledUnit {
                                 function_global_sites[continuation] = Some(Arc::from(name));
                             }
                             let property_site = match &instruction.kind {
+                                php_jit::region_ir::RegionInstructionKind::NativeCall(call) => {
+                                    match &call.target {
+                                        php_jit::region_ir::RegionCallTarget::Semantic {
+                                            operation:
+                                                php_jit::region_ir::RegionSemanticOp::PropertyIsset {
+                                                    property: php_jit::region_ir::RegionPropertyName::FixedDynamic(property),
+                                                    ..
+                                                }
+                                                | php_jit::region_ir::RegionSemanticOp::PropertyEmpty {
+                                                    property: php_jit::region_ir::RegionPropertyName::FixedDynamic(property),
+                                                    ..
+                                                }
+                                                | php_jit::region_ir::RegionSemanticOp::PropertyDimIsset {
+                                                    property: php_jit::region_ir::RegionPropertyName::FixedDynamic(property),
+                                                    ..
+                                                }
+                                                | php_jit::region_ir::RegionSemanticOp::PropertyDimEmpty {
+                                                    property: php_jit::region_ir::RegionPropertyName::FixedDynamic(property),
+                                                    ..
+                                                },
+                                        } => Some(PreparedNativePropertySite {
+                                            class_index: None,
+                                            property: Arc::from(property.as_str()),
+                                            required_state: php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED,
+                                            dynamic_stdclass: true,
+                                            direct_typed_assignment: false,
+                                        }),
+                                        php_jit::region_ir::RegionCallTarget::Semantic {
+                                            operation:
+                                                php_jit::region_ir::RegionSemanticOp::PropertyUnset {
+                                                    property: php_jit::region_ir::RegionPropertyName::FixedDynamic(property),
+                                                    ..
+                                                }
+                                                | php_jit::region_ir::RegionSemanticOp::PropertyDimAssign {
+                                                    property: php_jit::region_ir::RegionPropertyName::FixedDynamic(property),
+                                                    ..
+                                                }
+                                                | php_jit::region_ir::RegionSemanticOp::PropertyDimUnset {
+                                                    property: php_jit::region_ir::RegionPropertyName::FixedDynamic(property),
+                                                    ..
+                                                },
+                                        } => Some(PreparedNativePropertySite {
+                                            class_index: None,
+                                            property: Arc::from(property.as_str()),
+                                            required_state: php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE,
+                                            dynamic_stdclass: true,
+                                            direct_typed_assignment: false,
+                                        }),
+                                        _ => None,
+                                    }
+                                }
+                                php_jit::region_ir::RegionInstructionKind::FetchProperty {
+                                    property,
+                                    dynamic_stdclass: true,
+                                    ..
+                                } => Some(PreparedNativePropertySite {
+                                    class_index: None,
+                                    property: Arc::from(property.as_str()),
+                                    required_state:
+                                        php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED,
+                                    dynamic_stdclass: true,
+                                    direct_typed_assignment: false,
+                                }),
                                 php_jit::region_ir::RegionInstructionKind::FetchProperty {
                                     property,
                                     prepared_class: Some(class_index),
                                     ..
                                 } => Some(PreparedNativePropertySite {
-                                    class_index: *class_index,
+                                    class_index: Some(*class_index),
                                     property: Arc::from(property.as_str()),
                                     required_state:
                                         php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED,
+                                    dynamic_stdclass: false,
+                                    direct_typed_assignment: false,
                                 }),
                                 php_jit::region_ir::RegionInstructionKind::AssignProperty {
                                     property,
-                                    prepared_class: Some(class_index),
+                                    dynamic_stdclass: true,
                                     ..
                                 } => Some(PreparedNativePropertySite {
-                                    class_index: *class_index,
+                                    class_index: None,
                                     property: Arc::from(property.as_str()),
                                     required_state:
                                         php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE,
+                                    dynamic_stdclass: true,
+                                    direct_typed_assignment: false,
                                 }),
+                                php_jit::region_ir::RegionInstructionKind::AssignProperty {
+                                    property,
+                                    value,
+                                    prepared_class: Some(class_index),
+                                    ..
+                                } => {
+                                    let direct_typed_assignment = self
+                                        .inner
+                                        .unit
+                                        .classes
+                                        .get(*class_index as usize)
+                                        .and_then(|class| {
+                                            class
+                                                .properties
+                                                .iter()
+                                                .rev()
+                                                .find(|entry| entry.name == *property)
+                                        })
+                                        .and_then(|entry| entry.type_.as_ref())
+                                        .is_some_and(|type_| {
+                                            php_jit::region_ir::generated_fact_satisfies_type(
+                                                value_flow.operand_fact(
+                                                    &self.inner.unit.constants,
+                                                    *value,
+                                                ),
+                                                type_,
+                                            )
+                                        });
+                                    Some(PreparedNativePropertySite {
+                                        class_index: Some(*class_index),
+                                        property: Arc::from(property.as_str()),
+                                        required_state:
+                                            php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE,
+                                        dynamic_stdclass: false,
+                                        direct_typed_assignment,
+                                    })
+                                }
                                 php_jit::region_ir::RegionInstructionKind::BindReferenceProperty {
                                     property,
                                     prepared_class: Some(class_index),
@@ -1122,10 +1033,12 @@ impl CompiledUnit {
                                     prepared_class: Some(class_index),
                                     ..
                                 } => Some(PreparedNativePropertySite {
-                                    class_index: *class_index,
+                                    class_index: Some(*class_index),
                                     property: Arc::from(property.as_str()),
                                     required_state:
                                         php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_REFERENCEABLE,
+                                    dynamic_stdclass: false,
+                                    direct_typed_assignment: false,
                                 }),
                                 php_jit::region_ir::RegionInstructionKind::BindReferenceIntoPropertyDim {
                                     property,
@@ -1137,10 +1050,12 @@ impl CompiledUnit {
                                     prepared_class: Some(class_index),
                                     ..
                                 } => Some(PreparedNativePropertySite {
-                                    class_index: *class_index,
+                                    class_index: Some(*class_index),
                                     property: Arc::from(property.as_str()),
                                     required_state:
                                         php_jit::JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE,
+                                    dynamic_stdclass: false,
+                                    direct_typed_assignment: false,
                                 }),
                                 _ => None,
                             };
@@ -1229,84 +1144,11 @@ impl CompiledUnit {
                                             .is_some_and(|plan| plan.returns_releasable_scalar),
                                     }));
                             }
-                            if let php_jit::region_ir::RegionInstructionKind::NativeCall(call) =
-                                &instruction.kind
-                            {
-                                let (kind, target_symbol, target_function) =
-                                    native_callsite_target(&call.target);
-                                let target_class = match &call.target {
-                                    php_jit::region_ir::RegionCallTarget::StaticMethod {
-                                        class_name,
-                                        ..
-                                    }
-                                    | php_jit::region_ir::RegionCallTarget::Constructor {
-                                        class_name,
-                                        ..
-                                    } => Some(Arc::from(class_name.as_str())),
-                                    _ => None,
-                                };
-                                let direct_builtin = if kind == NativeCallSiteKind::Function
-                                    && target_function.is_none()
-                                {
-                                    target_symbol.as_deref().and_then(|name| {
-                                        let normalized = name.trim_start_matches('\\');
-                                        (!normalized.contains('\\'))
-                                            .then(|| normalized.to_ascii_lowercase())
-                                            .and_then(|normalized| {
-                                                php_runtime::api::BuiltinRegistry::new()
-                                                    .get(&normalized)
-                                            })
-                                            .filter(|entry| entry.helper_id() != 0)
-                                            .map(|entry| {
-                                                PreparedNativeBuiltin::for_entry(
-                                                    entry,
-                                                    call.args.len(),
-                                                    call.args.iter().all(|argument| {
-                                                        argument.name.is_none() && !argument.unpack
-                                                    }),
-                                                )
-                                            })
-                                    })
-                                } else {
-                                    None
-                                };
-                                let pic_slot = (u64::from(function.raw()) << 32)
-                                    | u64::from(instruction.continuation_id);
-                                let external_method_link_index =
-                                    (kind == NativeCallSiteKind::Method)
-                                        .then(|| {
-                                            self.prepared_external_method_link_index(
-                                                function,
-                                                semantic_instruction.id,
-                                            )
-                                        })
-                                        .flatten();
-                                let continuation = instruction.continuation_id as usize;
-                                if function_callsites.len() <= continuation {
-                                    function_callsites.resize_with(continuation + 1, || None);
-                                }
-                                function_callsites[continuation] =
-                                    Some(Arc::new(NativeCallSiteDescriptor {
-                                        kind,
-                                        span: instruction.span,
-                                        target_symbol,
-                                        target_class,
-                                        target_function,
-                                        direct_builtin,
-                                        arguments: Arc::from(call.args.clone()),
-                                        argument_operand_offset: call.argument_operand_offset,
-                                        pic_slot,
-                                        external_method_link_index,
-                                        semantic_instruction,
-                                        method_pic: PersistentNativeMethodPic::default(),
-                                    }));
-                            }
                     }
                 }
             }
             Arc::new(PreparedNativeFunctionIndexes {
                 continuation_instructions: function_instructions.into(),
-                callsites: function_callsites.into(),
                 property_sites: function_property_sites.into(),
                 closure_sites: function_closure_sites.into(),
                 global_sites: function_global_sites.into(),
@@ -1324,70 +1166,11 @@ impl CompiledUnit {
 
     pub(crate) fn prepared_method_specializations(
         &self,
-        function: FunctionId,
+        _function: FunctionId,
     ) -> Vec<php_jit::JitMethodSpecialization> {
-        // Publication scans every declared function to refresh linked method
-        // records. Most declarations contain no instance callsite at all;
-        // consulting the immutable link-site index first prevents that scan
-        // from constructing continuation/RegionGraph-derived metadata for
-        // dormant functions.
-        if !self
-            .prepared_external_function_call_index()
-            .method_link_indexes
-            .keys()
-            .any(|(candidate, _)| *candidate == function)
-        {
-            return Vec::new();
-        }
-        let Some(indexes) = self.prepared_native_function_indexes(function) else {
-            return Vec::new();
-        };
-        indexes
-            .callsites
-            .iter()
-            .flatten()
-            .filter(|descriptor| descriptor.kind == NativeCallSiteKind::Method)
-            .filter_map(|descriptor| {
-                let entry = descriptor.method_pic.monomorphic()?;
-                if entry.class_layout_epoch == 0 {
-                    return None;
-                }
-                let target = match &entry.target {
-                    PersistentNativeMethodPicTarget::Local {
-                        function,
-                        is_static: false,
-                    } => {
-                        let target = self.unit().functions.get(function.index())?;
-                        if target.returns_by_ref {
-                            return None;
-                        }
-                        php_jit::JitMethodSpecializationTarget::Local(*function)
-                    }
-                    PersistentNativeMethodPicTarget::Linked(signature)
-                        if signature.published && !signature.returns_by_reference =>
-                    {
-                        php_jit::JitMethodSpecializationTarget::Linked(signature.clone())
-                    }
-                    PersistentNativeMethodPicTarget::Local {
-                        is_static: true, ..
-                    }
-                    | PersistentNativeMethodPicTarget::Linked(_) => return None,
-                };
-                Some(php_jit::JitMethodSpecialization {
-                    instruction_id: descriptor.semantic_instruction.id.raw(),
-                    receiver_layout_id: entry.class_layout_epoch,
-                    target,
-                })
-            })
-            .collect()
-    }
-
-    pub(crate) fn prepared_native_callsites(
-        &self,
-        function: FunctionId,
-    ) -> Option<Arc<[Option<Arc<NativeCallSiteDescriptor>>]>> {
-        self.prepared_native_function_indexes(function)
-            .map(|indexes| Arc::clone(&indexes.callsites))
+        // Call identities no longer vary by receiver-layout feedback. Stable
+        // generated entry cells own method dispatch and publication instead.
+        Vec::new()
     }
 
     pub(crate) fn prepared_native_property_sites(
@@ -1452,15 +1235,12 @@ impl CompiledUnit {
                 }
             };
             let mut whole_unit = BTreeMap::<String, String>::new();
-            let mut method_sites = Vec::new();
             let by_function = self
                 .inner
                 .unit
                 .functions
                 .iter()
-                .enumerate()
-                .map(|(function_index, function)| {
-                    let function_id = u32::try_from(function_index).ok().map(FunctionId::new);
+                .map(|function| {
                     let mut calls = BTreeMap::<String, String>::new();
                     let mut external_object_registers = BTreeMap::<php_ir::RegId, String>::new();
                     let mut external_object_locals = BTreeMap::<php_ir::LocalId, String>::new();
@@ -1550,19 +1330,12 @@ impl CompiledUnit {
                                     _ => None,
                                 };
                                 let Some(class) = class else {
-                                    if let Some(function_id) = function_id {
-                                        method_sites.push(((function_id, instruction.id), None));
-                                    }
                                     continue;
                                 };
                                 let source_name = format!("{class}::{method}");
                                 let normalized = source_name.to_ascii_lowercase();
                                 calls.insert(normalized.clone(), source_name.clone());
                                 whole_unit.insert(normalized.clone(), source_name);
-                                if let Some(function_id) = function_id {
-                                    method_sites
-                                        .push(((function_id, instruction.id), Some(normalized)));
-                                }
                             }
                             php_ir::InstructionKind::CallStaticMethod {
                                 class_name,
@@ -1630,44 +1403,13 @@ impl CompiledUnit {
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice();
-            let method_link_indexes = method_sites
-                .into_iter()
-                .scan(0_usize, |dynamic_offset, (site, normalized)| {
-                    let index = normalized
-                        .as_deref()
-                        .and_then(|normalized| link_indexes.get(normalized).copied())
-                        .or_else(|| {
-                            let index = whole_unit.len().checked_add(*dynamic_offset)?;
-                            *dynamic_offset = (*dynamic_offset).saturating_add(1);
-                            u32::try_from(index).ok()
-                        });
-                    Some(index.map(|index| (site, index)))
-                })
-                .flatten()
-                .collect::<BTreeMap<_, _>>();
-            let dynamic_method_links = method_link_indexes
-                .values()
-                .filter(|index| **index as usize >= whole_unit.len())
-                .count();
-            let linked_function_count = whole_unit.len().saturating_add(dynamic_method_links);
+            let linked_function_count = whole_unit.len();
             PreparedExternalFunctionCalls {
                 by_function,
                 whole_unit: whole_unit.into_boxed_slice(),
-                method_link_indexes,
                 linked_function_count,
             }
         })
-    }
-
-    fn prepared_external_method_link_index(
-        &self,
-        function: FunctionId,
-        instruction: php_ir::InstrId,
-    ) -> Option<u32> {
-        self.prepared_external_function_call_index()
-            .method_link_indexes
-            .get(&(function, instruction))
-            .copied()
     }
 
     pub(crate) fn prepared_external_function_calls(
@@ -1732,9 +1474,60 @@ impl CompiledUnit {
                             .map_or((None, None), |(class, call_type)| {
                                 (Some(Arc::clone(class)), Some(*call_type))
                             });
+                        let native_parameter_bindings = function
+                            .params
+                            .iter()
+                            .map(|parameter| {
+                                let mut flags = 0;
+                                if parameter.by_ref {
+                                    flags |= php_jit::JIT_NATIVE_PARAMETER_BINDING_BY_REFERENCE;
+                                }
+                                if parameter.variadic {
+                                    flags |= php_jit::JIT_NATIVE_PARAMETER_BINDING_VARIADIC;
+                                }
+                                if parameter.default.is_some() {
+                                    flags |= php_jit::JIT_NATIVE_PARAMETER_BINDING_HAS_DEFAULT;
+                                }
+                                php_jit::JitNativeParameterBinding {
+                                    name_bytes: parameter.name.as_ptr() as usize as u64,
+                                    name_length: u32::try_from(parameter.name.len())
+                                        .unwrap_or(u32::MAX),
+                                    flags,
+                                    default_constant_index: parameter
+                                        .default
+                                        .as_ref()
+                                        .and_then(|default| {
+                                            self.inner
+                                                .unit
+                                                .constants
+                                                .iter()
+                                                .position(|constant| constant == default)
+                                        })
+                                        .and_then(|index| u32::try_from(index).ok())
+                                        .unwrap_or(php_jit::JIT_NATIVE_PARAMETER_DEFAULT_NONE),
+                                    reserved: 0,
+                                }
+                            })
+                            .collect::<Box<[_]>>();
+                        let native_binding_plan = php_jit::JitNativeFunctionBindingPlan {
+                            parameters: native_parameter_bindings.as_ptr() as usize as u64,
+                            parameter_count: u32::try_from(native_parameter_bindings.len())
+                                .unwrap_or(u32::MAX),
+                            required_count: u32::try_from(
+                                function
+                                    .params
+                                    .iter()
+                                    .take_while(|parameter| {
+                                        parameter.default.is_none() && !parameter.variadic
+                                    })
+                                    .count(),
+                            )
+                            .unwrap_or(u32::MAX),
+                        };
                         Arc::new(PreparedNativeFunctionMetadata {
                             name: Arc::from(function.name.as_str()),
                             params: Arc::from(function.params.clone()),
+                            local_names: Arc::from(function.locals.clone()),
                             span: function.span,
                             trace_function: Arc::from(trace_function),
                             trace_class,
@@ -1751,6 +1544,8 @@ impl CompiledUnit {
                             instance_method: method_metadata
                                 .get(&function_id)
                                 .is_some_and(|(_, call_type)| *call_type == "->"),
+                            native_binding_plan,
+                            _native_parameter_bindings: native_parameter_bindings,
                         })
                     })
                     .collect::<Vec<_>>()
@@ -1758,6 +1553,17 @@ impl CompiledUnit {
             })
             .get(function.index())
             .map(Arc::as_ptr)
+    }
+
+    pub(crate) fn prepared_native_function_binding_plan_ptr(
+        &self,
+        function: FunctionId,
+    ) -> Option<*const php_jit::JitNativeFunctionBindingPlan> {
+        let metadata = self.prepared_native_function_metadata_ptr(function)?;
+        // SAFETY: the pointer addresses an Arc-owned immutable metadata record
+        // retained by this CompiledUnit's OnceLock for the unit lifetime.
+        #[allow(unsafe_code)]
+        Some(unsafe { std::ptr::addr_of!((*metadata).native_binding_plan) })
     }
 
     pub(crate) fn prepared_ir_fingerprint(&self) -> &str {
@@ -2143,68 +1949,6 @@ fn stable_hash(bytes: &[u8]) -> u64 {
     hash_bytes(0xcbf2_9ce4_8422_2325, bytes)
 }
 
-fn native_callsite_target(
-    target: &php_jit::region_ir::RegionCallTarget,
-) -> (NativeCallSiteKind, Option<Arc<str>>, Option<FunctionId>) {
-    use php_jit::region_ir::RegionCallTarget;
-    match target {
-        RegionCallTarget::Function { name, function } => (
-            NativeCallSiteKind::Function,
-            Some(Arc::from(name.as_str())),
-            *function,
-        ),
-        RegionCallTarget::Method { method, .. } => (
-            NativeCallSiteKind::Method,
-            Some(Arc::from(method.as_str())),
-            None,
-        ),
-        RegionCallTarget::StaticMethod { method, .. } => (
-            NativeCallSiteKind::StaticMethod,
-            Some(Arc::from(method.as_str())),
-            None,
-        ),
-        RegionCallTarget::Closure { .. } => (NativeCallSiteKind::Closure, None, None),
-        RegionCallTarget::Callable { .. } => (NativeCallSiteKind::Callable, None, None),
-        RegionCallTarget::Pipe { .. } => (NativeCallSiteKind::Pipe, None, None),
-        RegionCallTarget::Constructor { class_name, .. } => (
-            NativeCallSiteKind::Constructor,
-            Some(Arc::from(class_name.as_str())),
-            None,
-        ),
-        RegionCallTarget::DynamicConstructor { .. } => {
-            (NativeCallSiteKind::DynamicConstructor, None, None)
-        }
-        RegionCallTarget::Semantic { .. } => (NativeCallSiteKind::Semantic, None, None),
-    }
-}
-
-fn prepared_builtin_arity_is_valid(
-    name: &str,
-    metadata: Option<&php_std::generated::arginfo::GeneratedFunctionMetadata>,
-    argument_count: usize,
-) -> bool {
-    let Some(metadata) = metadata else {
-        return true;
-    };
-    let required = metadata
-        .params
-        .iter()
-        .filter(|parameter| {
-            !parameter.optional && parameter.default_value.is_none() && !parameter.variadic
-        })
-        .count();
-    let required = match name {
-        "array_intersect_uassoc" | "array_intersect_ukey" | "array_uintersect" => 2,
-        "array_uintersect_uassoc" => 3,
-        _ => required,
-    };
-    let variadic = metadata
-        .params
-        .last()
-        .is_some_and(|parameter| parameter.variadic);
-    argument_count >= required && (variadic || argument_count <= metadata.params.len())
-}
-
 fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
@@ -2337,6 +2081,95 @@ mod tests {
         assert_eq!(compiled.prepared_unit_stats().continuation_index_runs, 1);
         assert_eq!(compiled.prepared_unit_stats().ir_fingerprint_runs, 1);
         assert_eq!(compiled.prepared_unit_stats().dependency_identity_runs, 1);
+    }
+
+    #[test]
+    fn native_function_binding_plan_is_stable_and_preserves_parameter_order() {
+        let mut builder = php_ir::IrBuilder::new(UnitId::new(79));
+        let file = builder.add_file("native-binding-plan.php");
+        let span = IrSpan::new(file, 0, 1);
+        let function = builder.start_function(
+            "native_binding_target",
+            php_ir::FunctionFlags::default(),
+            span,
+        );
+        let first = builder.intern_local(function, "first");
+        let second = builder.intern_local(function, "second");
+        builder.push_param(
+            function,
+            php_ir::IrParam {
+                name: "first".to_owned(),
+                local: first,
+                required: true,
+                default: None,
+                type_: None,
+                by_ref: true,
+                variadic: false,
+                attributes: Vec::new(),
+            },
+        );
+        builder.push_param(
+            function,
+            php_ir::IrParam {
+                name: "second".to_owned(),
+                local: second,
+                required: false,
+                default: Some(IrConstant::Int(2)),
+                type_: None,
+                by_ref: false,
+                variadic: false,
+                attributes: Vec::new(),
+            },
+        );
+        let block = builder.append_block(function);
+        builder.terminate_return(function, block, None, span);
+        let compiled = CompiledUnit::new(builder.finish());
+
+        let first_plan = compiled
+            .prepared_native_function_binding_plan_ptr(function)
+            .expect("native binding plan");
+        let second_plan = compiled
+            .prepared_native_function_binding_plan_ptr(function)
+            .expect("stable native binding plan");
+        assert_eq!(first_plan, second_plan);
+        // SAFETY: both pointers address immutable CompiledUnit-owned metadata
+        // retained for the unit lifetime.
+        #[allow(unsafe_code)]
+        let (plan, parameters) = unsafe {
+            let plan = &*first_plan;
+            let parameters = std::slice::from_raw_parts(
+                plan.parameters as usize as *const php_jit::JitNativeParameterBinding,
+                plan.parameter_count as usize,
+            );
+            (plan, parameters)
+        };
+        assert_eq!(plan.parameter_count, 2);
+        assert_eq!(plan.required_count, 1);
+        let parameter_name = |parameter: &php_jit::JitNativeParameterBinding| {
+            // SAFETY: parameter names borrow immutable strings owned by the
+            // same CompiledUnit metadata record.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::slice::from_raw_parts(
+                    parameter.name_bytes as usize as *const u8,
+                    parameter.name_length as usize,
+                )
+            }
+        };
+        assert_eq!(parameter_name(&parameters[0]), b"first");
+        assert_eq!(parameter_name(&parameters[1]), b"second");
+        assert_ne!(
+            parameters[0].flags & php_jit::JIT_NATIVE_PARAMETER_BINDING_BY_REFERENCE,
+            0
+        );
+        assert_ne!(
+            parameters[1].flags & php_jit::JIT_NATIVE_PARAMETER_BINDING_HAS_DEFAULT,
+            0
+        );
+        assert_eq!(
+            compiled.unit().constants[parameters[1].default_constant_index as usize],
+            IrConstant::Int(2)
+        );
     }
 
     #[test]

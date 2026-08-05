@@ -129,10 +129,10 @@ pub fn float_to_php_string(value: f64) -> String {
 /// The returned range borrows `output` and contains the same bytes as
 /// [`float_to_php_string`]. The fixed capacity covers the longest finite
 /// fixed-point `f64`, including its sign.
-pub fn float_to_php_string_bytes<'a>(
+pub fn float_to_php_string_bytes(
     value: f64,
-    output: &'a mut [u8; PHP_FLOAT_STRING_BUFFER_CAPACITY],
-) -> &'a [u8] {
+    output: &mut [u8; PHP_FLOAT_STRING_BUFFER_CAPACITY],
+) -> &[u8] {
     let length =
         render_float_to_php_bytes(value, output).expect("PHP float buffer capacity is sufficient");
     &output[..length]
@@ -389,6 +389,25 @@ pub fn native_bytes_to_number(value: &[u8]) -> Result<NumericValue, String> {
             "E_PHP_RUNTIME_NON_NUMERIC_STRING: non-numeric string cannot be used as a number"
                 .to_owned(),
         ),
+    }
+}
+
+/// Coerces a complete numeric string for a weakly typed native `int`
+/// parameter. Leading-numeric strings are rejected just as they are by PHP's
+/// scalar parameter binder; explicit integer casts use the more permissive
+/// conversion path above.
+#[must_use]
+pub fn native_bytes_to_weak_int_parameter(value: &[u8]) -> Option<i64> {
+    let classified = crate::numeric_string::classify(value);
+    if !matches!(
+        classified.kind,
+        NumericStringKind::IntString | NumericStringKind::FloatString
+    ) {
+        return None;
+    }
+    match classified.value? {
+        NumericStringValue::Int(value) => Some(value),
+        NumericStringValue::Float(value) => Some(php_float_to_int(value)),
     }
 }
 

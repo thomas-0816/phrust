@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,144 @@ def mapping(counters: dict[str, Any], *names: str) -> dict[str, int]:
     return {}
 
 
+def compile_descriptors(counters: dict[str, Any]) -> list[dict[str, Any]]:
+    value = counters.get("native_compile_descriptors", [])
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
+
+
+def compile_cause_attribution(descriptors: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build one disjoint attribution from the bounded diagnostic records."""
+    causes: Counter[str] = Counter()
+    seen_sources: set[str] = set()
+    seen_functions: set[tuple[Any, ...]] = set()
+    seen_tiers: set[tuple[Any, ...]] = set()
+    seen_external: set[tuple[Any, ...]] = set()
+    seen_layouts: set[tuple[Any, ...]] = set()
+    seen_artifacts: set[tuple[Any, ...]] = set()
+    tiers: Counter[str] = Counter()
+
+    for descriptor in descriptors:
+        source = str(descriptor.get("source_identity", ""))
+        function = (
+            source,
+            descriptor.get("function_id"),
+            str(descriptor.get("ir_fingerprint", "")),
+        )
+        tier = str(descriptor.get("tier", "unknown"))
+        tier_key = (*function, tier)
+        external = int(descriptor.get("external_signatures_hash", 0) or 0)
+        external_key = (*tier_key, external)
+        layout = int(descriptor.get("receiver_layout_hash", 0) or 0)
+        layout_key = (*external_key, layout)
+        artifact = (
+            *layout_key,
+            descriptor.get("target_isa"),
+            descriptor.get("runtime_abi_hash"),
+            descriptor.get("helper_abi_hash"),
+            descriptor.get("config_hash"),
+        )
+        publication = str(descriptor.get("publication_result", ""))
+        replan = int(descriptor.get("replan_index", 0) or 0)
+        tiers[tier] += 1
+
+        if not publication.startswith("published-"):
+            cause = "failed_or_unpublished_product"
+        elif replan > 0:
+            cause = "exact_pre_regalloc_replan"
+        elif artifact in seen_artifacts:
+            cause = "duplicate_identical_compile"
+        elif function not in seen_functions:
+            cause = (
+                "new_source_or_dynamic_unit"
+                if seen_sources and source not in seen_sources
+                else "unique_function"
+            )
+        elif tier_key not in seen_tiers:
+            cause = "new_tier_variant"
+        elif external_key not in seen_external:
+            cause = "new_external_signature_variant"
+        elif layout_key not in seen_layouts:
+            cause = "new_receiver_layout_variant"
+        else:
+            cause = "remaining"
+        causes[cause] += 1
+
+        seen_sources.add(source)
+        seen_functions.add(function)
+        seen_tiers.add(tier_key)
+        seen_external.add(external_key)
+        seen_layouts.add(layout_key)
+        seen_artifacts.add(artifact)
+
+    ordered_causes = {
+        name: causes.get(name, 0)
+        for name in (
+            "unique_function",
+            "new_source_or_dynamic_unit",
+            "new_tier_variant",
+            "new_external_signature_variant",
+            "new_receiver_layout_variant",
+            "exact_pre_regalloc_replan",
+            "duplicate_identical_compile",
+            "failed_or_unpublished_product",
+            "remaining",
+        )
+    }
+    return {
+        "schema": 1,
+        "attempt_records": len(descriptors),
+        "attribution": ordered_causes,
+        "attribution_total": sum(ordered_causes.values()),
+        "dimensions": {
+            "unique_source_or_unit_identities": len(seen_sources),
+            "unique_ir_functions": len(seen_functions),
+            "tier_records": dict(sorted(tiers.items())),
+            "unique_tier_variants": len(seen_tiers),
+            "unique_external_signature_variants": len(seen_external),
+            "unique_receiver_layout_variants": len(seen_layouts),
+            "unique_artifact_identities": len(seen_artifacts),
+        },
+        "evidence": {
+            "proven": [
+                "Counts are derived only from bounded NativeCompileDescriptor records.",
+                "The attribution classes are mutually exclusive and sum to attempt_records.",
+                "Generic external-signature and receiver-layout components are recorded as zero.",
+            ],
+            "hypotheses": [],
+        },
+    }
+
+
+def write_compile_cause_report(profile_path: Path, report: dict[str, Any]) -> None:
+    output = profile_path.parent
+    json_path = output / "compile-cause-report.json"
+    markdown_path = output / "compile-cause-report.md"
+    json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    attribution = report["attribution"]
+    dimensions = report["dimensions"]
+    lines = [
+        "# Native compile-cause attribution",
+        "",
+        f"- Attempt records: {report['attempt_records']}",
+        f"- Unique IR functions: {dimensions['unique_ir_functions']}",
+        f"- Unique source/unit identities: {dimensions['unique_source_or_unit_identities']}",
+        "",
+        "| Disjoint cause | Attempts |",
+        "| --- | ---: |",
+    ]
+    lines.extend(f"| {name} | {count} |" for name, count in attribution.items())
+    lines.extend(
+        [
+            "",
+            "The rows are proven diagnostic-record classifications; no dominant cause is inferred.",
+            "",
+        ]
+    )
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def require(failures: list[str], condition: bool, message: str) -> None:
     if not condition:
         failures.append(message)
@@ -97,7 +236,7 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_jit",
             "--lib",
-            "oversized_php_cfg_compiles_as_bounded_direct_native_fragments",
+            "large_php_cfg_compiles_as_one_native_function",
         ],
         [
             "cargo",
@@ -106,7 +245,7 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_jit",
             "--lib",
-            "optimizer_partitions_unsupported_effect_without_downgrading_function",
+            "ordinary_optimizing_calls_need_no_pre_regalloc_replan",
         ],
         [
             "cargo",
@@ -115,7 +254,7 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_jit",
             "--lib",
-            "optimizer_transitions_once_to_dynamic_baseline_without_repeating_effect",
+            "optimizing_unknown_array_key_publishes_local_generic_continuation",
         ],
         [
             "cargo",
@@ -124,7 +263,7 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_jit",
             "--lib",
-            "optimizer_rejects_top_level_local_ssa_until_include_scope_is_native",
+            "generated_include_caller_invokes_resolver_published_entry_and_restores_view",
         ],
         [
             "cargo",
@@ -133,9 +272,7 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_vm",
             "--lib",
-            "vm::jit_abi::tests::native_value_slots_keep_iterator_state_out_of_line",
-            "--",
-            "--exact",
+            "common_and_exact_native_sources_cannot_import_the_rust_value_plane",
         ],
         [
             "cargo",
@@ -153,7 +290,7 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_vm",
             "--lib",
-            "warmed_method_pic_reclassifies_stable_call_as_direct",
+            "optimizing_scheduler_retains_more_than_one_pending_batch",
         ],
         [
             "cargo",
@@ -162,7 +299,7 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_vm",
             "--lib",
-            "reached_method_is_published_to_the_optimizing_entry_table",
+            "generic_native_key_ignores_current_external_signature_state",
         ],
         [
             "cargo",
@@ -180,16 +317,16 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
             "-p",
             "php_jit",
             "--lib",
-            "published_same_unit_entry_bypasses_the_warm_resolver",
+            "by_reference_parameter_and_return_compile_in_both_generated_tiers",
         ],
         [
             "cargo",
             "test",
             "-q",
             "-p",
-            "php_vm",
+            "php_jit",
             "--lib",
-            "optimizing_call_miss_keeps_nested_warm_cell_on_baseline_entry",
+            "optimizing_unstable_class_allocation_uses_generated_constructor_spine",
         ],
         [
             "cargo",
@@ -233,6 +370,30 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
         if completed.returncode != 0:
             failures.append(f"generated hot-path fixture failed: {' '.join(command)}")
 
+    retired_warm_paths = (
+        "baseline_call_dispatch.rs",
+        "baseline_call_support.rs",
+        "baseline_callables.rs",
+        "baseline_dynamic_code.rs",
+        "baseline_iterators.rs",
+        "baseline_native_builtins.rs",
+        "baseline_object_support.rs",
+        "baseline_properties.rs",
+        "baseline_reference_ownership.rs",
+        "baseline_runtime_ops.rs",
+        "baseline_semantic_dispatch.rs",
+        "baseline_static_properties.rs",
+        "baseline_value_plane.rs",
+        "baseline_value_semantics.rs",
+    )
+    abi_root = ROOT / "crates/php_vm/src/vm/jit_abi"
+    for relative in retired_warm_paths:
+        require(
+            failures,
+            not (abi_root / relative).exists(),
+            f"retired ordinary Rust executor path returned: {relative}",
+        )
+
     deleted_warm_cache_symbols = (
         "JitNativeFunctionEntryCacheRecord",
         "function_entry_cache",
@@ -264,7 +425,7 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
         ROOT / "crates/php_jit/src/abi.rs",
         ROOT / "crates/php_jit/src/cranelift_lowering.rs",
         ROOT / "crates/php_vm/src/vm/jit_abi.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/exact_runtime_ops.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/exact_runtime_ops.rs",
     )
     combined = "\n".join(path.read_text(encoding="utf-8") for path in sources)
     for symbol in deleted_warm_cache_symbols:
@@ -286,7 +447,8 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
         "JitProductionLoweringClass",
         "JitProductionLoweringMetadata",
         "production_lowering",
-        "operation_local_transition",
+        "forced_generic_continuations",
+        "lower_optimizing_generic_continuation",
     ):
         require(
             failures,
@@ -299,9 +461,9 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
         "syntactic optimizing lowering classifier returned; manifest must record emitted code",
     )
     for test_name in (
-        "optimizing_manifest_records_the_emitted_division_transition",
-        "optimizing_unknown_scalar_truthiness_is_direct_for_authoritative_values",
-        "optimizer_transitions_once_to_dynamic_baseline_without_repeating_effect",
+        "optimizing_unknown_binary_add_resumes_local_generic",
+        "optimizing_scalar_ssa_executes_without_local_truthy_or_lifecycle_helpers",
+        "optimizing_unknown_array_key_publishes_local_generic_continuation",
     ):
         require(
             failures,
@@ -313,6 +475,12 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
         "type NativeRequestFastState = NativeExecutionContext",
         "JitNativePropertyCacheEntry",
         "object_property_caches",
+        "jit_baseline_native_call_dispatch_impl",
+        "phrust_baseline_native_call_dispatch",
+        "phrust_native_call_dispatch",
+        "phrust_baseline_native_builtin_dispatch",
+        "phrust_native_semantic_dispatch",
+        "phrust_baseline_native_semantic_dispatch",
         "phrust_jit_native_builtin_dispatch",
         "jit_native_builtin_dispatch_abi",
         "execute_prepared_runtime_builtin(",
@@ -323,8 +491,8 @@ def run_generated_code_fixtures(failures: list[str]) -> None:
         ROOT / "crates/php_jit/src/cranelift_lowering.rs",
         ROOT / "crates/php_jit/src/cranelift_lowering/executable_region.rs",
         ROOT / "crates/php_vm/src/vm/jit_abi.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/exact_call_dispatch.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/exact_runtime_ops.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/exact_call_dispatch.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/exact_runtime_ops.rs",
     )
     production = "\n".join(
         path.read_text(encoding="utf-8") for path in production_sources
@@ -406,6 +574,18 @@ def ratchet_profile(
     ) + number(counters, "value_decodes", "native_value_decodes")
     call_transport = number(counters, "call_frame_bytes", "native_call_frame_bytes")
     helper_ids = mapping(counters, "runtime_helper_calls_by_id")
+    forbidden_execution_boundaries = sum(
+        helper_ids.get(name, 0)
+        for name in (
+            "call_function",
+            "call_method",
+            "call_callable",
+            "call_constructor",
+            "dynamic_code",
+            "reference_bind",
+            "call_builtin_direct",
+        )
+    )
     array_foreach_helpers = sum(
         helper_ids.get(name, 0)
         for name in (
@@ -446,10 +626,12 @@ def ratchet_profile(
     arena_resident = mapping(
         counters, "arena_resident_bytes", "native_arena_resident_bytes"
     )
+    generic_entries = number(counters, "native_generic_entry_executions")
+    optimizing_entries = number(counters, "native_optimizing_entry_executions")
 
     require(failures, helper_calls <= 100_000, f"runtime helper calls {helper_calls} exceed 100000")
-    require(failures, reads + stores <= 20_000, f"local helpers {reads + stores} exceed 20000")
-    require(failures, truthy <= 20_000, f"truthiness helpers {truthy} exceed 20000")
+    require(failures, reads + stores == 0, f"ordinary local helpers executed {reads + stores} times")
+    require(failures, truthy == 0, f"ordinary truthiness helpers executed {truthy} times")
     require(
         failures,
         retain_release <= 5_000,
@@ -469,6 +651,17 @@ def ratchet_profile(
     )
     require(
         failures,
+        optimizing_entries > 0
+        and optimizing_entries * 100 >= (generic_entries + optimizing_entries) * 95,
+        f"Optimizing entry ratio {optimizing_entries}/{generic_entries + optimizing_entries} is below 95%",
+    )
+    require(
+        failures,
+        forbidden_execution_boundaries == 0,
+        f"retired ordinary execution boundaries ran {forbidden_execution_boundaries} times",
+    )
+    require(
+        failures,
         value_allocations <= 10_000,
         f"value-table allocations {value_allocations} exceed 10000",
     )
@@ -480,23 +673,23 @@ def ratchet_profile(
     require(failures, call_transport <= 1_000_000, f"call transport {call_transport} exceeds 1MB")
     require(
         failures,
-        array_foreach_helpers <= 20_000,
-        f"array/foreach helpers {array_foreach_helpers} exceed 20000",
+        array_foreach_helpers == 0,
+        f"ordinary array/foreach helpers executed {array_foreach_helpers} times",
     )
     require(
         failures,
-        property_helpers <= 5_000,
-        f"property helpers {property_helpers} exceed 5000",
+        property_helpers == 0,
+        f"ordinary property helpers executed {property_helpers} times",
     )
     require(
         failures,
-        scalar_local_reference_helpers <= 20_000,
-        f"scalar/local/reference helpers {scalar_local_reference_helpers} exceed 20000",
+        scalar_local_reference_helpers == 0,
+        f"ordinary scalar/local/reference helpers executed {scalar_local_reference_helpers} times",
     )
     require(
         failures,
-        generic_prepared_builtins <= 5_000,
-        f"generic prepared-builtin dispatches {generic_prepared_builtins} exceed 5000",
+        generic_prepared_builtins == 0,
+        f"generic prepared-builtin dispatches executed {generic_prepared_builtins} times",
     )
     require(
         failures,
@@ -505,8 +698,8 @@ def ratchet_profile(
     )
     require(
         failures,
-        direct_rust_conversions <= 10_000,
-        f"direct/Rust value conversions {direct_rust_conversions} exceed 10000",
+        direct_rust_conversions == 0,
+        f"ordinary direct/Rust value conversions executed {direct_rust_conversions} times",
     )
     require(failures, bool(arena_resident), "per-arena resident-byte counters are missing")
     require(failures, compile_attempts == 0, f"warm profile compiled {compile_attempts} functions")
@@ -584,6 +777,17 @@ def sample_body_hashes(curve: dict[str, Any]) -> set[str]:
     }
 
 
+def sample_values(curve: dict[str, Any], name: str) -> set[Any]:
+    samples = curve.get("samples")
+    if not isinstance(samples, list):
+        return set()
+    return {
+        sample.get(name)
+        for sample in samples
+        if isinstance(sample, dict) and sample.get(name) is not None
+    }
+
+
 def find_number(document: Any, names: tuple[str, ...]) -> float | None:
     if isinstance(document, dict):
         for name in names:
@@ -600,36 +804,6 @@ def find_number(document: Any, names: tuple[str, ...]) -> float | None:
             if found is not None:
                 return found
     return None
-
-
-def executed_operation_transitions(document: Any) -> tuple[int, bool]:
-    total = 0
-    observed = False
-    if isinstance(document, dict):
-        transition = document.get("operation_local_transition")
-        if isinstance(transition, bool):
-            observed = True
-            if transition:
-                executions = next(
-                    (
-                        document.get(name)
-                        for name in ("execution_count", "executions", "count")
-                        if isinstance(document.get(name), (int, float))
-                        and not isinstance(document.get(name), bool)
-                    ),
-                    1,
-                )
-                total += int(executions)
-        for value in document.values():
-            nested_total, nested_observed = executed_operation_transitions(value)
-            total += nested_total
-            observed = observed or nested_observed
-    elif isinstance(document, list):
-        for value in document:
-            nested_total, nested_observed = executed_operation_transitions(value)
-            total += nested_total
-            observed = observed or nested_observed
-    return total, observed
 
 
 def lowering_document(clean_path: Path, profile_path: Path) -> tuple[Path | None, dict[str, Any]]:
@@ -673,6 +847,14 @@ def ratchet_breakthrough(
     c8 = clean_curve(clean, "phrust", 8)
     p50 = curve_number(c1, "latency_ms", "p50")
     p95 = curve_number(c1, "latency_ms", "p95")
+    php_p50 = curve_number(php_c1, "latency_ms", "p50")
+    php_p95 = curve_number(php_c1, "latency_ms", "p95")
+    throughput = c1.get("requests_per_second")
+    throughput = (
+        float(throughput)
+        if isinstance(throughput, (int, float)) and not isinstance(throughput, bool)
+        else None
+    )
     c1_rss = curve_number(c1, "process", "peak_rss_bytes")
     c8_rss = curve_number(c8, "process", "peak_rss_bytes")
     completed_c1 = c1.get("completed_samples")
@@ -685,6 +867,31 @@ def ratchet_breakthrough(
     require(failures, bool(c8), "clean c8 curve is missing")
     require(failures, p50 is not None and p50 <= 80.0, f"clean c1 p50 {p50!r} exceeds 80 ms")
     require(failures, p95 is not None and p95 <= 100.0, f"clean c1 p95 {p95!r} exceeds 100 ms")
+    require(
+        failures,
+        p50 is not None and p50 <= 63.069438,
+        f"strategic c1 p50 {p50!r} exceeds 63.069438 ms",
+    )
+    require(
+        failures,
+        p95 is not None and p95 <= 97.587082,
+        f"strategic c1 p95 {p95!r} exceeds 97.587082 ms",
+    )
+    require(
+        failures,
+        throughput is not None and throughput >= 14.8678075,
+        f"strategic c1 throughput {throughput!r} is below 14.8678075 req/s",
+    )
+    require(
+        failures,
+        p50 is not None and php_p50 is not None and php_p50 > 0 and p50 / php_p50 <= 2.0,
+        f"simultaneous p50 ratio is not <=2.0 ({p50!r}/{php_p50!r})",
+    )
+    require(
+        failures,
+        p95 is not None and php_p95 is not None and php_p95 > 0 and p95 / php_p95 <= 2.0,
+        f"simultaneous p95 ratio is not <=2.0 ({p95!r}/{php_p95!r})",
+    )
     require(
         failures,
         c1_rss is not None and c1_rss <= 300 * 1024 * 1024,
@@ -701,6 +908,23 @@ def ratchet_breakthrough(
         failures,
         len(phrust_hashes) == 1 and phrust_hashes == php_hashes,
         "clean Phrust/PHP response-body hashes are missing or different",
+    )
+    require(
+        failures,
+        phrust_hashes == {"7a34e150c5304aea4744a0e4f3b4fd70c4309cca411902513478a9ba7a196072"},
+        f"clean WordPress body hash is not the fixed acceptance hash: {phrust_hashes}",
+    )
+    require(
+        failures,
+        sample_values(c1, "body_bytes") == {70_949}
+        and sample_values(php_c1, "body_bytes") == {70_949},
+        "clean WordPress body size is not exactly 70,949 bytes for both engines",
+    )
+    require(
+        failures,
+        sample_values(c1, "status") == {200}
+        and sample_values(php_c1, "status") == {200},
+        "clean WordPress samples are not all HTTP 200",
     )
     correctness = clean.get("correctness")
     correctness_failures = correctness.get("failures") if isinstance(correctness, dict) else None
@@ -727,32 +951,25 @@ def ratchet_breakthrough(
 
     lowering_path, lowering = lowering_document(clean_path, profile_path)
     require(failures, lowering_path is not None, "lowering-coverage.json is missing")
-    _, transition_metadata_seen = executed_operation_transitions(lowering)
     transition_count = find_number(
         lowering,
         (
-            "operation_local_transition_executions",
-            "executed_operation_local_transitions",
+            "local_generic_continuation_executions",
         ),
     )
     require(
         failures,
-        transition_metadata_seen,
-        "lowering evidence has no operation_local_transition metadata",
-    )
-    require(
-        failures,
         transition_count is not None and transition_count == 0,
-        f"executed lowering evidence contains {transition_count} operation-local transitions",
+        f"executed lowering evidence contains {transition_count} local Generic continuations",
     )
-    baseline_share = find_number(
+    generic_share = find_number(
         lowering,
-        ("baseline_hot_time_share_pct", "baseline_only_hot_time_share_pct"),
+        ("generic_hot_time_share_pct",),
     )
     require(
         failures,
-        baseline_share is not None and baseline_share <= 5.0,
-        f"baseline-only inclusive hot-time share {baseline_share!r} exceeds 5%",
+        generic_share is not None and generic_share <= 5.0,
+        f"Generic inclusive hot-time share {generic_share!r} exceeds 5%",
     )
     optimizing_entries = find_number(
         lowering,
@@ -767,8 +984,8 @@ def ratchet_breakthrough(
         failures,
         number(counters, "value_encodes", "native_value_encodes")
         + number(counters, "value_decodes", "native_value_decodes")
-        <= 10_000,
-        "diagnostic direct/Rust conversion count exceeds 10000",
+        == 0,
+        "diagnostic ordinary direct/Rust conversion count is nonzero",
     )
 
 
@@ -807,6 +1024,35 @@ def main() -> int:
                 else None
             )
             ratchet_profile(failures, counters, baseline)
+            descriptors = compile_descriptors(counters)
+            attribution = compile_cause_attribution(descriptors)
+            if descriptors:
+                write_compile_cause_report(args.profile, attribution)
+            if args.breakthrough:
+                require(
+                    failures,
+                    bool(descriptors),
+                    "diagnostic profile has no bounded native compile descriptors",
+                )
+                require(
+                    failures,
+                    attribution["attribution_total"] == len(descriptors),
+                    "compile-cause attribution is not disjoint and complete",
+                )
+                generic_descriptors = [
+                    descriptor
+                    for descriptor in descriptors
+                    if descriptor.get("tier") == "generic"
+                ]
+                require(
+                    failures,
+                    all(
+                        int(descriptor.get("external_signatures_hash", 0) or 0) == 0
+                        and int(descriptor.get("receiver_layout_hash", 0) or 0) == 0
+                        for descriptor in generic_descriptors
+                    ),
+                    "Generic compile descriptors contain external-signature or receiver-layout state",
+                )
             if args.breakthrough and args.clean_result is not None:
                 clean = load_document(args.clean_result)
                 clean_baseline = (

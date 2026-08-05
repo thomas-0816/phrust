@@ -116,7 +116,7 @@ def main() -> int:
     for required in (
         "generator_yield_send_and_throw_use_native_resume_entry",
         "yield_from_publishes_native_delegation_state",
-        "fiber_suspend_and_resume_use_native_continuation",
+        "fiber_suspend_and_resume_rejects_untyped_optimizing_return_before_entry",
         "generator_resume_runs_compiled_finally",
     ):
         if required not in lowering:

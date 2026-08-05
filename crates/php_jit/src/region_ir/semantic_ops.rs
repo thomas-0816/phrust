@@ -1,16 +1,14 @@
 //! Typed PHP semantic operations that cross the native-call boundary.
 //!
 //! These operations are deliberately separate from user-visible function
-//! calls.  Their numeric IDs are ABI-visible and append-only: native code may
-//! persist the ID in a call frame, while names and other PHP metadata remain
-//! strongly typed in Region IR.
+//! calls. The operation identity exists only while compiling Region IR; no
+//! selector is persisted in a runtime call frame.
 
 use php_ir::{IrSpan, LocalId};
 
 use super::RegionOperand;
 
-/// Stable runtime operation identifiers. Existing values must never be
-/// renumbered or reused.
+/// Compiler-only operation identities used for exhaustive lowering checks.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RegionSemanticOperationId {
@@ -42,6 +40,44 @@ pub enum RegionSemanticOperationId {
 }
 
 impl RegionSemanticOperationId {
+    pub const COUNT: usize = 25;
+
+    #[must_use]
+    pub const fn all() -> [Self; Self::COUNT] {
+        [
+            Self::StaticPropertyFetch,
+            Self::StaticPropertyAssign,
+            Self::StaticPropertyIsset,
+            Self::StaticPropertyEmpty,
+            Self::StaticPropertyDimIsset,
+            Self::StaticPropertyDimEmpty,
+            Self::StaticPropertyDimUnset,
+            Self::StaticPropertyReference,
+            Self::ClassConstantFetch,
+            Self::ObjectClassName,
+            Self::InstanceOf,
+            Self::DynamicInstanceOf,
+            Self::ResolveCallable,
+            Self::AcquireCallable,
+            Self::PropertyFetch,
+            Self::PropertyAssign,
+            Self::PropertyIsset,
+            Self::PropertyEmpty,
+            Self::PropertyUnset,
+            Self::PropertyDimAssign,
+            Self::PropertyDimIsset,
+            Self::PropertyDimEmpty,
+            Self::PropertyDimUnset,
+            Self::BindGlobal,
+            Self::BoundClosureClass,
+        ]
+    }
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize - 1
+    }
+
     #[must_use]
     pub const fn raw(self) -> u32 {
         self as u32
@@ -92,6 +128,9 @@ pub struct RegionSemanticContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RegionPropertyName {
     Static(String),
+    /// A fixed undeclared stdClass name backed by the native dynamic-property
+    /// plane rather than the declared-slot table.
+    FixedDynamic(String),
     Dynamic(RegionOperand),
 }
 

@@ -84,9 +84,9 @@ VM_RESULT_REQUIRED_SNIPPETS = [
 
 VM_SUBMODULE_REQUIRED_SNIPPETS = {
     "crates/php_vm/src/vm/jit_abi.rs": [
-        "jit_baseline_native_call_dispatch_abi",
-        "jit_native_dynamic_code_abi",
-        "jit_native_runtime_fatal_abi",
+        "jit_cold_dynamic_unit_resolve_abi",
+        "mod cold_services;",
+        "mod native_call_contract;",
     ],
     "crates/php_vm/src/vm/native_entry.rs": ["invoke_i64_with_native_unwind"],
     "crates/php_vm/src/vm/options.rs": [
@@ -96,7 +96,30 @@ VM_SUBMODULE_REQUIRED_SNIPPETS = {
     ],
 }
 
-VM_SUBMODULE_FORBIDDEN_SNIPPETS: dict[str, list[str]] = {}
+VM_SUBMODULE_FORBIDDEN_SNIPPETS: dict[str, list[str]] = {
+    "crates/php_vm/src/vm/jit_abi.rs": [
+        "jit_baseline_native_call_dispatch_abi",
+        "jit_baseline_native_builtin_dispatch_abi",
+        "jit_baseline_native_semantic_dispatch_abi",
+        "baseline_call_dispatch",
+        "baseline_semantic_dispatch",
+    ],
+    "crates/php_jit/src/helpers.rs": [
+        "phrust_baseline_native_call_dispatch",
+        "phrust_baseline_native_builtin_dispatch",
+        "phrust_baseline_native_semantic_dispatch",
+        "phrust_native_value_release",
+    ],
+    "crates/php_vm/src/vm/jit_abi/native_call_contract.rs": [
+        "jit_native_value_release_abi",
+    ],
+    "crates/php_vm/src/vm/jit_abi/cold_request_state.rs": [
+        "run_object_destructor(",
+    ],
+    "crates/php_vm/src/vm/jit_abi/cold_request_boundaries.rs": [
+        "invoke_generated_callback_action(",
+    ],
+}
 
 VM_LIB_REQUIRED_SNIPPETS = [
     "mod vm;",
@@ -239,7 +262,13 @@ def check_vm_module_wiring() -> None:
     for relative, snippets in VM_SUBMODULE_FORBIDDEN_SNIPPETS.items():
         forbid_snippets(relative, read_required(relative), snippets)
 
-    declared_modules = set(re.findall(r"^mod\s+([A-Za-z0-9_]+);", vm_mod, re.MULTILINE))
+    declared_modules = set(
+        re.findall(
+            r"^(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z0-9_]+);",
+            vm_mod,
+            re.MULTILINE,
+        )
+    )
     sibling_modules = {
         path.stem
         for path in (ROOT / "crates/php_vm/src/vm").glob("*.rs")

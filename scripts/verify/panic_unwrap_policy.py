@@ -120,9 +120,21 @@ def scan() -> list[Finding]:
 
 def is_allowed(finding: Finding, entries: list[dict]) -> bool:
     for entry in entries:
-        path_matches = entry.get("path") == finding.path or finding.path.startswith(
+        exact_path = entry.get("path")
+        path_matches = exact_path == finding.path or finding.path.startswith(
             entry.get("path_prefix", "\0")
         )
+        # Keep reviewed monolithic-file invariants valid when that file is
+        # physically split into its same-named module tree. The message
+        # pattern still has to match exactly, so this cannot admit unrelated
+        # panic sites added to the new modules.
+        if (
+            not path_matches
+            and exact_path is not None
+            and exact_path.endswith(".rs")
+            and finding.path.startswith(f"{exact_path[:-3]}/")
+        ):
+            path_matches = True
         if path_matches and entry["pattern"] in finding.line:
             return True
     return False

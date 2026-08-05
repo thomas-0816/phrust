@@ -1,54 +1,5 @@
 use super::*;
 
-/// Baseline call-frame identity for the compatibility dispatcher.
-///
-/// Semantic operation IDs must remain confined to baseline lowering. Exact
-/// optimizing calls select a fixed symbol or emit direct CLIF and therefore
-/// never consume this generic target tuple.
-pub(super) fn baseline_call_target_metadata(target: &RegionCallTarget) -> (u32, u32, u64, u64) {
-    match target {
-        RegionCallTarget::Function { name, function } => (
-            crate::JitNativeCallKind::FUNCTION.0,
-            function.map_or(u32::MAX, FunctionId::raw),
-            stable_call_symbol_hash(name),
-            0,
-        ),
-        RegionCallTarget::Method { method, .. } => (
-            crate::JitNativeCallKind::METHOD.0,
-            u32::MAX,
-            stable_call_symbol_hash(method),
-            0,
-        ),
-        RegionCallTarget::StaticMethod { class_name, method } => (
-            crate::JitNativeCallKind::STATIC_METHOD.0,
-            u32::MAX,
-            stable_call_symbol_hash(method),
-            stable_call_symbol_hash(class_name),
-        ),
-        RegionCallTarget::Closure { .. } => (crate::JitNativeCallKind::CLOSURE.0, u32::MAX, 0, 0),
-        RegionCallTarget::Callable { .. } => (crate::JitNativeCallKind::CALLABLE.0, u32::MAX, 0, 0),
-        RegionCallTarget::Pipe { .. } => (crate::JitNativeCallKind::PIPE.0, u32::MAX, 0, 0),
-        RegionCallTarget::Constructor { class_name, .. } => (
-            crate::JitNativeCallKind::CONSTRUCTOR.0,
-            u32::MAX,
-            0,
-            stable_call_symbol_hash(class_name),
-        ),
-        RegionCallTarget::DynamicConstructor { .. } => (
-            crate::JitNativeCallKind::DYNAMIC_CONSTRUCTOR.0,
-            u32::MAX,
-            0,
-            0,
-        ),
-        RegionCallTarget::Semantic { operation } => (
-            crate::JitNativeCallKind::SEMANTIC_OPERATION.0,
-            operation.operation_id().raw(),
-            0,
-            0,
-        ),
-    }
-}
-
 pub(super) fn stable_call_symbol_hash(name: &str) -> u64 {
     name.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(byte.to_ascii_lowercase())).wrapping_mul(0x0000_0100_0000_01b3)
@@ -73,23 +24,6 @@ pub(super) fn baseline_builtin_helper_id(target: &RegionCallTarget) -> Option<u3
         .filter(|helper_id| *helper_id != 0)
 }
 
-/// Baseline-only dense identity consumed by the compatibility dispatcher.
-///
-/// Keeping this name explicitly baseline-scoped prevents a future exact
-/// optimizer family from accidentally selecting the generic executor.
-pub(super) fn baseline_builtin_dense_id(target: &RegionCallTarget) -> Option<u32> {
-    let RegionCallTarget::Function { name, .. } = target else {
-        return None;
-    };
-    let normalized = name.trim_start_matches('\\').to_ascii_lowercase();
-    if normalized.contains('\\') {
-        return None;
-    }
-    php_runtime::api::BuiltinRegistry::new()
-        .get(&normalized)
-        .map(php_runtime::api::BuiltinEntry::dense_id)
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StableTypePredicateBuiltin {
     Null,
@@ -103,12 +37,6 @@ pub(super) enum StableTypePredicateBuiltin {
     Scalar,
     Countable,
     Iterable,
-}
-
-impl StableTypePredicateBuiltin {
-    pub(super) const fn baseline_opcode(self) -> u32 {
-        self as u32
-    }
 }
 
 pub(super) fn stable_builtin_type_predicate(
@@ -299,10 +227,13 @@ pub(super) enum StableMbstringBuiltin {
     Ord,
     Chr,
     ParseStr,
+    Iconv,
+    NormalizerNormalize,
+    NormalizerIsNormalized,
 }
 
 impl StableMbstringBuiltin {
-    pub(super) const COUNT: usize = 25;
+    pub(super) const COUNT: usize = 28;
 
     pub(super) const fn index(self) -> usize {
         self as usize
@@ -335,6 +266,9 @@ impl StableMbstringBuiltin {
             Self::Ord => "phrust_native_mb_ord",
             Self::Chr => "phrust_native_mb_chr",
             Self::ParseStr => "phrust_native_mb_parse_str",
+            Self::Iconv => "phrust_native_iconv",
+            Self::NormalizerNormalize => "phrust_native_normalizer_normalize",
+            Self::NormalizerIsNormalized => "phrust_native_normalizer_is_normalized",
         }
     }
 
@@ -361,6 +295,8 @@ impl StableMbstringBuiltin {
             Self::Substr | Self::Strcut => arity >= 2 && arity <= 4,
             Self::Strimwidth => arity >= 3 && arity <= 5,
             Self::ParseStr => arity == 2,
+            Self::Iconv => arity == 3,
+            Self::NormalizerNormalize | Self::NormalizerIsNormalized => arity >= 1 && arity <= 2,
         }
     }
 
@@ -395,6 +331,9 @@ impl StableMbstringBuiltin {
             Self::Ord,
             Self::Chr,
             Self::ParseStr,
+            Self::Iconv,
+            Self::NormalizerNormalize,
+            Self::NormalizerIsNormalized,
         ]
     }
 }
@@ -433,6 +372,9 @@ pub(super) fn stable_builtin_mbstring(target: &RegionCallTarget) -> Option<Stabl
         "mb_ord" => Some(StableMbstringBuiltin::Ord),
         "mb_chr" => Some(StableMbstringBuiltin::Chr),
         "mb_parse_str" => Some(StableMbstringBuiltin::ParseStr),
+        "iconv" => Some(StableMbstringBuiltin::Iconv),
+        "normalizer_normalize" => Some(StableMbstringBuiltin::NormalizerNormalize),
+        "normalizer_is_normalized" => Some(StableMbstringBuiltin::NormalizerIsNormalized),
         _ => None,
     }
 }
@@ -766,6 +708,22 @@ pub(super) fn stable_builtin_error_reporting(target: &RegionCallTarget) -> bool 
     };
     let normalized = name.trim_start_matches('\\');
     !normalized.contains('\\') && normalized.eq_ignore_ascii_case("error_reporting")
+}
+
+pub(super) fn stable_builtin_error_log(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("error_log")
+}
+
+pub(super) fn stable_builtin_sleep(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("sleep")
 }
 
 /// Scalar math primitives whose ordinary int/float forms are emitted over
@@ -1568,7 +1526,7 @@ impl StableJsonBuiltin {
     pub(super) const fn accepts_arity(self, arity: usize) -> bool {
         match self {
             Self::Encode | Self::Validate => arity >= 1 && arity <= 3,
-            Self::Decode => arity >= 2 && arity <= 4,
+            Self::Decode => arity >= 1 && arity <= 4,
             Self::LastError | Self::LastErrorMessage => arity == 0,
         }
     }
@@ -1671,10 +1629,11 @@ pub(super) enum StableHashBuiltin {
     Hash,
     HashHmac,
     HashEquals,
+    SodiumGenericHash,
 }
 
 impl StableHashBuiltin {
-    pub(super) const COUNT: usize = 6;
+    pub(super) const COUNT: usize = 7;
 
     pub(super) const fn index(self) -> usize {
         match self {
@@ -1684,6 +1643,7 @@ impl StableHashBuiltin {
             Self::Hash => 3,
             Self::HashHmac => 4,
             Self::HashEquals => 5,
+            Self::SodiumGenericHash => 6,
         }
     }
 
@@ -1695,6 +1655,7 @@ impl StableHashBuiltin {
             Self::Hash => "phrust_native_hash",
             Self::HashHmac => "phrust_native_hash_hmac",
             Self::HashEquals => "phrust_native_hash_equals",
+            Self::SodiumGenericHash => "phrust_native_sodium_crypto_generichash",
         }
     }
 
@@ -1705,6 +1666,7 @@ impl StableHashBuiltin {
             Self::Hash => arity >= 2 && arity <= 4,
             Self::HashHmac => arity == 3 || arity == 4,
             Self::HashEquals => arity == 2,
+            Self::SodiumGenericHash => arity >= 1 && arity <= 3,
         }
     }
 
@@ -1716,6 +1678,7 @@ impl StableHashBuiltin {
             Self::Hash,
             Self::HashHmac,
             Self::HashEquals,
+            Self::SodiumGenericHash,
         ]
     }
 }
@@ -1735,6 +1698,7 @@ pub(super) fn stable_builtin_hash(target: &RegionCallTarget) -> Option<StableHas
         "hash" => Some(StableHashBuiltin::Hash),
         "hash_hmac" => Some(StableHashBuiltin::HashHmac),
         "hash_equals" => Some(StableHashBuiltin::HashEquals),
+        "sodium_crypto_generichash" => Some(StableHashBuiltin::SodiumGenericHash),
         _ => None,
     }
 }
@@ -1759,10 +1723,11 @@ pub(super) enum StableByteCodecBuiltin {
     QuoteMeta,
     Pack,
     Unpack,
+    SodiumBin2Base64,
 }
 
 impl StableByteCodecBuiltin {
-    pub(super) const COUNT: usize = 17;
+    pub(super) const COUNT: usize = 18;
 
     pub(super) const fn index(self) -> usize {
         match self {
@@ -1783,6 +1748,7 @@ impl StableByteCodecBuiltin {
             Self::QuoteMeta => 14,
             Self::Pack => 15,
             Self::Unpack => 16,
+            Self::SodiumBin2Base64 => 17,
         }
     }
 
@@ -1805,13 +1771,14 @@ impl StableByteCodecBuiltin {
             Self::QuoteMeta => "phrust_native_quotemeta",
             Self::Pack => "phrust_native_pack",
             Self::Unpack => "phrust_native_unpack",
+            Self::SodiumBin2Base64 => "phrust_native_sodium_bin2base64",
         }
     }
 
     pub(super) const fn accepts_arity(self, arity: usize) -> bool {
         match self {
             Self::Base64Decode => arity == 1 || arity == 2,
-            Self::AddCSlashes => arity == 2,
+            Self::AddCSlashes | Self::SodiumBin2Base64 => arity == 2,
             Self::Pack => arity >= 1,
             Self::Unpack => arity == 2 || arity == 3,
             Self::Base64Encode
@@ -1849,6 +1816,7 @@ impl StableByteCodecBuiltin {
             Self::QuoteMeta,
             Self::Pack,
             Self::Unpack,
+            Self::SodiumBin2Base64,
         ]
     }
 }
@@ -1881,6 +1849,7 @@ pub(super) fn stable_builtin_byte_codec(
         "quotemeta" => Some(StableByteCodecBuiltin::QuoteMeta),
         "pack" => Some(StableByteCodecBuiltin::Pack),
         "unpack" => Some(StableByteCodecBuiltin::Unpack),
+        "sodium_bin2base64" => Some(StableByteCodecBuiltin::SodiumBin2Base64),
         _ => None,
     }
 }
@@ -2059,10 +2028,11 @@ pub(super) enum StableHtmlCodecBuiltin {
     Entities,
     EntityDecode,
     SpecialCharsDecode,
+    TranslationTable,
 }
 
 impl StableHtmlCodecBuiltin {
-    pub(super) const COUNT: usize = 4;
+    pub(super) const COUNT: usize = 5;
 
     pub(super) const fn index(self) -> usize {
         match self {
@@ -2070,6 +2040,7 @@ impl StableHtmlCodecBuiltin {
             Self::Entities => 1,
             Self::EntityDecode => 2,
             Self::SpecialCharsDecode => 3,
+            Self::TranslationTable => 4,
         }
     }
 
@@ -2079,6 +2050,7 @@ impl StableHtmlCodecBuiltin {
             Self::Entities => "phrust_native_htmlentities",
             Self::EntityDecode => "phrust_native_html_entity_decode",
             Self::SpecialCharsDecode => "phrust_native_htmlspecialchars_decode",
+            Self::TranslationTable => "phrust_native_get_html_translation_table",
         }
     }
 
@@ -2087,6 +2059,7 @@ impl StableHtmlCodecBuiltin {
             Self::SpecialChars | Self::Entities => arity >= 1 && arity <= 4,
             Self::EntityDecode => arity >= 1 && arity <= 3,
             Self::SpecialCharsDecode => arity == 1 || arity == 2,
+            Self::TranslationTable => arity <= 3,
         }
     }
 
@@ -2096,6 +2069,7 @@ impl StableHtmlCodecBuiltin {
             Self::Entities,
             Self::EntityDecode,
             Self::SpecialCharsDecode,
+            Self::TranslationTable,
         ]
     }
 }
@@ -2115,6 +2089,7 @@ pub(super) fn stable_builtin_html_codec(
         "htmlentities" => Some(StableHtmlCodecBuiltin::Entities),
         "html_entity_decode" => Some(StableHtmlCodecBuiltin::EntityDecode),
         "htmlspecialchars_decode" => Some(StableHtmlCodecBuiltin::SpecialCharsDecode),
+        "get_html_translation_table" => Some(StableHtmlCodecBuiltin::TranslationTable),
         _ => None,
     }
 }
@@ -2249,12 +2224,13 @@ pub(super) enum StablePathBuiltin {
     Symlink,
     Readfile,
     IsUploadedFile,
+    MoveUploadedFile,
     Tempnam,
     Tmpfile,
 }
 
 impl StablePathBuiltin {
-    pub(super) const COUNT: usize = 69;
+    pub(super) const COUNT: usize = 70;
 
     pub(super) const fn index(self) -> usize {
         match self {
@@ -2325,8 +2301,9 @@ impl StablePathBuiltin {
             Self::Symlink => 64,
             Self::Readfile => 65,
             Self::IsUploadedFile => 66,
-            Self::Tempnam => 67,
-            Self::Tmpfile => 68,
+            Self::MoveUploadedFile => 67,
+            Self::Tempnam => 68,
+            Self::Tmpfile => 69,
         }
     }
 
@@ -2399,6 +2376,7 @@ impl StablePathBuiltin {
             Self::Symlink => "phrust_native_symlink",
             Self::Readfile => "phrust_native_readfile",
             Self::IsUploadedFile => "phrust_native_is_uploaded_file",
+            Self::MoveUploadedFile => "phrust_native_move_uploaded_file",
             Self::Tempnam => "phrust_native_tempnam",
             Self::Tmpfile => "phrust_native_tmpfile",
         }
@@ -2443,7 +2421,7 @@ impl StablePathBuiltin {
             Self::StreamContextSetOptions => arity == 2,
             Self::StreamFilterAppend | Self::StreamFilterPrepend => arity >= 2 && arity <= 4,
             Self::StreamSetTimeout => arity == 2 || arity == 3,
-            Self::Chmod | Self::Symlink | Self::Tempnam => arity == 2,
+            Self::Chmod | Self::Symlink | Self::MoveUploadedFile | Self::Tempnam => arity == 2,
             Self::Pathinfo => arity == 1 || arity == 2,
             Self::File => arity >= 1 && arity <= 3,
             Self::Glob => arity == 1 || arity == 2,
@@ -2451,7 +2429,8 @@ impl StablePathBuiltin {
             Self::FileGetContents => arity >= 1 && arity <= 5,
             Self::FilePutContents => arity >= 2 && arity <= 4,
             Self::Rename => arity == 2,
-            Self::Unlink | Self::Mkdir | Self::Rmdir | Self::Touch => arity == 1,
+            Self::Mkdir => arity >= 1 && arity <= 4,
+            Self::Unlink | Self::Rmdir | Self::Touch => arity == 1,
             // Optional fopen include-path/context shapes retain their one
             // baseline continuation until those capabilities are published.
             Self::Fopen => arity == 2,
@@ -2536,6 +2515,7 @@ impl StablePathBuiltin {
             Self::Symlink,
             Self::Readfile,
             Self::IsUploadedFile,
+            Self::MoveUploadedFile,
             Self::Tempnam,
             Self::Tmpfile,
         ]
@@ -2595,6 +2575,7 @@ pub(super) fn stable_builtin_path(target: &RegionCallTarget) -> Option<StablePat
         "symlink" => Some(StablePathBuiltin::Symlink),
         "readfile" => Some(StablePathBuiltin::Readfile),
         "is_uploaded_file" => Some(StablePathBuiltin::IsUploadedFile),
+        "move_uploaded_file" => Some(StablePathBuiltin::MoveUploadedFile),
         "tempnam" => Some(StablePathBuiltin::Tempnam),
         "tmpfile" => Some(StablePathBuiltin::Tmpfile),
         "filesize" => Some(StablePathBuiltin::Filesize),
@@ -2640,10 +2621,11 @@ pub(super) enum StableOutputBufferBuiltin {
     GetLevel,
     EndFlush,
     EndClean,
+    PhpInfo,
 }
 
 impl StableOutputBufferBuiltin {
-    pub(super) const COUNT: usize = 8;
+    pub(super) const COUNT: usize = 9;
 
     pub(super) const fn index(self) -> usize {
         match self {
@@ -2655,6 +2637,7 @@ impl StableOutputBufferBuiltin {
             Self::GetLevel => 5,
             Self::EndFlush => 6,
             Self::EndClean => 7,
+            Self::PhpInfo => 8,
         }
     }
 
@@ -2668,13 +2651,17 @@ impl StableOutputBufferBuiltin {
             Self::GetLevel => "phrust_native_ob_get_level",
             Self::EndFlush => "phrust_native_ob_end_flush",
             Self::EndClean => "phrust_native_ob_end_clean",
+            Self::PhpInfo => "phrust_native_phpinfo",
         }
     }
 
     pub(super) const fn accepts_arity(self, arity: usize) -> bool {
         // Optional ob_start arguments select output-handler semantics that are
         // deliberately baseline-only until their state has a native record.
-        arity == 0
+        match self {
+            Self::PhpInfo => arity <= 1,
+            _ => arity == 0,
+        }
     }
 
     pub(super) const fn all() -> [Self; Self::COUNT] {
@@ -2687,6 +2674,7 @@ impl StableOutputBufferBuiltin {
             Self::GetLevel,
             Self::EndFlush,
             Self::EndClean,
+            Self::PhpInfo,
         ]
     }
 }
@@ -2710,19 +2698,418 @@ pub(super) fn stable_builtin_output_buffer(
         "ob_get_level" => Some(StableOutputBufferBuiltin::GetLevel),
         "ob_end_flush" => Some(StableOutputBufferBuiltin::EndFlush),
         "ob_end_clean" => Some(StableOutputBufferBuiltin::EndClean),
+        "phpinfo" => Some(StableOutputBufferBuiltin::PhpInfo),
+        _ => None,
+    }
+}
+
+pub(super) fn stable_builtin_var_dump(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("var_dump")
+}
+
+pub(super) fn stable_builtin_var_export(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("var_export")
+}
+
+pub(super) fn stable_builtin_mysqli_set_charset(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_set_charset")
+}
+
+pub(super) fn stable_builtin_mysqli_query(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_query")
+}
+
+pub(super) fn stable_builtin_mysqli_fetch_array(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_fetch_array")
+}
+
+pub(super) fn stable_builtin_mysqli_fetch_object(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_fetch_object")
+}
+
+pub(super) fn stable_builtin_mysqli_character_set_name(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_character_set_name")
+}
+
+pub(super) fn stable_builtin_mysqli_fetch_field(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_fetch_field")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StableMysqliResultCountBuiltin {
+    NumFields,
+    NumRows,
+}
+
+impl StableMysqliResultCountBuiltin {
+    pub(super) const COUNT: usize = 2;
+
+    pub(super) const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(super) const fn symbol(self) -> &'static str {
+        match self {
+            Self::NumFields => "phrust_native_mysqli_num_fields",
+            Self::NumRows => "phrust_native_mysqli_num_rows",
+        }
+    }
+
+    pub(super) const fn all() -> [Self; Self::COUNT] {
+        [Self::NumFields, Self::NumRows]
+    }
+}
+
+pub(super) fn stable_builtin_mysqli_result_count(
+    target: &RegionCallTarget,
+) -> Option<StableMysqliResultCountBuiltin> {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\');
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.to_ascii_lowercase().as_str() {
+        "mysqli_num_fields" => Some(StableMysqliResultCountBuiltin::NumFields),
+        "mysqli_num_rows" => Some(StableMysqliResultCountBuiltin::NumRows),
         _ => None,
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum StableLengthBuiltin {
-    String,
+pub(super) enum StableMysqliConnectStatusBuiltin {
+    Errno,
+    Error,
 }
 
-impl StableLengthBuiltin {
-    pub(super) const fn baseline_opcode(self) -> u32 {
-        self as u32
+impl StableMysqliConnectStatusBuiltin {
+    pub(super) const COUNT: usize = 2;
+
+    pub(super) const fn index(self) -> usize {
+        self as usize
     }
+
+    pub(super) const fn symbol(self) -> &'static str {
+        match self {
+            Self::Errno => "phrust_native_mysqli_connect_errno",
+            Self::Error => "phrust_native_mysqli_connect_error",
+        }
+    }
+
+    pub(super) const fn all() -> [Self; Self::COUNT] {
+        [Self::Errno, Self::Error]
+    }
+}
+
+pub(super) fn stable_builtin_mysqli_connect_status(
+    target: &RegionCallTarget,
+) -> Option<StableMysqliConnectStatusBuiltin> {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\');
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.to_ascii_lowercase().as_str() {
+        "mysqli_connect_errno" => Some(StableMysqliConnectStatusBuiltin::Errno),
+        "mysqli_connect_error" => Some(StableMysqliConnectStatusBuiltin::Error),
+        _ => None,
+    }
+}
+
+pub(super) fn stable_builtin_mysqli_select_db(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_select_db")
+}
+
+pub(super) fn stable_builtin_mysqli_real_escape_string(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_real_escape_string")
+}
+
+pub(super) fn stable_builtin_mysqli_free_result(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_free_result")
+}
+
+pub(super) fn stable_builtin_mysqli_more_results(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_more_results")
+}
+
+pub(super) fn stable_builtin_mysqli_next_result(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_next_result")
+}
+
+pub(super) fn stable_builtin_mysqli_report(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_report")
+}
+
+pub(super) fn stable_builtin_mysqli_init(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_init")
+}
+
+pub(super) fn stable_builtin_mysqli_options(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_options")
+}
+
+pub(super) fn stable_builtin_mysqli_real_connect(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_real_connect")
+}
+
+pub(super) fn stable_builtin_mysqli_close(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_close")
+}
+
+pub(super) fn stable_builtin_mysqli_get_server_info(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("mysqli_get_server_info")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StableMysqliConnectionStatusBuiltin {
+    Error,
+    Errno,
+    AffectedRows,
+    InsertId,
+    FieldCount,
+}
+
+impl StableMysqliConnectionStatusBuiltin {
+    pub(super) const COUNT: usize = 5;
+
+    pub(super) const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(super) const fn symbol(self) -> &'static str {
+        match self {
+            Self::Error => "phrust_native_mysqli_error",
+            Self::Errno => "phrust_native_mysqli_errno",
+            Self::AffectedRows => "phrust_native_mysqli_affected_rows",
+            Self::InsertId => "phrust_native_mysqli_insert_id",
+            Self::FieldCount => "phrust_native_mysqli_field_count",
+        }
+    }
+
+    pub(super) const fn all() -> [Self; Self::COUNT] {
+        [
+            Self::Error,
+            Self::Errno,
+            Self::AffectedRows,
+            Self::InsertId,
+            Self::FieldCount,
+        ]
+    }
+}
+
+pub(super) fn stable_builtin_mysqli_connection_status(
+    target: &RegionCallTarget,
+) -> Option<StableMysqliConnectionStatusBuiltin> {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\');
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.to_ascii_lowercase().as_str() {
+        "mysqli_error" => Some(StableMysqliConnectionStatusBuiltin::Error),
+        "mysqli_errno" => Some(StableMysqliConnectionStatusBuiltin::Errno),
+        "mysqli_affected_rows" => Some(StableMysqliConnectionStatusBuiltin::AffectedRows),
+        "mysqli_insert_id" => Some(StableMysqliConnectionStatusBuiltin::InsertId),
+        "mysqli_field_count" => Some(StableMysqliConnectionStatusBuiltin::FieldCount),
+        _ => None,
+    }
+}
+
+pub(super) fn stable_builtin_print(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("print")
+}
+
+pub(super) fn stable_builtin_print_r(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("print_r")
+}
+
+/// Final zero-argument accessors implemented by PHP's internal Throwable
+/// hierarchy.  Every variant maps to one fixed native symbol; the receiver
+/// check remains inside that exact leaf so an unrelated user method with the
+/// same spelling continues through generated callable resolution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StableThrowableMethod {
+    Message,
+    Code,
+    File,
+    Line,
+    Previous,
+    Trace,
+}
+
+impl StableThrowableMethod {
+    pub(super) const COUNT: usize = 6;
+
+    pub(super) const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(super) const fn symbol(self) -> &'static str {
+        match self {
+            Self::Message => "phrust_native_throwable_get_message",
+            Self::Code => "phrust_native_throwable_get_code",
+            Self::File => "phrust_native_throwable_get_file",
+            Self::Line => "phrust_native_throwable_get_line",
+            Self::Previous => "phrust_native_throwable_get_previous",
+            Self::Trace => "phrust_native_throwable_get_trace",
+        }
+    }
+
+    pub(super) const fn all() -> [Self; Self::COUNT] {
+        [
+            Self::Message,
+            Self::Code,
+            Self::File,
+            Self::Line,
+            Self::Previous,
+            Self::Trace,
+        ]
+    }
+}
+
+pub(super) fn stable_throwable_method(target: &RegionCallTarget) -> Option<StableThrowableMethod> {
+    let RegionCallTarget::Method { method, .. } = target else {
+        return None;
+    };
+    match method.to_ascii_lowercase().as_str() {
+        "getmessage" => Some(StableThrowableMethod::Message),
+        "getcode" => Some(StableThrowableMethod::Code),
+        "getfile" => Some(StableThrowableMethod::File),
+        "getline" => Some(StableThrowableMethod::Line),
+        "getprevious" => Some(StableThrowableMethod::Previous),
+        "gettrace" => Some(StableThrowableMethod::Trace),
+        _ => None,
+    }
+}
+
+pub(super) fn stable_internal_throwable_constructor(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Constructor { class_name, .. } = target else {
+        return false;
+    };
+    matches!(
+        class_name
+            .trim_start_matches('\\')
+            .to_ascii_lowercase()
+            .as_str(),
+        "exception"
+            | "logicexception"
+            | "badfunctioncallexception"
+            | "badmethodcallexception"
+            | "domainexception"
+            | "invalidargumentexception"
+            | "lengthexception"
+            | "outofrangeexception"
+            | "runtimeexception"
+            | "outofboundsexception"
+            | "overflowexception"
+            | "rangeexception"
+            | "underflowexception"
+            | "unexpectedvalueexception"
+            | "error"
+            | "compileerror"
+            | "parseerror"
+            | "typeerror"
+            | "argumentcounterror"
+            | "valueerror"
+            | "arithmeticerror"
+            | "divisionbyzeroerror"
+            | "unhandledmatcherror"
+            | "fibererror"
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StableLengthBuiltin {
+    String,
 }
 
 pub(super) fn stable_builtin_length(target: &RegionCallTarget) -> Option<StableLengthBuiltin> {
@@ -2754,12 +3141,6 @@ pub(super) enum StableStringPredicateBuiltin {
     Contains,
     StartsWith,
     EndsWith,
-}
-
-impl StableStringPredicateBuiltin {
-    pub(super) const fn baseline_opcode(self) -> u32 {
-        self as u32
-    }
 }
 
 pub(super) fn stable_builtin_string_predicate(
@@ -3024,6 +3405,17 @@ pub(super) fn stable_builtin_array_projection(
         "array_values" => Some(StableArrayProjectionBuiltin::Values),
         _ => None,
     }
+}
+
+/// Case-folds only string keys while preserving integer keys and PHP's
+/// collision/overwrite ordering. The case selector remains a normal typed
+/// operand; no builtin or operation identifier reaches generated code.
+pub(super) fn stable_builtin_array_change_key_case(target: &RegionCallTarget) -> bool {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return false;
+    };
+    let normalized = name.trim_start_matches('\\');
+    !normalized.contains('\\') && normalized.eq_ignore_ascii_case("array_change_key_case")
 }
 
 /// Scalar aggregates over authoritative native array entries.
@@ -3307,16 +3699,18 @@ pub(super) enum StableFrameIntrospectionBuiltin {
     NumArgs,
     GetArg,
     GetArgs,
+    DebugBacktrace,
 }
 
 impl StableFrameIntrospectionBuiltin {
-    pub(super) const COUNT: usize = 3;
+    pub(super) const COUNT: usize = 4;
 
     pub(super) const fn index(self) -> usize {
         match self {
             Self::NumArgs => 0,
             Self::GetArg => 1,
             Self::GetArgs => 2,
+            Self::DebugBacktrace => 3,
         }
     }
 
@@ -3325,6 +3719,7 @@ impl StableFrameIntrospectionBuiltin {
             Self::NumArgs => "phrust_native_func_num_args",
             Self::GetArg => "phrust_native_func_get_arg",
             Self::GetArgs => "phrust_native_func_get_args",
+            Self::DebugBacktrace => "phrust_native_debug_backtrace",
         }
     }
 
@@ -3332,11 +3727,17 @@ impl StableFrameIntrospectionBuiltin {
         match self {
             Self::GetArg => arity == 1,
             Self::NumArgs | Self::GetArgs => arity == 0,
+            Self::DebugBacktrace => arity <= 2,
         }
     }
 
     pub(super) const fn all() -> [Self; Self::COUNT] {
-        [Self::NumArgs, Self::GetArg, Self::GetArgs]
+        [
+            Self::NumArgs,
+            Self::GetArg,
+            Self::GetArgs,
+            Self::DebugBacktrace,
+        ]
     }
 }
 
@@ -3354,6 +3755,7 @@ pub(super) fn stable_builtin_frame_introspection(
         "func_num_args" => Some(StableFrameIntrospectionBuiltin::NumArgs),
         "func_get_arg" => Some(StableFrameIntrospectionBuiltin::GetArg),
         "func_get_args" => Some(StableFrameIntrospectionBuiltin::GetArgs),
+        "debug_backtrace" => Some(StableFrameIntrospectionBuiltin::DebugBacktrace),
         _ => None,
     }
 }
@@ -3470,53 +3872,56 @@ pub(super) fn stable_builtin_callable_query(
 /// generic prepared-builtin dispatcher participates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StableCallbackHandlerBuiltin {
-    SetErrorHandler,
-    RestoreErrorHandler,
-    SetExceptionHandler,
-    RestoreExceptionHandler,
-    GetExceptionHandler,
+    SetError,
+    RestoreError,
+    SetException,
+    RestoreException,
+    GetException,
+    TriggerError,
 }
 
 impl StableCallbackHandlerBuiltin {
-    pub(super) const COUNT: usize = 5;
+    pub(super) const COUNT: usize = 6;
 
     pub(super) const fn index(self) -> usize {
         match self {
-            Self::SetErrorHandler => 0,
-            Self::RestoreErrorHandler => 1,
-            Self::SetExceptionHandler => 2,
-            Self::RestoreExceptionHandler => 3,
-            Self::GetExceptionHandler => 4,
+            Self::SetError => 0,
+            Self::RestoreError => 1,
+            Self::SetException => 2,
+            Self::RestoreException => 3,
+            Self::GetException => 4,
+            Self::TriggerError => 5,
         }
     }
 
     pub(super) const fn symbol(self) -> &'static str {
         match self {
-            Self::SetErrorHandler => "phrust_native_set_error_handler",
-            Self::RestoreErrorHandler => "phrust_native_restore_error_handler",
-            Self::SetExceptionHandler => "phrust_native_set_exception_handler",
-            Self::RestoreExceptionHandler => "phrust_native_restore_exception_handler",
-            Self::GetExceptionHandler => "phrust_native_get_exception_handler",
+            Self::SetError => "phrust_native_set_error_handler",
+            Self::RestoreError => "phrust_native_restore_error_handler",
+            Self::SetException => "phrust_native_set_exception_handler",
+            Self::RestoreException => "phrust_native_restore_exception_handler",
+            Self::GetException => "phrust_native_get_exception_handler",
+            Self::TriggerError => "phrust_native_trigger_error",
         }
     }
 
     pub(super) const fn accepts_arity(self, arity: usize) -> bool {
         match self {
-            Self::SetErrorHandler => arity == 1 || arity == 2,
-            Self::SetExceptionHandler => arity == 1,
-            Self::RestoreErrorHandler
-            | Self::RestoreExceptionHandler
-            | Self::GetExceptionHandler => arity == 0,
+            Self::SetError => arity == 1 || arity == 2,
+            Self::SetException => arity == 1,
+            Self::RestoreError | Self::RestoreException | Self::GetException => arity == 0,
+            Self::TriggerError => arity == 1 || arity == 2,
         }
     }
 
     pub(super) const fn all() -> [Self; Self::COUNT] {
         [
-            Self::SetErrorHandler,
-            Self::RestoreErrorHandler,
-            Self::SetExceptionHandler,
-            Self::RestoreExceptionHandler,
-            Self::GetExceptionHandler,
+            Self::SetError,
+            Self::RestoreError,
+            Self::SetException,
+            Self::RestoreException,
+            Self::GetException,
+            Self::TriggerError,
         ]
     }
 }
@@ -3532,11 +3937,12 @@ pub(super) fn stable_builtin_callback_handler(
         return None;
     }
     match normalized.to_ascii_lowercase().as_str() {
-        "set_error_handler" => Some(StableCallbackHandlerBuiltin::SetErrorHandler),
-        "restore_error_handler" => Some(StableCallbackHandlerBuiltin::RestoreErrorHandler),
-        "set_exception_handler" => Some(StableCallbackHandlerBuiltin::SetExceptionHandler),
-        "restore_exception_handler" => Some(StableCallbackHandlerBuiltin::RestoreExceptionHandler),
-        "get_exception_handler" => Some(StableCallbackHandlerBuiltin::GetExceptionHandler),
+        "set_error_handler" => Some(StableCallbackHandlerBuiltin::SetError),
+        "restore_error_handler" => Some(StableCallbackHandlerBuiltin::RestoreError),
+        "set_exception_handler" => Some(StableCallbackHandlerBuiltin::SetException),
+        "restore_exception_handler" => Some(StableCallbackHandlerBuiltin::RestoreException),
+        "get_exception_handler" => Some(StableCallbackHandlerBuiltin::GetException),
+        "trigger_error" | "user_error" => Some(StableCallbackHandlerBuiltin::TriggerError),
         _ => None,
     }
 }
@@ -4053,6 +4459,94 @@ pub(super) fn stable_builtin_resource_query(
     }
 }
 
+/// Exact fileinfo operations over one prepared native `finfo` object shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StableFileinfoBuiltin {
+    Open,
+    Close,
+    Buffer,
+    File,
+    SetFlags,
+    ExifImageType,
+    ImageTypeToMimeType,
+    GetImageSize,
+}
+
+impl StableFileinfoBuiltin {
+    pub(super) const COUNT: usize = 8;
+
+    pub(super) const fn index(self) -> usize {
+        match self {
+            Self::Open => 0,
+            Self::Close => 1,
+            Self::Buffer => 2,
+            Self::File => 3,
+            Self::SetFlags => 4,
+            Self::ExifImageType => 5,
+            Self::ImageTypeToMimeType => 6,
+            Self::GetImageSize => 7,
+        }
+    }
+
+    pub(super) const fn symbol(self) -> &'static str {
+        match self {
+            Self::Open => "phrust_native_finfo_open",
+            Self::Close => "phrust_native_finfo_close",
+            Self::Buffer => "phrust_native_finfo_buffer",
+            Self::File => "phrust_native_finfo_file",
+            Self::SetFlags => "phrust_native_finfo_set_flags",
+            Self::ExifImageType => "phrust_native_exif_imagetype",
+            Self::ImageTypeToMimeType => "phrust_native_image_type_to_mime_type",
+            Self::GetImageSize => "phrust_native_getimagesize",
+        }
+    }
+
+    pub(super) const fn accepts_arity(self, arity: usize) -> bool {
+        match self {
+            Self::Open => arity <= 2,
+            Self::Close => arity == 1,
+            Self::Buffer | Self::File => arity >= 2 && arity <= 4,
+            Self::SetFlags => arity == 2,
+            Self::ExifImageType | Self::ImageTypeToMimeType => arity == 1,
+            Self::GetImageSize => arity >= 1 && arity <= 2,
+        }
+    }
+
+    pub(super) const fn all() -> [Self; Self::COUNT] {
+        [
+            Self::Open,
+            Self::Close,
+            Self::Buffer,
+            Self::File,
+            Self::SetFlags,
+            Self::ExifImageType,
+            Self::ImageTypeToMimeType,
+            Self::GetImageSize,
+        ]
+    }
+}
+
+pub(super) fn stable_builtin_fileinfo(target: &RegionCallTarget) -> Option<StableFileinfoBuiltin> {
+    let RegionCallTarget::Function { name, .. } = target else {
+        return None;
+    };
+    let normalized = name.trim_start_matches('\\');
+    if normalized.contains('\\') {
+        return None;
+    }
+    match normalized.to_ascii_lowercase().as_str() {
+        "finfo_open" => Some(StableFileinfoBuiltin::Open),
+        "finfo_close" => Some(StableFileinfoBuiltin::Close),
+        "finfo_buffer" => Some(StableFileinfoBuiltin::Buffer),
+        "finfo_file" => Some(StableFileinfoBuiltin::File),
+        "finfo_set_flags" => Some(StableFileinfoBuiltin::SetFlags),
+        "exif_imagetype" => Some(StableFileinfoBuiltin::ExifImageType),
+        "image_type_to_mime_type" => Some(StableFileinfoBuiltin::ImageTypeToMimeType),
+        "getimagesize" => Some(StableFileinfoBuiltin::GetImageSize),
+        _ => None,
+    }
+}
+
 /// Request-local PHP error-state observation and reset. The stored diagnostic
 /// is already a native record; exact handlers publish its array view directly
 /// instead of reconstructing a Rust `Value`.
@@ -4337,16 +4831,22 @@ pub(super) enum StableClockBuiltin {
     Time,
     Microtime,
     Hrtime,
+    Usleep,
+    SetTimeLimit,
+    Uniqid,
 }
 
 impl StableClockBuiltin {
-    pub(super) const COUNT: usize = 3;
+    pub(super) const COUNT: usize = 6;
 
     pub(super) const fn index(self) -> usize {
         match self {
             Self::Time => 0,
             Self::Microtime => 1,
             Self::Hrtime => 2,
+            Self::Usleep => 3,
+            Self::SetTimeLimit => 4,
+            Self::Uniqid => 5,
         }
     }
 
@@ -4355,6 +4855,9 @@ impl StableClockBuiltin {
             Self::Time => "phrust_native_time",
             Self::Microtime => "phrust_native_microtime",
             Self::Hrtime => "phrust_native_hrtime",
+            Self::Usleep => "phrust_native_usleep",
+            Self::SetTimeLimit => "phrust_native_set_time_limit",
+            Self::Uniqid => "phrust_native_uniqid",
         }
     }
 
@@ -4362,11 +4865,20 @@ impl StableClockBuiltin {
         match self {
             Self::Time => arity == 0,
             Self::Microtime | Self::Hrtime => arity <= 1,
+            Self::Usleep | Self::SetTimeLimit => arity == 1,
+            Self::Uniqid => arity <= 2,
         }
     }
 
     pub(super) const fn all() -> [Self; Self::COUNT] {
-        [Self::Time, Self::Microtime, Self::Hrtime]
+        [
+            Self::Time,
+            Self::Microtime,
+            Self::Hrtime,
+            Self::Usleep,
+            Self::SetTimeLimit,
+            Self::Uniqid,
+        ]
     }
 }
 
@@ -4382,6 +4894,9 @@ pub(super) fn stable_builtin_clock(target: &RegionCallTarget) -> Option<StableCl
         "time" => Some(StableClockBuiltin::Time),
         "microtime" => Some(StableClockBuiltin::Microtime),
         "hrtime" => Some(StableClockBuiltin::Hrtime),
+        "usleep" => Some(StableClockBuiltin::Usleep),
+        "set_time_limit" => Some(StableClockBuiltin::SetTimeLimit),
+        "uniqid" => Some(StableClockBuiltin::Uniqid),
         _ => None,
     }
 }
@@ -4389,9 +4904,9 @@ pub(super) fn stable_builtin_clock(target: &RegionCallTarget) -> Option<StableCl
 /// Exact procedural date/time operations over authoritative native scalars
 /// and the already-published request timezone capability.
 ///
-/// Object-producing DateTime APIs and deprecated strftime diagnostics remain
-/// one baseline continuation. Every admitted operation below has a distinct
-/// native symbol; generated code never supplies a date operation ID.
+/// Every admitted operation below has a distinct native symbol; generated
+/// code never supplies a date operation ID. Object construction consumes an
+/// immutable class plan published before request execution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StableDateBuiltin {
     Checkdate,
@@ -4401,10 +4916,12 @@ pub(super) enum StableDateBuiltin {
     Mktime,
     Gmmktime,
     TimezoneIdentifiers,
+    DateCreate,
+    TimezoneOpen,
 }
 
 impl StableDateBuiltin {
-    pub(super) const COUNT: usize = 7;
+    pub(super) const COUNT: usize = 9;
 
     pub(super) const fn index(self) -> usize {
         match self {
@@ -4415,6 +4932,8 @@ impl StableDateBuiltin {
             Self::Mktime => 4,
             Self::Gmmktime => 5,
             Self::TimezoneIdentifiers => 6,
+            Self::DateCreate => 7,
+            Self::TimezoneOpen => 8,
         }
     }
 
@@ -4427,6 +4946,8 @@ impl StableDateBuiltin {
             Self::Mktime => "phrust_native_mktime",
             Self::Gmmktime => "phrust_native_gmmktime",
             Self::TimezoneIdentifiers => "phrust_native_timezone_identifiers_list",
+            Self::DateCreate => "phrust_native_date_create",
+            Self::TimezoneOpen => "phrust_native_timezone_open",
         }
     }
 
@@ -4435,7 +4956,9 @@ impl StableDateBuiltin {
             Self::Checkdate => arity == 3,
             Self::Date | Self::Gmdate | Self::Strtotime => arity == 1 || arity == 2,
             Self::Mktime | Self::Gmmktime => arity >= 1 && arity <= 6,
-            Self::TimezoneIdentifiers => arity == 0,
+            Self::TimezoneIdentifiers => arity <= 2,
+            Self::DateCreate => arity <= 2,
+            Self::TimezoneOpen => arity == 1,
         }
     }
 
@@ -4448,6 +4971,8 @@ impl StableDateBuiltin {
             Self::Mktime,
             Self::Gmmktime,
             Self::TimezoneIdentifiers,
+            Self::DateCreate,
+            Self::TimezoneOpen,
         ]
     }
 }
@@ -4468,6 +4993,8 @@ pub(super) fn stable_builtin_date(target: &RegionCallTarget) -> Option<StableDat
         "mktime" => Some(StableDateBuiltin::Mktime),
         "gmmktime" => Some(StableDateBuiltin::Gmmktime),
         "timezone_identifiers_list" => Some(StableDateBuiltin::TimezoneIdentifiers),
+        "date_create" => Some(StableDateBuiltin::DateCreate),
+        "timezone_open" => Some(StableDateBuiltin::TimezoneOpen),
         _ => None,
     }
 }
@@ -5169,192 +5696,4 @@ pub(super) fn stable_builtin_string_span(
         "strcspn" => Some(StableStringSpanBuiltin::Excluded),
         _ => None,
     }
-}
-
-pub(super) fn native_argument_flags(argument: &php_ir::instruction::IrCallArg) -> u32 {
-    let mut flags = crate::JitNativeArgFlags::default();
-    if argument.name.is_some() {
-        flags = flags.union(crate::JitNativeArgFlags::NAMED);
-    }
-    if argument.unpack {
-        flags = flags.union(crate::JitNativeArgFlags::UNPACK);
-    }
-    if argument.by_ref_local.is_some()
-        || argument.by_ref_dim.is_some()
-        || argument.by_ref_property.is_some()
-        || argument.by_ref_property_dim.is_some()
-    {
-        flags = flags.union(crate::JitNativeArgFlags::BY_REFERENCE);
-    }
-    if argument.value_kind == php_ir::instruction::IrCallArgValueKind::IndirectTemporary {
-        flags = flags.union(crate::JitNativeArgFlags::INDIRECT_TEMPORARY);
-    }
-    flags.0
-}
-
-pub(super) fn native_argument_has_location(argument: &php_ir::instruction::IrCallArg) -> bool {
-    argument.by_ref_local.is_some()
-        || argument.by_ref_dim.is_some()
-        || argument.by_ref_property.is_some()
-        || argument.by_ref_property_dim.is_some()
-}
-
-pub(super) fn known_user_argument_requires_reference(
-    call: &RegionNativeCall,
-    index: usize,
-    function_params: &BTreeMap<FunctionId, NativeFunctionMetadata>,
-    external_function_signatures: &[crate::JitExternalFunctionSignature],
-    caller: FunctionId,
-) -> Option<bool> {
-    let argument = call.args.get(index)?;
-    if let Some(requirement) = call.declared_argument_reference_requirement(index) {
-        return Some(requirement);
-    }
-    if matches!(call.target, RegionCallTarget::Method { .. }) {
-        // A dynamic receiver may resolve to any visible userland or internal
-        // class. Method-name-only arginfo is therefore not authoritative:
-        // an unrelated internal `get()` must not classify a userland
-        // `get(&$value)` as by-value. The resolved dispatcher publishes the
-        // exact parameter flags and the caller restores speculative local
-        // bindings after the call.
-        return None;
-    }
-    if let RegionCallTarget::Function {
-        name,
-        function: None,
-    } = &call.target
-    {
-        let normalized = name.trim_start_matches('\\');
-        let has_local_metadata = function_params.values().any(|metadata| {
-            metadata
-                .name
-                .trim_start_matches('\\')
-                .eq_ignore_ascii_case(normalized)
-        });
-        if !has_local_metadata {
-            let signature = external_function_signatures.iter().find(|signature| {
-                signature.published
-                    && signature
-                        .name
-                        .trim_start_matches('\\')
-                        .eq_ignore_ascii_case(normalized)
-            })?;
-            let parameter = argument.name.as_deref().map_or_else(
-                || {
-                    signature.params.get(index).or_else(|| {
-                        signature
-                            .params
-                            .last()
-                            .filter(|parameter| parameter.variadic)
-                    })
-                },
-                |name| {
-                    signature
-                        .params
-                        .iter()
-                        .find(|parameter| parameter.name == name)
-                        .or_else(|| {
-                            signature
-                                .params
-                                .last()
-                                .filter(|parameter| parameter.variadic)
-                        })
-                },
-            );
-            return Some(parameter.is_some_and(|parameter| parameter.by_ref));
-        }
-    }
-    let method_matches = |candidate: &str, method: &str| {
-        candidate
-            .rsplit_once("::")
-            .is_some_and(|(_, candidate_method)| candidate_method.eq_ignore_ascii_case(method))
-    };
-    let metadata = match &call.target {
-        RegionCallTarget::Function {
-            name,
-            function: None,
-        } => {
-            let normalized = name.trim_start_matches('\\');
-            vec![function_params.values().find(|metadata| {
-                metadata
-                    .name
-                    .trim_start_matches('\\')
-                    .eq_ignore_ascii_case(normalized)
-            })?]
-        }
-        RegionCallTarget::Function {
-            function: Some(function),
-            ..
-        } => vec![function_params.get(function)?],
-        RegionCallTarget::StaticMethod { class_name, method } => {
-            let resolved_class = if matches!(class_name.as_str(), "self" | "static") {
-                function_params
-                    .get(&caller)
-                    .and_then(|metadata| metadata.name.rsplit_once("::").map(|(class, _)| class))
-            } else {
-                Some(class_name.trim_start_matches('\\'))
-            };
-            let exact = resolved_class.and_then(|class| {
-                function_params.values().find(|metadata| {
-                    metadata.name.rsplit_once("::").is_some_and(
-                        |(candidate_class, candidate_method)| {
-                            candidate_class
-                                .trim_start_matches('\\')
-                                .eq_ignore_ascii_case(class)
-                                && candidate_method.eq_ignore_ascii_case(method)
-                        },
-                    )
-                })
-            });
-            exact.map_or_else(
-                || {
-                    function_params
-                        .values()
-                        .filter(|metadata| method_matches(&metadata.name, method))
-                        .collect()
-                },
-                |metadata| vec![metadata],
-            )
-        }
-        RegionCallTarget::Method { .. } => unreachable!("handled before metadata lookup"),
-        RegionCallTarget::Constructor { class_name, .. } => function_params
-            .values()
-            .filter(|metadata| {
-                metadata
-                    .name
-                    .rsplit_once("::")
-                    .is_some_and(|(class, method)| {
-                        class
-                            .trim_start_matches('\\')
-                            .eq_ignore_ascii_case(class_name.trim_start_matches('\\'))
-                            && method.eq_ignore_ascii_case("__construct")
-                    })
-            })
-            .collect(),
-        _ => return None,
-    };
-    let mut requirements = metadata.into_iter().map(|metadata| {
-        let parameters = &metadata.params;
-        argument
-            .name
-            .as_deref()
-            .map_or_else(
-                || {
-                    parameters
-                        .get(index)
-                        .or_else(|| parameters.last().filter(|parameter| parameter.variadic))
-                },
-                |name| {
-                    parameters
-                        .iter()
-                        .find(|parameter| parameter.name == name)
-                        .or_else(|| parameters.last().filter(|parameter| parameter.variadic))
-                },
-            )
-            .is_some_and(|parameter| parameter.by_ref)
-    });
-    let requirement = requirements.next()?;
-    requirements
-        .all(|candidate| candidate == requirement)
-        .then_some(requirement)
 }

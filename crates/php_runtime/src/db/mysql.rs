@@ -40,11 +40,32 @@ pub const MYSQLI_STORE_RESULT: i64 = 0;
 /// `mysqli_use_result()` mode.
 pub const MYSQLI_USE_RESULT: i64 = 1;
 
+/// Escapes one byte string with the character substitutions used by
+/// `mysqli_real_escape_string()` in the native mysqli implementation.
+#[must_use]
+pub fn native_mysql_escape_string(value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len());
+    for byte in value {
+        match byte {
+            0 => out.extend_from_slice(b"\\0"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\'' => out.extend_from_slice(b"\\'"),
+            b'"' => out.extend_from_slice(b"\\\""),
+            0x1a => out.extend_from_slice(b"\\Z"),
+            other => out.push(*other),
+        }
+    }
+    out
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MysqlBufferedResult {
     columns: Vec<String>,
     rows: Vec<MysqlRow>,
     offset: usize,
+    field_offset: usize,
 }
 
 #[derive(Debug)]
@@ -717,6 +738,15 @@ impl MysqlState {
         row_to_array(&result.columns, &row, mode)
     }
 
+    /// Fetches one buffered row for a typed native consumer without constructing
+    /// the PHP compatibility `Value` representation.
+    pub fn fetch_native_row(&mut self, id: i64) -> Option<(Vec<String>, MysqlRow)> {
+        let result = self.results.get_mut(&id)?;
+        let row = result.rows.get(result.offset)?.clone();
+        result.offset = result.offset.saturating_add(1);
+        Some((result.columns.clone(), row))
+    }
+
     /// Resets the next row returned by a buffered result set.
     pub fn data_seek(&mut self, id: i64, offset: usize) -> bool {
         let Some(result) = self.results.get_mut(&id) else {
@@ -735,6 +765,14 @@ impl MysqlState {
         self.results
             .get(&id)
             .map_or_else(Vec::new, |result| result.columns.clone())
+    }
+
+    /// Fetches the next buffered field name for an exact native metadata consumer.
+    pub fn fetch_native_field_name(&mut self, id: i64) -> Option<String> {
+        let result = self.results.get_mut(&id)?;
+        let name = result.columns.get(result.field_offset)?.clone();
+        result.field_offset = result.field_offset.saturating_add(1);
+        Some(name)
     }
 
     /// Frees a buffered result set.
@@ -802,6 +840,7 @@ impl MysqlState {
                 columns: result.columns,
                 rows: result.rows,
                 offset: 0,
+                field_offset: 0,
             },
         );
         result_id

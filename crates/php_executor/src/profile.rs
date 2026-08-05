@@ -84,7 +84,7 @@ impl EngineProfile {
         let optimization_level = match name {
             EngineProfileName::Baseline => {
                 vm_options.inline_caches = InlineCacheMode::Off;
-                vm_options.native_optimization = NativeOptimizationPolicy::Baseline;
+                vm_options.native_optimization = NativeOptimizationPolicy::Generic;
                 vm_options.native_blacklist = NativeBlacklistMode::On;
                 vm_options.tiering.enabled = true;
                 vm_options.tiering.native_eager = true;
@@ -154,7 +154,7 @@ mod tests {
         let optimized = PhpExecutorOptions::default_native_runtime();
         assert_eq!(
             baseline.vm_options.native_optimization,
-            NativeOptimizationPolicy::Baseline
+            NativeOptimizationPolicy::Generic
         );
         assert_eq!(
             optimized.vm_options.native_optimization,

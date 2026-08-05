@@ -24,27 +24,16 @@ pub struct HelperOwnershipContract {
 }
 
 const NONE: &[HelperInputOwnership] = &[];
-const CONSUME_1: &[HelperInputOwnership] = &[HelperInputOwnership::Consume];
 const BORROW_1: &[HelperInputOwnership] = &[HelperInputOwnership::Borrow];
 const BORROW_2: &[HelperInputOwnership] =
     &[HelperInputOwnership::Borrow, HelperInputOwnership::Borrow];
 const CONSUME_BORROW_1: &[HelperInputOwnership] =
     &[HelperInputOwnership::Consume, HelperInputOwnership::Borrow];
-const BORROW_3: &[HelperInputOwnership] = &[
-    HelperInputOwnership::Borrow,
-    HelperInputOwnership::Borrow,
-    HelperInputOwnership::Borrow,
-];
 const BORROW_6: &[HelperInputOwnership] = &[
     HelperInputOwnership::Borrow,
     HelperInputOwnership::Borrow,
     HelperInputOwnership::Borrow,
     HelperInputOwnership::Borrow,
-    HelperInputOwnership::Borrow,
-    HelperInputOwnership::Borrow,
-];
-const CONSUME_BORROW_2: &[HelperInputOwnership] = &[
-    HelperInputOwnership::Consume,
     HelperInputOwnership::Borrow,
     HelperInputOwnership::Borrow,
 ];
@@ -175,11 +164,30 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
                     | "phrust_native_file_exists"
                     | "phrust_native_is_file"
                     | "phrust_native_is_dir"
+                    | "phrust_native_is_link"
                     | "phrust_native_is_readable"
                     | "phrust_native_is_writable"
+                    | "phrust_native_fileperms"
+                    | "phrust_native_fileowner"
+                    | "phrust_native_filegroup"
+                    | "phrust_native_filetype"
+                    | "phrust_native_disk_free_space"
+                    | "phrust_native_disk_total_space"
+                    | "phrust_native_pathinfo"
+                    | "phrust_native_stat"
+                    | "phrust_native_lstat"
+                    | "phrust_native_file"
+                    | "phrust_native_glob"
                     | "phrust_native_filesize"
                     | "phrust_native_filemtime"
                     | "phrust_native_file_get_contents"
+                    | "phrust_native_file_put_contents"
+                    | "phrust_native_rename"
+                    | "phrust_native_move_uploaded_file"
+                    | "phrust_native_unlink"
+                    | "phrust_native_mkdir"
+                    | "phrust_native_rmdir"
+                    | "phrust_native_touch"
                     | "phrust_native_fopen"
                     | "phrust_native_fwrite"
                     | "phrust_native_fclose"
@@ -206,55 +214,53 @@ pub fn helper_ownership_contract(name: &str) -> Option<HelperOwnershipContract> 
         {
             Some(owned(BORROW_6, false))
         }
-        "phrust_baseline_native_call_dispatch"
-        | "phrust_baseline_native_builtin_dispatch"
-        | "phrust_baseline_native_semantic_dispatch"
-        | "phrust_jit_native_dynamic_code" => Some(owned(NONE, false)),
+        "phrust_cold_dynamic_unit_resolve" => Some(owned(NONE, false)),
         "phrust_jit_native_function_resolve"
         | "phrust_native_frame_alloc"
         | "phrust_native_frame_release"
         | "phrust_native_numeric_string" => Some(none(NONE)),
-        "phrust_baseline_native_unary"
-        | "phrust_baseline_native_cast"
-        | "phrust_native_type_predicate"
-        | "phrust_native_stable_length"
-        | "phrust_native_local_fetch"
-        | "phrust_native_return_check"
-        | "phrust_native_object_clone"
+        "phrust_native_unary_plus"
+        | "phrust_native_unary_minus"
+        | "phrust_native_bit_not"
+        | "phrust_native_callback_return_string"
+        | "phrust_native_declared_return_contract"
         | "phrust_native_object_cast"
         | "phrust_native_array_cast"
         | "phrust_native_int_cast"
         | "phrust_native_float_cast"
-        | "phrust_native_string_cast"
-        | "phrust_native_foreach_init"
-        | "phrust_native_constant_fetch" => Some(owned(BORROW_1, true)),
-        "phrust_baseline_native_binary"
-        | "phrust_baseline_native_compare"
-        | "phrust_native_array_fetch"
-        | "phrust_native_array_unset"
-        | "phrust_native_array_spread"
-        | "phrust_native_object_clone_with" => Some(owned(BORROW_2, true)),
-        "phrust_native_string_predicate" => Some(owned(BORROW_2, false)),
+        | "phrust_native_string_cast" => Some(owned(BORROW_1, true)),
+        "phrust_native_count"
+        | "phrust_native_sizeof"
+        | "phrust_native_array_union"
+        | "phrust_native_concat"
+        | "phrust_native_bit_and"
+        | "phrust_native_bit_or"
+        | "phrust_native_bit_xor"
+        | "phrust_native_equal"
+        | "phrust_native_not_equal"
+        | "phrust_native_identical"
+        | "phrust_native_not_identical"
+        | "phrust_native_less"
+        | "phrust_native_less_equal"
+        | "phrust_native_greater"
+        | "phrust_native_greater_equal"
+        | "phrust_native_spaceship" => Some(owned(BORROW_2, true)),
         "phrust_native_dynamic_property_slot" | "phrust_native_dynamic_property_test_slot" => {
             Some(borrowed(BORROW_2))
         }
-        "phrust_native_local_store"
-        | "phrust_native_reference_bind"
-        | "phrust_native_property_fetch"
-        | "phrust_native_array_insert" => Some(owned(BORROW_3, true)),
-        "phrust_native_array_insert_local" => Some(owned(CONSUME_BORROW_2, true)),
-        "phrust_native_property_assign" => Some(owned(BORROW_2, true)),
-        "phrust_native_argument_check" => Some(owned(BORROW_1, true)),
-        "phrust_native_array_new" | "phrust_native_object_new" | "phrust_native_exception_new" => {
-            Some(owned(NONE, false))
-        }
+        "phrust_native_declared_argument_contract" => Some(owned(BORROW_1, true)),
         "phrust_native_prepared_exception_new" => Some(owned(BORROW_1, false)),
-        "phrust_native_value_release" => Some(none(CONSUME_1)),
-        "phrust_native_echo"
-        | "phrust_native_foreach_cleanup"
-        | "phrust_native_runtime_fatal"
-        | "phrust_native_execution_poll" => Some(none(BORROW_1)),
-        "phrust_native_foreach_next" | "phrust_native_truthy" => Some(owned(BORROW_1, false)),
+        "phrust_native_static_property_contract" => Some(owned(BORROW_1, false)),
+        "phrust_native_typed_static_reference_bind" => Some(owned(BORROW_1, false)),
+        "phrust_native_typed_reference_store" => Some(owned(BORROW_2, false)),
+        "phrust_native_typed_reference_array_init" => Some(owned(BORROW_1, false)),
+        "phrust_native_undefined_constant" => Some(owned(NONE, false)),
+        "phrust_native_execution_poll" => Some(none(BORROW_1)),
+        // Generated scalar-math entries receive raw machine scalars, not
+        // native PHP owners. The remaining generated exact-control registry
+        // uses the uniform six-borrow ABI and returns a new native owner.
+        name if name.ends_with("_f64") => Some(owned(NONE, false)),
+        name if name.starts_with("phrust_native_") => Some(owned(BORROW_6, false)),
         _ => None,
     }
 }

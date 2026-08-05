@@ -22,8 +22,8 @@ def main() -> int:
     if re.search(r"\b_\s*=>", source):
         failures.append("authoritative coverage contains a wildcard match arm")
     for function in (
-        "baseline_instruction_lowering",
-        "baseline_terminator_lowering",
+        "generic_instruction_lowering",
+        "generic_terminator_lowering",
         "baseline_unary_class",
         "baseline_binary_class",
         "baseline_compare_class",

@@ -199,15 +199,13 @@ pub struct NativeFunctionImage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum NativeFunctionAbi {
-    I64StatusOut = 1,
-    PackedI64StatusOut = 2,
+    NativeControl = 3,
 }
 
 impl NativeFunctionAbi {
     fn from_raw(raw: u8) -> Result<Self, NativeCacheError> {
         match raw {
-            1 => Ok(Self::I64StatusOut),
-            2 => Ok(Self::PackedI64StatusOut),
+            3 => Ok(Self::NativeControl),
             _ => Err(NativeCacheError::InvalidHeader(format!(
                 "unknown native function ABI {raw}"
             ))),
@@ -571,7 +569,7 @@ impl NativeArtifactImage {
                 code_offset: graph_offset.saturating_add(root.code_offset),
                 code_len: root.code_len,
                 arity: root.arity,
-                abi: NativeFunctionAbi::PackedI64StatusOut,
+                abi: NativeFunctionAbi::NativeControl,
             });
             if !emitted_symbol_ids.contains(&record.function.raw()) {
                 emitted_symbol_ids.insert(record.function.raw());
@@ -1239,7 +1237,7 @@ impl NativeLoadedArtifact {
         self.mapping.len
     }
 
-    pub fn invoke_i64_status_out(&self, function_id: u32) -> Result<i64, NativeCacheError> {
+    pub fn invoke_native_control(&self, function_id: u32) -> Result<i64, NativeCacheError> {
         let function = self
             .image
             .functions
@@ -1251,57 +1249,38 @@ impl NativeLoadedArtifact {
                 "cache probe supports only zero-arity entries".to_owned(),
             ));
         }
-        if !matches!(
-            function.abi,
-            NativeFunctionAbi::I64StatusOut | NativeFunctionAbi::PackedI64StatusOut
-        ) {
+        if function.abi != NativeFunctionAbi::NativeControl {
             return Err(NativeCacheError::InvalidHeader(
-                "cached entry does not use the status/out ABI".to_owned(),
+                "cached entry does not use the native control ABI".to_owned(),
             ));
         }
         let address = self.entry_address(function_id)?;
-        let mut out = 0_i64;
         let mut state = crate::prepare_native_deopt_out(std::ptr::null_mut());
         let state = state.as_mut_ptr();
         // SAFETY: PNA validation proved the entry range and signature metadata;
         // the mapping was writable only before its RX transition. The sparse
         // deopt record is prepared through the same runtime-view boundary as a
         // production entry, so direct native loads never observe a null view.
-        let status = unsafe {
-            match function.abi {
-                NativeFunctionAbi::I64StatusOut => {
-                    let entry: extern "C" fn(
-                        *mut i64,
-                        *mut crate::JitDeoptState,
-                        i32,
-                        *const crate::JitDeoptState,
-                    ) -> i32 = std::mem::transmute(address);
-                    entry(&mut out, state, -1, std::ptr::null())
-                }
-                NativeFunctionAbi::PackedI64StatusOut => {
-                    let entry: extern "C" fn(
-                        *mut std::ffi::c_void,
-                        *const i64,
-                        *mut i64,
-                        *mut crate::JitDeoptState,
-                        i32,
-                        *const crate::JitDeoptState,
-                    ) -> i32 = std::mem::transmute(address);
-                    entry(
-                        std::ptr::null_mut(),
-                        std::ptr::NonNull::<i64>::dangling().as_ptr(),
-                        &mut out,
-                        state,
-                        -1,
-                        std::ptr::null(),
-                    )
-                }
-            }
+        let control = unsafe {
+            let entry: extern "C" fn(
+                *mut std::ffi::c_void,
+                *const i64,
+                *mut crate::JitDeoptState,
+                i32,
+                *const crate::JitDeoptState,
+            ) -> crate::JitNativeControlResult = std::mem::transmute(address);
+            entry(
+                std::ptr::null_mut(),
+                std::ptr::NonNull::<i64>::dangling().as_ptr(),
+                state,
+                -1,
+                std::ptr::null(),
+            )
         };
-        if status == crate::JitCallStatus::RETURN.0 as i32 {
-            Ok(out)
+        if control.status == crate::JitCallStatus::RETURN {
+            Ok(control.value)
         } else {
-            Err(NativeCacheError::NativeStatus(status))
+            Err(NativeCacheError::NativeStatus(control.status.0 as i32))
         }
     }
 
@@ -2288,7 +2267,7 @@ fn encode_functions_v1(values: &[NativeFunctionImage]) -> Vec<u8> {
 fn encode_functions_v2(values: &[NativeFunctionImage]) -> Result<Vec<u8>, NativeCacheError> {
     let abi = values
         .first()
-        .map_or(NativeFunctionAbi::PackedI64StatusOut, |value| value.abi);
+        .map_or(NativeFunctionAbi::NativeControl, |value| value.abi);
     if values.iter().any(|value| value.abi != abi) {
         return Err(NativeCacheError::InvalidSection(
             "PNA2 function bundle contains multiple native ABIs".to_owned(),
@@ -2697,7 +2676,7 @@ mod tests {
             target_triple: std::env::consts::ARCH.to_owned(),
             pointer_width: usize::BITS as u8,
             cpu_feature_fingerprint: 2,
-            optimization_tier: "baseline".to_owned(),
+            optimization_tier: "generic".to_owned(),
             optimization_config_hash: 3,
             php_semantic_config_hash: 4,
         }
@@ -2705,21 +2684,19 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     fn returning_image(tag: &str) -> NativeArtifactImage {
-        // System-V: out pointer is rdi. This matches the zero-arity status/out
-        // native entry ABI and is used only to validate the loader itself.
+        // System-V returns the two-word `JitNativeControlResult` in rax/rdx.
+        // This is used only to validate the loader itself.
         let code = vec![
-            0x48,
-            0xc7,
-            0x07,
-            0x2a,
-            0x00,
-            0x00,
-            0x00, // mov qword [rdi], 42
             0xb8,
             crate::JitCallStatus::RETURN.0 as u8,
             0,
             0,
-            0,    // mov eax, RETURN
+            0, // mov eax, RETURN
+            0xba,
+            0x2a,
+            0x00,
+            0x00,
+            0x00, // mov edx, 42
             0xc3, // ret
         ];
         NativeArtifactImage::minimal(
@@ -2730,7 +2707,7 @@ mod tests {
                 code_offset: 0,
                 code_len: code.len() as u64,
                 arity: 0,
-                abi: NativeFunctionAbi::I64StatusOut,
+                abi: NativeFunctionAbi::NativeControl,
             },
         )
     }
@@ -2756,7 +2733,7 @@ mod tests {
     fn sample_region_metadata() -> crate::JitRegionStateMetadata {
         crate::JitRegionStateMetadata {
             local_count: 2,
-            compiler_tier: crate::region_ir::NativeCompilerTier::Baseline,
+            compiler_tier: crate::region_ir::NativeCompilerTier::Generic,
             native_version: 1,
             compiled_to_compiled_call_sites: 0,
             compiled_to_compiled_method_call_sites: 0,
@@ -2841,7 +2818,7 @@ mod tests {
             .get_or_compile(&expected, |_| None, || Ok(returning_image("roundtrip")))
             .unwrap();
         assert_eq!(event, NativeCacheEvent::Written);
-        assert_eq!(artifact.invoke_i64_status_out(0).unwrap(), 42);
+        assert_eq!(artifact.invoke_native_control(0).unwrap(), 42);
         assert!(!artifact.writable_and_executable());
         drop(artifact);
         let second = NativeArtifactCache::new(NativeCacheConfig {
@@ -2851,7 +2828,7 @@ mod tests {
         })
         .unwrap();
         let loaded = second.load(&expected, |_| None).unwrap().unwrap();
-        assert_eq!(loaded.invoke_i64_status_out(0).unwrap(), 42);
+        assert_eq!(loaded.invoke_native_control(0).unwrap(), 42);
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -2879,7 +2856,7 @@ mod tests {
             code_offset: 0,
             code_len: image.code.len() as u64,
             arity: 0,
-            abi: NativeFunctionAbi::I64StatusOut,
+            abi: NativeFunctionAbi::NativeControl,
         });
         image.internal_symbols.push(NativeSymbol {
             stable_id: 1,
@@ -2996,7 +2973,7 @@ mod tests {
                     )
                     .unwrap()
                     .0
-                    .invoke_i64_status_out(0)
+                    .invoke_native_control(0)
                     .unwrap()
             }));
         }
@@ -3083,7 +3060,7 @@ mod tests {
             .get_or_compile(&expected, |_| None, || Ok(returning_image("killed-writer")))
             .unwrap();
         assert_eq!(event, NativeCacheEvent::Written);
-        assert_eq!(artifact.invoke_i64_status_out(0).unwrap(), 42);
+        assert_eq!(artifact.invoke_native_control(0).unwrap(), 42);
         assert!(path.join(".interrupted-write.tmp").exists());
         fs::remove_dir_all(path).unwrap();
     }

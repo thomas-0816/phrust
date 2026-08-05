@@ -6,7 +6,7 @@ use super::core::{
     argument_value_error, arity_error, assign_reference_arg, int_arg, read_file_value,
     resource_arg, string_arg, string_array_key,
 };
-use super::fileinfo::{image_app_info, image_size, image_type, size_array};
+use super::fileinfo::{image_app_info, image_size, native_image_type, size_array};
 use crate::builtins::{
     BuiltinCompatibility, BuiltinContext, BuiltinEntry, BuiltinResult, RuntimeSourceSpan,
 };
@@ -62,7 +62,7 @@ fn builtin_exif_imagetype(
     let path = filename_arg("exif_imagetype", "#1 ($filename)", &args[0])?;
     match read_file_value(context, "exif_imagetype", &path, span)? {
         Value::String(bytes) => {
-            Ok(image_type(bytes.as_bytes()).map_or(Value::Bool(false), Value::Int))
+            Ok(native_image_type(bytes.as_bytes()).map_or(Value::Bool(false), Value::Int))
         }
         _ => Ok(Value::Bool(false)),
     }

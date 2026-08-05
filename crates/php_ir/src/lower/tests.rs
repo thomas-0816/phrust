@@ -1262,7 +1262,7 @@ fn anonymous_class_new_lowers_to_synthetic_class_instantiation() {
 
 #[test]
 fn static_property_compound_assign_and_increment_fetch_before_write() {
-    let frontend = analyze_source("<?php class C {} C::$p += 1; C::$p++;");
+    let frontend = analyze_source("<?php class C { public static $p = 0; } C::$p += 1; C::$p++;");
     let result = lower_frontend_result(&frontend, LoweringOptions::default());
 
     assert!(result.verification.is_ok(), "{:#?}", result.verification);
@@ -1653,6 +1653,59 @@ fn include_construct_operand_keeps_full_concat_expression() {
     );
     assert!(snapshot.contains(" concat "), "{snapshot}");
     assert!(!snapshot.contains("E_PHP_IR_UNSUPPORTED"), "{snapshot}");
+}
+
+#[test]
+fn include_statements_form_natural_generated_block_boundaries() {
+    let frontend =
+        analyze_source("<?php require 'first.php'; require_once 'second.php'; echo 'ready';");
+    let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+    assert!(result.verification.is_ok(), "{:#?}", result.verification);
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    let function = &result.unit.functions[result.unit.entry.index()];
+    let include_blocks = function
+        .blocks
+        .iter()
+        .filter(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction.kind, InstructionKind::Include { .. }))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(include_blocks.len(), 2);
+    assert!(include_blocks.iter().all(|block| {
+        block
+            .instructions
+            .iter()
+            .filter(|instruction| matches!(instruction.kind, InstructionKind::Include { .. }))
+            .count()
+            == 1
+    }));
+    assert_ne!(include_blocks[0].id, include_blocks[1].id);
+}
+
+#[test]
+fn call_statements_form_natural_generated_block_boundaries() {
+    let frontend = analyze_source("<?php define('FIRST', 1); define('SECOND', 2); echo 'ready';");
+    let result = lower_frontend_result(&frontend, LoweringOptions::default());
+
+    assert!(result.verification.is_ok(), "{:#?}", result.verification);
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    let function = &result.unit.functions[result.unit.entry.index()];
+    let call_blocks = function
+        .blocks
+        .iter()
+        .filter(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction.kind, InstructionKind::CallFunction { .. }))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(call_blocks.len(), 2);
+    assert_ne!(call_blocks[0].id, call_blocks[1].id);
 }
 
 #[test]

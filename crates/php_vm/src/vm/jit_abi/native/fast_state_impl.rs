@@ -75,6 +75,8 @@ impl NativeHttpQueryTraversal {
     }
 }
 
+// architecture: fixed stack storage avoids a heap allocation in scalar conversion
+#[allow(clippy::large_enum_variant)]
 enum NativeScalarBytes<'a> {
     Empty,
     Static(&'static [u8]),
@@ -266,7 +268,7 @@ impl NativeSerializationTraversal {
     }
 }
 
-fn native_i64_ascii<'a>(value: i64, buffer: &'a mut [u8; 20]) -> &'a [u8] {
+fn native_i64_ascii(value: i64, buffer: &mut [u8; 20]) -> &[u8] {
     let negative = value < 0;
     let mut magnitude = value.unsigned_abs();
     let mut cursor = buffer.len();
@@ -412,6 +414,28 @@ impl NativeRequestFastState {
         }
     }
 
+    /// Borrows the complete stable capability required by the exact uploaded-
+    /// file move. The three pointers address disjoint request-owned boxes and
+    /// remain stable for the synchronous native activation.
+    fn native_upload_move_capability(
+        &mut self,
+    ) -> Option<(
+        &std::path::Path,
+        &php_runtime::api::FilesystemCapabilities,
+        &mut php_runtime::api::UploadRegistry,
+    )> {
+        // SAFETY: publication initializes all three pointers from distinct
+        // request-owned allocations before generated code can enter.
+        #[allow(unsafe_code)]
+        unsafe {
+            Some((
+                self.cwd.as_ref()?.as_path(),
+                self.filesystem_capabilities.as_ref()?,
+                self.upload_registry.as_mut()?,
+            ))
+        }
+    }
+
     fn fill_random(&self, bytes: &mut [u8]) -> Option<()> {
         (self.random.fill?)(bytes).then_some(())
     }
@@ -522,9 +546,7 @@ impl NativeRequestFastState {
 
     /// Borrows only the authoritative request-local filesystem process state.
     #[allow(unsafe_code)] // Safety: the request owner keeps the published slot stable.
-    fn native_filesystem_state(
-        &mut self,
-    ) -> Option<&mut php_runtime::api::FilesystemRuntimeState> {
+    fn native_filesystem_state(&mut self) -> Option<&mut php_runtime::api::FilesystemRuntimeState> {
         unsafe { self.filesystem_state.as_mut() }
     }
 
@@ -550,9 +572,7 @@ impl NativeRequestFastState {
     /// Borrows only the resource registry needed to allocate stream-context
     /// capabilities. Context options remain in the native request arena.
     #[allow(unsafe_code)] // Safety: the request owns the published table for this activation.
-    fn native_stream_context_resources(
-        &mut self,
-    ) -> Option<&mut php_runtime::api::ResourceTable> {
+    fn native_stream_context_resources(&mut self) -> Option<&mut php_runtime::api::ResourceTable> {
         unsafe { self.resources.as_mut() }
     }
 
@@ -713,7 +733,10 @@ impl NativeRequestFastState {
     /// pointer in the runtime view; this path performs only PHP-visible arena
     /// bounds checks and never recovers the cold execution coordinator.
     #[allow(unsafe_code)] // Safety: the native request owns every published pointer for the synchronous activation.
-    pub(crate) fn publish_direct_string_bytes(&mut self, bytes: &[u8]) -> Result<i64, &'static str> {
+    pub(crate) fn publish_direct_string_bytes(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<i64, &'static str> {
         self.publish_direct_string_with(bytes.len(), |output| output.copy_from_slice(bytes))
     }
 
@@ -926,7 +949,7 @@ impl NativeRequestFastState {
     /// Keeps exact-handler integer results immediate unless their bit pattern
     /// overlaps a native handle namespace.
     #[allow(unsafe_code)] // Safety: the native request owns every published pointer for the synchronous activation.
-    fn publish_direct_int(&mut self, value: i64) -> Result<i64, &'static str> {
+    pub(crate) fn publish_direct_int(&mut self, value: i64) -> Result<i64, &'static str> {
         if php_jit::jit_decode_runtime_value(value).is_none()
             && php_jit::jit_decode_constant(value).is_none()
         {
@@ -1006,6 +1029,70 @@ impl NativeRequestFastState {
         unsafe { owner.as_ref() }
     }
 
+    /// Returns PHP's exact `gettype()` or `get_debug_type()` name for one
+    /// authoritative native value without constructing or decoding a
+    /// compatibility `Value`.
+    pub(crate) fn exact_type_name(&self, encoded: i64, debug: bool) -> Option<Vec<u8>> {
+        let selected = |debug_name: &[u8], ordinary_name: &[u8]| {
+            if debug { debug_name } else { ordinary_name }.to_vec()
+        };
+        let encoded = self.native_by_value_encoding(encoded)?;
+        if let Some(constant) = php_jit::jit_decode_constant(encoded) {
+            return match constant {
+                u32::MAX | php_jit::JIT_VALUE_UNINITIALIZED => Some(selected(b"null", b"NULL")),
+                php_jit::JIT_VALUE_FALSE | php_jit::JIT_VALUE_TRUE => {
+                    Some(selected(b"bool", b"boolean"))
+                }
+                _ => None,
+            };
+        }
+        let Some((_, slot)) = self.direct_slot(encoded) else {
+            return (php_jit::jit_decode_runtime_value(encoded).is_none())
+                .then(|| selected(b"int", b"integer"));
+        };
+        match slot.kind {
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_INT => Some(selected(b"int", b"integer")),
+            php_jit::JIT_NATIVE_VALUE_VIEW_STRING => Some(b"string".to_vec()),
+            php_jit::JIT_NATIVE_VALUE_VIEW_ARRAY
+            | php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY
+            | php_jit::JIT_NATIVE_VALUE_VIEW_SHARED_ARRAY
+            | php_jit::JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY
+            | php_jit::JIT_NATIVE_VALUE_VIEW_GLOBALS_PROXY => Some(b"array".to_vec()),
+            php_jit::JIT_NATIVE_VALUE_VIEW_FLOAT => Some(selected(b"float", b"double")),
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT => {
+                if debug {
+                    self.direct_object(encoded)
+                        .map(|object| object.display_name().into_bytes())
+                } else {
+                    Some(b"object".to_vec())
+                }
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_PREPARED_CALLABLE => {
+                Some(selected(b"Closure", b"object"))
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_FIBER
+            | php_jit::JIT_NATIVE_VALUE_VIEW_MATERIALIZED_FIBER => {
+                Some(selected(b"Fiber", b"object"))
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_GENERATOR
+            | php_jit::JIT_NATIVE_VALUE_VIEW_MATERIALIZED_GENERATOR
+            | php_jit::JIT_NATIVE_VALUE_VIEW_COLD_GENERATOR => {
+                Some(selected(b"Generator", b"object"))
+            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_RESOURCE => {
+                let resource = self.native_resource_view(encoded)?;
+                if debug && resource.is_open() {
+                    Some(format!("resource ({})", resource.resource_type()).into_bytes())
+                } else if resource.is_open() {
+                    Some(b"resource".to_vec())
+                } else {
+                    Some(b"resource (closed)".to_vec())
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Reads PHP's stable object identity from the authoritative native owner.
     ///
     /// Direct object descriptors repurpose their payload for the published
@@ -1053,10 +1140,9 @@ impl NativeRequestFastState {
     /// Resolves the stable cell backing one undeclared property.
     ///
     /// Existing cells are admitted for every exact native object. A missing
-    /// canonical stdClass name reserves an uninitialized tombstone so direct
-    /// CLIF can implement fetch/test/assign/unset through the same data plane.
-    /// Other missing classes require cold magic/deprecation metadata.
-    fn exact_dynamic_property_slot_location(
+    /// name reserves an uninitialized tombstone only when the descriptor's
+    /// published class capability permits dynamic properties.
+    pub(crate) fn exact_dynamic_property_slot_location(
         &self,
         object: i64,
         property: &str,
@@ -1069,12 +1155,48 @@ impl NativeRequestFastState {
             return None;
         }
         let owner = self.direct_object(object)?;
+        if let Some(slot) =
+            owner.native_public_declared_property_slot_location(descriptor.payload, property)
+        {
+            return Some(slot);
+        }
         match owner.native_dynamic_property_slot_location(descriptor.payload, property)? {
             Some(slot) => Some(slot),
-            None if owner.class_name().eq_ignore_ascii_case("stdClass") => {
+            None
+                if descriptor.flags & php_jit::JIT_NATIVE_OBJECT_ALLOWS_DYNAMIC_PROPERTIES != 0 =>
+            {
                 owner.ensure_native_dynamic_property_slot_location(descriptor.payload, property)
             }
             None => None,
+        }
+    }
+
+    /// Resolves a fixed-name dynamic cell whose class/name shape was proven
+    /// during publication. Unlike the computed-name entry, this may reserve a
+    /// missing cell for a user class carrying `AllowDynamicProperties`.
+    pub(crate) fn exact_named_dynamic_property_slot_location(
+        &self,
+        object: i64,
+        property: &str,
+    ) -> Option<*mut php_runtime::api::NativeDeclaredPropertySlot> {
+        let object = self.native_by_value_encoding(object)?;
+        let (_, descriptor) = self.direct_slot(object)?;
+        if descriptor.kind != php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT
+            || !php_jit::jit_native_object_property_view_is_published(descriptor.flags)
+        {
+            return None;
+        }
+        let owner = self.direct_object(object)?;
+        if let Some(slot) =
+            owner.native_public_declared_property_slot_location(descriptor.payload, property)
+        {
+            return Some(slot);
+        }
+        match owner.native_dynamic_property_slot_location(descriptor.payload, property)? {
+            Some(slot) => Some(slot),
+            None => {
+                owner.ensure_native_dynamic_property_slot_location(descriptor.payload, property)
+            }
         }
     }
 
@@ -1095,6 +1217,11 @@ impl NativeRequestFastState {
             return None;
         }
         let owner = self.direct_object(object)?;
+        if let Some(slot) =
+            owner.native_public_declared_property_slot_location(descriptor.payload, property)
+        {
+            return Some(slot);
+        }
         if owner.native_property_name_is_declared(descriptor.payload, property)? {
             return None;
         }
@@ -1222,8 +1349,7 @@ impl NativeRequestFastState {
                 .is_some_and(|entries| {
                     entries.iter().all(|entry| {
                         self.stream_context_value_is_native_owned_at(entry.key, depth + 1)
-                            && self
-                                .stream_context_value_is_native_owned_at(entry.value, depth + 1)
+                            && self.stream_context_value_is_native_owned_at(entry.value, depth + 1)
                     })
                 }),
             _ => false,
@@ -1238,10 +1364,7 @@ impl NativeRequestFastState {
         .then_some(encoded)
     }
 
-    fn duplicate_native_stream_context_array(
-        &mut self,
-        encoded: i64,
-    ) -> Result<i64, &'static str> {
+    fn duplicate_native_stream_context_array(&mut self, encoded: i64) -> Result<i64, &'static str> {
         let encoded = self
             .native_stream_context_array(encoded)
             .ok_or("stream context options require an authoritative native array")?;
@@ -1249,10 +1372,7 @@ impl NativeRequestFastState {
         Ok(encoded)
     }
 
-    fn duplicate_native_stream_context_value(
-        &mut self,
-        encoded: i64,
-    ) -> Result<i64, &'static str> {
+    fn duplicate_native_stream_context_value(&mut self, encoded: i64) -> Result<i64, &'static str> {
         let encoded = self
             .native_by_value_encoding(encoded)
             .ok_or("stream context value requires baseline reference materialization")?;
@@ -1377,17 +1497,16 @@ impl NativeRequestFastState {
             let entry = unsafe { *entries.add(index) };
             (self.native_string_view(entry.key) == Some(wrapper)).then_some(entry.value)
         });
-        let (wrapper_options, created_wrapper) = match wrapper_entry
-            .and_then(|value| self.native_stream_context_array(value))
-        {
-            Some(options) => (options, false),
-            None => (
-                self.publish_owned_direct_array_with(0, |_, _| {
-                unreachable!("zero-length native array builder")
-                })?,
-                true,
-            ),
-        };
+        let (wrapper_options, created_wrapper) =
+            match wrapper_entry.and_then(|value| self.native_stream_context_array(value)) {
+                Some(options) => (options, false),
+                None => (
+                    self.publish_owned_direct_array_with(0, |_, _| {
+                        unreachable!("zero-length native array builder")
+                    })?,
+                    true,
+                ),
+            };
         let updated_wrapper =
             match self.copy_native_array_with_string_value(wrapper_options, option, value) {
                 Ok(updated) => updated,
@@ -1401,8 +1520,7 @@ impl NativeRequestFastState {
         if created_wrapper {
             self.discard_owned_direct_value(wrapper_options)?;
         }
-        let updated =
-            self.copy_native_array_with_string_value(options, wrapper, updated_wrapper);
+        let updated = self.copy_native_array_with_string_value(options, wrapper, updated_wrapper);
         self.discard_owned_direct_value(updated_wrapper)?;
         updated
     }
@@ -1430,8 +1548,7 @@ impl NativeRequestFastState {
                 self.discard_owned_direct_value(merged)?;
                 return Err("stream context wrapper key is not a native string");
             };
-            let Some((options, option_count)) =
-                self.stable_native_array_range(wrapper_entry.value)
+            let Some((options, option_count)) = self.stable_native_array_range(wrapper_entry.value)
             else {
                 self.discard_owned_direct_value(merged)?;
                 return Err("stream context wrapper options are not a native array");
@@ -1566,7 +1683,15 @@ impl NativeRequestFastState {
             }
         };
         let runtime_index = index + php_jit::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE;
-        let owner = Box::into_raw(Box::new(NativePreparedCallableOwner::closure(prepared)));
+        let runtime_view = if self.header.runtime_view_pointer == 0 {
+            std::ptr::from_ref(&self.header.runtime_view) as usize as u64
+        } else {
+            self.header.runtime_view_pointer
+        };
+        let owner = Box::into_raw(Box::new(NativePreparedCallableOwner::closure(
+            prepared,
+            runtime_view,
+        )));
         let slots = self.header.active_runtime_view().direct_value_slots as usize
             as *mut php_jit::JitNativeValueSlot;
         unsafe {
@@ -1656,24 +1781,25 @@ impl NativeRequestFastState {
         match owner.native_view.kind {
             php_jit::JIT_NATIVE_CALLABLE_KIND_USER_FUNCTION => {
                 let name = std::str::from_utf8(&owner._name_bytes).ok()?;
-                self.symbol_query.same_unit_callable_plan(name)
+                self.symbol_query.callable_plan(name)
             }
             php_jit::JIT_NATIVE_CALLABLE_KIND_CLOSURE => {
                 let function = php_ir::FunctionId::new(owner.native_view.function_id);
                 let compiled = self.symbol_query.active_compiled()?;
-                native_fixed_callable_plan(compiled, function, false)
+                let mut plan = native_fixed_callable_plan(compiled, function, false)?;
+                plan.runtime_view = owner.native_view.runtime_view;
+                Some(plan)
             }
             php_jit::JIT_NATIVE_CALLABLE_KIND_BOUND_OBJECT_METHOD => {
                 let method = std::str::from_utf8(&owner._method_bytes).ok()?;
                 let object = self.native_query_object(owner.native_view.receiver)?;
                 self.symbol_query
-                    .same_unit_method_callable_plan(&object.class_name(), method, true)
+                    .method_callable_plan(&object.class_name(), method, true)
             }
             php_jit::JIT_NATIVE_CALLABLE_KIND_BOUND_CLASS_METHOD => {
                 let class = std::str::from_utf8(&owner._class_bytes).ok()?;
                 let method = std::str::from_utf8(&owner._method_bytes).ok()?;
-                self.symbol_query
-                    .same_unit_method_callable_plan(class, method, false)
+                self.symbol_query.method_callable_plan(class, method, false)
             }
             _ => None,
         }
@@ -1813,7 +1939,7 @@ impl NativeRequestFastState {
     #[allow(unsafe_code)]
     fn exact_set_error_handler(&mut self, callback: i64, levels: i64) -> Option<i64> {
         let callback = self.native_by_value_encoding(callback)?;
-        if self.direct_callable_is_valid(callback, false)? != true {
+        if !self.direct_callable_is_valid(callback, false)? {
             return None;
         }
         let missing = php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING);
@@ -1868,7 +1994,7 @@ impl NativeRequestFastState {
     #[allow(unsafe_code)]
     fn exact_set_exception_handler(&mut self, callback: i64) -> Option<i64> {
         let callback = self.native_by_value_encoding(callback)?;
-        if self.direct_callable_is_valid(callback, false)? != true {
+        if !self.direct_callable_is_valid(callback, false)? {
             return None;
         }
         let state = unsafe { self.callback_handlers.as_ref()? };
@@ -2002,7 +2128,7 @@ impl NativeRequestFastState {
     #[allow(unsafe_code)]
     fn exact_register_autoload_callback(&mut self, callback: i64, prepend: bool) -> Option<i64> {
         let callback = self.native_by_value_encoding(callback)?;
-        if self.direct_callable_is_valid(callback, false)? != true {
+        if !self.direct_callable_is_valid(callback, false)? {
             return None;
         }
         self.retain_direct_encoded(callback).ok()?;
@@ -2094,9 +2220,18 @@ impl NativeRequestFastState {
         }
         let (&callback, arguments) = arguments.split_first()?;
         let callback = self.native_by_value_encoding(callback)?;
-        if self.direct_callable_is_valid(callback, false)? != true {
+        if !self.direct_callable_is_valid(callback, false)? {
             return None;
         }
+        let runtime_view = self.header.active_runtime_view();
+        let source = self
+            .symbol_query
+            .compiled_for_runtime_view(&runtime_view)?
+            .prepared_continuation_instructions(php_ir::FunctionId::new(function))?
+            .get(continuation as usize)?
+            .as_ref()?
+            .as_ref()
+            .clone();
         let mut retained = Vec::with_capacity(arguments.len() + 1);
         let retain = (|| {
             self.retain_direct_encoded(callback)?;
@@ -2120,10 +2255,7 @@ impl NativeRequestFastState {
         let callback = NativeRegisteredShutdownCallback {
             callable: retained[0],
             arguments: retained[1..].to_vec(),
-            source: NativeRegisteredCallbackSource::NativeContinuation {
-                function,
-                continuation,
-            },
+            source,
             transient_export: self.callback_transient_export != 0,
         };
         unsafe {
@@ -2221,7 +2353,10 @@ impl NativeRequestFastState {
     /// array. Other PHP shapes take the instruction's one baseline
     /// continuation.
     #[allow(unsafe_code)] // Safety: callable slots own request-stable boxes for the synchronous acquisition.
-    pub(crate) fn acquire_direct_callable(&mut self, encoded: i64) -> Result<Option<i64>, &'static str> {
+    pub(crate) fn acquire_direct_callable(
+        &mut self,
+        encoded: i64,
+    ) -> Result<Option<i64>, &'static str> {
         let Some(encoded) = self.exact_callable_value(encoded) else {
             return Ok(None);
         };
@@ -2246,11 +2381,8 @@ impl NativeRequestFastState {
             }
             if slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT {
                 let resolved_function = self.native_query_object(encoded).and_then(|object| {
-                    self.symbol_query.same_unit_method_callable_plan(
-                        &object.class_name(),
-                        "__invoke",
-                        true,
-                    )
+                    self.symbol_query
+                        .method_callable_plan(&object.class_name(), "__invoke", true)
                 });
                 self.retain_direct_encoded(encoded)?;
                 return self
@@ -2266,8 +2398,20 @@ impl NativeRequestFastState {
         if let Some(name) = self.native_string_view(encoded) {
             let resolved_function = std::str::from_utf8(name)
                 .ok()
-                .and_then(|name| self.symbol_query.same_unit_callable_plan(name));
+                .and_then(|name| self.symbol_query.callable_plan(name));
             let name = Box::<[u8]>::from(name);
+            if resolved_function.is_none()
+                && std::str::from_utf8(&name).ok().is_some_and(|name| {
+                    php_std::arginfo::function_metadata_indexed(name.trim_start_matches('\\'))
+                        .is_some()
+                })
+            {
+                return self
+                    .publish_prepared_callable_owned(NativePreparedCallableOwner::internal_builtin(
+                        name,
+                    ))
+                    .map(Some);
+            }
             return self
                 .publish_prepared_callable_owned(NativePreparedCallableOwner::user_function(
                     name,
@@ -2299,11 +2443,16 @@ impl NativeRequestFastState {
         {
             let resolved_function = std::str::from_utf8(&method).ok().and_then(|method| {
                 self.native_query_object(target).and_then(|object| {
-                    self.symbol_query.same_unit_method_callable_plan(
-                        &object.class_name(),
-                        method,
-                        true,
-                    )
+                    self.symbol_query
+                        .method_callable_plan(&object.class_name(), method, true)
+                        .or_else(|| {
+                            self.symbol_query
+                                .method_callable_plan(&object.class_name(), "__call", true)
+                                .map(|mut plan| {
+                                    plan.magic_dispatch = true;
+                                    plan
+                                })
+                        })
                 })
             });
             self.retain_direct_encoded(target)?;
@@ -2312,7 +2461,15 @@ impl NativeRequestFastState {
             let resolved_function = std::str::from_utf8(&class).ok().and_then(|class| {
                 std::str::from_utf8(&method).ok().and_then(|method| {
                     self.symbol_query
-                        .same_unit_method_callable_plan(class, method, false)
+                        .method_callable_plan(class, method, false)
+                        .or_else(|| {
+                            self.symbol_query
+                                .method_callable_plan(class, "__callStatic", false)
+                                .map(|mut plan| {
+                                    plan.magic_dispatch = true;
+                                    plan
+                                })
+                        })
                 })
             });
             NativePreparedCallableOwner::bound_class(class, method, None, resolved_function)
@@ -2320,6 +2477,381 @@ impl NativeRequestFastState {
             return Ok(None);
         };
         self.publish_prepared_callable_owned(owner).map(Some)
+    }
+
+    /// Resolves a statically named method against an authoritative receiver
+    /// and publishes only its immutable generated-entry binding.
+    pub(crate) fn acquire_direct_method_callable(
+        &mut self,
+        target: i64,
+        method: &[u8],
+        caller_function: u32,
+        callback_completed: bool,
+    ) -> Result<NativeMethodCallableResolution, &'static str> {
+        let Some(target) = self.exact_callable_value(target) else {
+            return Ok(NativeMethodCallableResolution::NotFound);
+        };
+        let method = Box::<[u8]>::from(method);
+        let owner = if self
+            .direct_slot(target)
+            .is_some_and(|(_, slot)| slot.kind == php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_OBJECT)
+        {
+            let active_view = self.header.active_runtime_view();
+            let root_runtime_view = std::ptr::from_ref(&self.header.runtime_view) as usize as u64;
+            let exact_reflection = self.direct_object(target).and_then(|object| {
+                object
+                    .class_name()
+                    .eq_ignore_ascii_case("ReflectionClass")
+                    .then(|| {
+                        if method.eq_ignore_ascii_case(b"__construct") {
+                            Some((
+                                1,
+                                crate::native_exact::jit_native_reflection_class_construct_php_entry
+                                    as *const () as usize as u64,
+                                false,
+                            ))
+                        } else if method.eq_ignore_ascii_case(b"getName") {
+                            Some((
+                                0,
+                                crate::native_exact::jit_native_reflection_class_get_name_php_entry
+                                    as *const () as usize as u64,
+                                true,
+                            ))
+                        } else if method.eq_ignore_ascii_case(b"hasProperty") {
+                            Some((
+                                1,
+                                crate::native_exact::jit_native_reflection_class_has_property_php_entry
+                                    as *const () as usize as u64,
+                                false,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten()
+            });
+            let resolved_function = std::str::from_utf8(&method).ok().and_then(|method| {
+                self.native_query_object(target).and_then(|object| {
+                    self.symbol_query
+                        .scoped_method_callable_plan(
+                            &object.class_name(),
+                            method,
+                            true,
+                            caller_function,
+                            &active_view,
+                            root_runtime_view,
+                        )
+                        .or_else(|| {
+                            self.symbol_query
+                                .scoped_method_callable_plan(
+                                    &object.class_name(),
+                                    "__call",
+                                    true,
+                                    caller_function,
+                                    &active_view,
+                                    root_runtime_view,
+                                )
+                                .map(|mut plan| {
+                                    plan.magic_dispatch = true;
+                                    plan
+                                })
+                        })
+                })
+            });
+            self.retain_direct_encoded(target)?;
+            if let Some((visible_arity, direct_entry, returns_string)) = exact_reflection {
+                NativePreparedCallableOwner::exact_bound_object(
+                    target,
+                    method,
+                    visible_arity,
+                    direct_entry,
+                    returns_string,
+                )
+            } else {
+                NativePreparedCallableOwner::bound_object(target, method, None, resolved_function)
+            }
+        } else if let Some(class) = self.native_string_view(target).map(Box::<[u8]>::from) {
+            let active_view = self.header.active_runtime_view();
+            let root_runtime_view = std::ptr::from_ref(&self.header.runtime_view) as usize as u64;
+            let resolved_function = std::str::from_utf8(&class).ok().and_then(|class| {
+                std::str::from_utf8(&method).ok().and_then(|method| {
+                    self.symbol_query
+                        .scoped_method_callable_plan(
+                            class,
+                            method,
+                            false,
+                            caller_function,
+                            &active_view,
+                            root_runtime_view,
+                        )
+                        .or_else(|| {
+                            self.symbol_query
+                                .scoped_method_callable_plan(
+                                    class,
+                                    "__callStatic",
+                                    false,
+                                    caller_function,
+                                    &active_view,
+                                    root_runtime_view,
+                                )
+                                .map(|mut plan| {
+                                    plan.magic_dispatch = true;
+                                    plan
+                                })
+                        })
+                })
+            });
+            if resolved_function.is_none()
+                && std::str::from_utf8(&class)
+                    .ok()
+                    .is_some_and(|class| self.symbol_query.class_handle(class).is_none())
+            {
+                match self.acquire_direct_class_plan(target, callback_completed)? {
+                    NativeClassPlanResolution::Ready(_) => {}
+                    NativeClassPlanResolution::InvokeUserCallback(callback) => {
+                        return Ok(NativeMethodCallableResolution::InvokeUserCallback(callback));
+                    }
+                    NativeClassPlanResolution::NotFound => {
+                        return Ok(NativeMethodCallableResolution::NotFound);
+                    }
+                }
+            }
+            if let Some(plan) = resolved_function {
+                self.publish_late_static_constant_sites(&class, plan)?;
+            }
+            NativePreparedCallableOwner::bound_class(class, method, None, resolved_function)
+        } else {
+            return Ok(NativeMethodCallableResolution::NotFound);
+        };
+        self.publish_prepared_callable_owned(owner)
+            .map(NativeMethodCallableResolution::Ready)
+    }
+
+    /// Publishes direct literal owners for `static::CONST` sites in one
+    /// already-resolved generated method. The method-acquisition boundary has
+    /// fixed both the called class and target runtime view, so the callee can
+    /// consume its ordinary numeric constant slot with no per-instruction
+    /// lookup or compatibility value conversion.
+    #[allow(unsafe_code)] // Safety: published runtime views and their slot arenas are request-stable.
+    fn publish_late_static_constant_sites(
+        &mut self,
+        called_class: &[u8],
+        plan: NativeFixedCallablePlan,
+    ) -> Result<(), &'static str> {
+        let called_class = std::str::from_utf8(called_class)
+            .map(php_ir::module::normalize_class_name)
+            .map_err(|_| "late-static called class is not UTF-8")?;
+        let view_pointer = usize::try_from(plan.runtime_view)
+            .ok()
+            .filter(|pointer| *pointer != 0)
+            .ok_or("late-static callable has no published runtime view")?
+            as *mut php_jit::JitNativeRuntimeView;
+        let view =
+            unsafe { view_pointer.as_ref() }.ok_or("late-static callable runtime view is null")?;
+        let compiled = self
+            .symbol_query
+            .compiled_for_runtime_view(view)
+            .ok_or("late-static callable compiled unit is unavailable")?;
+        let instructions = compiled
+            .prepared_continuation_instructions(plan.function)
+            .ok_or("late-static callable continuation metadata is unavailable")?;
+        let function_offsets = view.trusted_property_function_offsets as usize as *const u32;
+        let literal_slots =
+            view.trusted_literal_slots as usize as *const php_jit::JitNativeTrustedLiteralSlot;
+        let constant_slots =
+            view.trusted_constant_slots as usize as *mut php_jit::JitNativeTrustedConstantSlot;
+        if function_offsets.is_null() || literal_slots.is_null() || constant_slots.is_null() {
+            return Err("late-static callable publication tables are unavailable");
+        }
+        let function_base =
+            usize::try_from(unsafe { *function_offsets.add(plan.function.index()) })
+                .map_err(|_| "late-static function slot base does not fit usize")?;
+        let mut updates = Vec::new();
+        for (continuation, instruction) in instructions.iter().enumerate() {
+            let Some(php_ir::Instruction {
+                kind:
+                    php_ir::InstructionKind::FetchClassConstant {
+                        class_name,
+                        constant,
+                        ..
+                    },
+                ..
+            }) = instruction.as_deref()
+            else {
+                continue;
+            };
+            if !class_name.eq_ignore_ascii_case("static") {
+                continue;
+            }
+            let mut candidate = called_class.clone();
+            let value =
+                loop {
+                    let class = compiled
+                        .lookup_unit_class(&candidate)
+                        .ok_or("late-static called class is outside the target unit")?;
+                    if let Some(entry) = class
+                        .constants
+                        .iter()
+                        .find(|entry| entry.name.eq_ignore_ascii_case(constant))
+                    {
+                        if entry.flags.is_private || entry.flags.is_protected {
+                            return Err(
+                                "late-static constant visibility requires a cold semantic boundary",
+                            );
+                        }
+                        let literal = entry
+                            .value
+                            .ok_or("late-static constant is not a direct source literal")?;
+                        if literal.index() >= view.trusted_literal_slot_count as usize {
+                            return Err("late-static literal slot index is out of bounds");
+                        }
+                        let slot = unsafe { *literal_slots.add(literal.index()) };
+                        if slot.state != php_jit::JIT_NATIVE_TRUSTED_LITERAL_PUBLISHED {
+                            return Err("late-static literal slot is not published");
+                        }
+                        break slot.value;
+                    }
+                    candidate =
+                        php_ir::module::normalize_class_name(class.parent.as_deref().ok_or(
+                            "late-static constant is not declared in the class hierarchy",
+                        )?);
+                };
+            let slot_index = function_base
+                .checked_add(continuation)
+                .ok_or("late-static constant slot index overflow")?;
+            if slot_index >= view.trusted_constant_slot_count as usize {
+                return Err("late-static constant slot index is out of bounds");
+            }
+            updates.push((unsafe { constant_slots.add(slot_index) }, value));
+        }
+        for (slot, value) in updates {
+            self.retain_direct_encoded(value)?;
+            let previous = unsafe { *slot };
+            unsafe {
+                *slot = php_jit::JitNativeTrustedConstantSlot {
+                    value,
+                    state: php_jit::JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED,
+                    reserved: 0,
+                };
+            }
+            if previous.state == php_jit::JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED {
+                self.rollback_direct_retain(previous.value);
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve an authoritative class-name value to one immutable published
+    /// allocation plan. The returned pointer is metadata, not a PHP value.
+    pub(crate) fn acquire_direct_class_plan(
+        &mut self,
+        class: i64,
+        callback_completed: bool,
+    ) -> Result<NativeClassPlanResolution, &'static str> {
+        let Some(class) = self.native_string_view(class) else {
+            return Ok(NativeClassPlanResolution::NotFound);
+        };
+        let class = Box::<[u8]>::from(class);
+        let Ok(class_name) = std::str::from_utf8(&class) else {
+            return Ok(NativeClassPlanResolution::NotFound);
+        };
+        let class_name = php_ir::module::normalize_class_name(class_name);
+        let class = Box::<[u8]>::from(class_name.as_bytes());
+        self.complete_direct_class_autoload_callback(&class, callback_completed)?;
+        if let Some(plan) = self.internal_class_plan(&class_name) {
+            self.discard_direct_class_autoload_action(&class);
+            return Ok(NativeClassPlanResolution::Ready(plan));
+        }
+        if let Some(plan) = self
+            .symbol_query
+            .class_plan(&class_name, &self.header.active_runtime_view())
+        {
+            self.discard_direct_class_autoload_action(&class);
+            return Ok(NativeClassPlanResolution::Ready(plan));
+        }
+        let Some(callback) = self.next_direct_class_autoload_callback(class)? else {
+            return Ok(NativeClassPlanResolution::NotFound);
+        };
+        Ok(NativeClassPlanResolution::InvokeUserCallback(callback))
+    }
+
+    pub(crate) fn complete_direct_class_autoload_callback(
+        &mut self,
+        class: &[u8],
+        callback_completed: bool,
+    ) -> Result<(), &'static str> {
+        if !callback_completed {
+            return Ok(());
+        }
+        let Some(action) = self
+            .class_autoload_actions
+            .last_mut()
+            .filter(|action| action.name.as_ref() == class)
+        else {
+            return Err("completed class autoload callback has no active action");
+        };
+        if !action.callback_in_flight {
+            return Err("class autoload callback completion was not pending");
+        }
+        action.callback_in_flight = false;
+        Ok(())
+    }
+
+    pub(crate) fn discard_direct_class_autoload_action(&mut self, class: &[u8]) {
+        if self
+            .class_autoload_actions
+            .last()
+            .is_some_and(|action| action.name.as_ref() == class)
+        {
+            self.class_autoload_actions.pop();
+        }
+    }
+
+    pub(crate) fn next_direct_class_autoload_callback(
+        &mut self,
+        class: Box<[u8]>,
+    ) -> Result<Option<i64>, &'static str> {
+        let last_index = self.class_autoload_actions.len().checked_sub(1);
+        if self
+            .class_autoload_actions
+            .iter()
+            .enumerate()
+            .any(|(index, action)| {
+                action.name.as_ref() == class.as_ref()
+                    && (action.callback_in_flight || Some(index) != last_index)
+            })
+        {
+            return Ok(None);
+        }
+        if !self
+            .class_autoload_actions
+            .last()
+            .is_some_and(|action| action.name.as_ref() == class.as_ref())
+        {
+            self.class_autoload_actions.push(NativeClassAutoloadAction {
+                name: class,
+                next_callback: 0,
+                callback_in_flight: false,
+            });
+        }
+        let Some(action) = self.class_autoload_actions.last_mut() else {
+            return Err("autoload publication failed");
+        };
+        // SAFETY: request activation owns the separately boxed callback
+        // registry for at least as long as this fast-state capability.
+        #[allow(unsafe_code)]
+        let callbacks = unsafe { self.callback_handlers.as_ref() };
+        let Some(callbacks) = callbacks else {
+            self.class_autoload_actions.pop();
+            return Ok(None);
+        };
+        let Some(callback) = callbacks.autoload_callbacks.get(action.next_callback) else {
+            self.class_autoload_actions.pop();
+            return Ok(None);
+        };
+        action.next_callback = action.next_callback.saturating_add(1);
+        action.callback_in_flight = true;
+        Ok(Some(callback.callable))
     }
 
     /// Publishes one callable whose target and signature were fixed before
@@ -2390,10 +2922,7 @@ impl NativeRequestFastState {
     ///
     /// The encoded owner must remain live for the complete synchronous use of
     /// the returned range.
-    pub(crate) fn stable_native_string_range(
-        &self,
-        encoded: i64,
-    ) -> Option<(*const u8, usize)> {
+    pub(crate) fn stable_native_string_range(&self, encoded: i64) -> Option<(*const u8, usize)> {
         let bytes = self.native_string_view(encoded)?;
         Some((bytes.as_ptr(), bytes.len()))
     }
@@ -3189,24 +3718,6 @@ impl NativeRequestFastState {
         let state = unsafe { state.as_mut() }?;
         Some(php_runtime::api::validate_native_json(
             state, input, depth, flags,
-        ))
-    }
-
-    #[allow(unsafe_code)] // Safety: the native request owns every published pointer for the synchronous activation.
-    fn decode_native_json_associative_direct(
-        &mut self,
-        input: i64,
-        depth: i64,
-    ) -> Option<Result<Option<i64>, php_runtime::api::BuiltinError>> {
-        let state = self.json_state;
-        let (input, input_length) = self.stable_native_string_range(input)?;
-        // SAFETY: the encoded JSON input remains owned throughout this
-        // synchronous decode; the publisher writes only to disjoint arenas.
-        #[allow(unsafe_code)]
-        let input = unsafe { std::slice::from_raw_parts(input, input_length) };
-        let state = unsafe { state.as_mut() }?;
-        Some(php_runtime::api::decode_native_json_associative_into(
-            state, input, depth, self,
         ))
     }
 
@@ -5027,7 +5538,7 @@ impl NativeRequestFastState {
     /// Commits the current authoritative `$_SESSION` payload by adding one
     /// native owner. A later write sees the shared array refcount and performs
     /// COW in the same data plane.
-    fn commit_native_session_payload(&mut self) -> bool {
+    pub(crate) fn commit_native_session_payload(&mut self) -> bool {
         let Some(current) = self.native_session_payload() else {
             return false;
         };
@@ -5068,7 +5579,7 @@ impl NativeRequestFastState {
         }
     }
 
-    fn replace_native_session_payload_owned(&mut self, value: i64) -> bool {
+    pub(crate) fn replace_native_session_payload_owned(&mut self, value: i64) -> bool {
         self.native_session_payload_is_array(value)
             && self.replace_direct_reference(self.session.global_reference, value)
     }
@@ -5114,9 +5625,14 @@ impl NativeRequestFastState {
 
     #[allow(unsafe_code)] // Safety: the native request owns every published pointer for the synchronous activation.
     fn clear_json_error(&mut self) -> Result<(), &'static str> {
+        self.set_json_error(0)
+    }
+
+    #[allow(unsafe_code)] // Safety: the native request owns the published JSON state.
+    fn set_json_error(&mut self, code: i64) -> Result<(), &'static str> {
         let state =
             unsafe { self.json_state.as_mut() }.ok_or("native JSON state is unavailable")?;
-        state.set(0);
+        state.set(code);
         Ok(())
     }
 
@@ -5844,6 +6360,648 @@ impl NativeRequestFastState {
         }
     }
 
+    fn native_print_r_starts_multiline(&self, encoded: i64) -> Option<bool> {
+        Some(matches!(
+            self.native_comparison_value(encoded)?,
+            NativeComparisonValue::Array { .. } | NativeComparisonValue::Object(_)
+        ))
+    }
+
+    fn native_mysqli_connection_id(&self, encoded: i64) -> Option<i64> {
+        let NativeComparisonValue::Object(object) = self.native_comparison_value(encoded)? else {
+            return None;
+        };
+        if !object.owner.display_name().eq_ignore_ascii_case("mysqli") {
+            return None;
+        }
+        let layout = object.layout_id?;
+        let encoded = object
+            .owner
+            .with_native_array_cast_view(
+                layout,
+                |declared_names, declared, _dynamic_order, dynamic| {
+                    declared_names
+                        .iter()
+                        .zip(declared)
+                        .find_map(|(name, slot)| {
+                            (name == "__mysqli_connection" && slot.initialized != 0)
+                                .then_some(slot.value)
+                        })
+                        .or_else(|| {
+                            dynamic
+                                .get("__mysqli_connection")
+                                .filter(|cell| cell.slot.initialized != 0)
+                                .map(|cell| cell.slot.value)
+                        })
+                },
+            )
+            .flatten()?;
+        match self.native_comparison_value(encoded)? {
+            NativeComparisonValue::Int(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn native_mysqli_object(&self, encoded: i64) -> Option<()> {
+        let NativeComparisonValue::Object(object) = self.native_comparison_value(encoded)? else {
+            return None;
+        };
+        object
+            .owner
+            .display_name()
+            .eq_ignore_ascii_case("mysqli")
+            .then_some(())
+    }
+
+    fn store_native_mysqli_property_owned(
+        &mut self,
+        encoded: i64,
+        property: &str,
+        value: i64,
+    ) -> Option<()> {
+        self.native_mysqli_object(encoded)?;
+        let slot = self.exact_named_dynamic_property_slot_location(encoded, property)?;
+        // Safety: this exact call owns the replacement and has exclusive
+        // access to the request-owned slot for the synchronous activation.
+        #[allow(unsafe_code)]
+        let previous = unsafe {
+            let previous = ((*slot).initialized != 0).then_some((*slot).value);
+            (*slot).value = value;
+            (*slot).initialized = 1;
+            previous
+        };
+        if let Some(previous) = previous {
+            self.discard_owned_direct_value(previous).ok()?;
+        }
+        Some(())
+    }
+
+    fn native_mysqli_result_id(&self, encoded: i64) -> Option<i64> {
+        let NativeComparisonValue::Object(object) = self.native_comparison_value(encoded)? else {
+            return None;
+        };
+        if !object
+            .owner
+            .display_name()
+            .eq_ignore_ascii_case("mysqli_result")
+        {
+            return None;
+        }
+        let layout = object.layout_id?;
+        let encoded = object
+            .owner
+            .with_native_array_cast_view(
+                layout,
+                |declared_names, declared, _dynamic_order, dynamic| {
+                    declared_names
+                        .iter()
+                        .zip(declared)
+                        .find_map(|(name, slot)| {
+                            (name == "__mysqli_result" && slot.initialized != 0)
+                                .then_some(slot.value)
+                        })
+                        .or_else(|| {
+                            dynamic
+                                .get("__mysqli_result")
+                                .filter(|cell| cell.slot.initialized != 0)
+                                .map(|cell| cell.slot.value)
+                        })
+                },
+            )
+            .flatten()?;
+        match self.native_comparison_value(encoded)? {
+            NativeComparisonValue::Int(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn native_mysqli_invalidate_result(&mut self, encoded: i64) -> Option<()> {
+        let slot = self.exact_named_dynamic_property_slot_location(encoded, "__mysqli_result")?;
+        // Safety: the slot belongs to the request-owned direct object and the
+        // exact call executes synchronously with exclusive fast-state access.
+        #[allow(unsafe_code)]
+        unsafe {
+            (*slot).value = php_jit::jit_encode_constant(u32::MAX);
+            (*slot).initialized = 0;
+        }
+        Some(())
+    }
+
+    fn native_mysqli_invalidate_connection(&mut self, encoded: i64) -> Option<()> {
+        let slot =
+            self.exact_named_dynamic_property_slot_location(encoded, "__mysqli_connection")?;
+        // Safety: the slot belongs to the request-owned direct object and the
+        // exact call executes synchronously with exclusive fast-state access.
+        #[allow(unsafe_code)]
+        unsafe {
+            (*slot).value = php_jit::jit_encode_constant(u32::MAX);
+            (*slot).initialized = 0;
+        }
+        Some(())
+    }
+
+    fn write_native_export_string(output: &mut Vec<u8>, bytes: &[u8]) {
+        output.push(b'\'');
+        for byte in bytes {
+            match byte {
+                0 => output.extend_from_slice(b"' . \"\\0\" . '"),
+                b'\\' => output.extend_from_slice(b"\\\\"),
+                b'\'' => output.extend_from_slice(b"\\'"),
+                byte => output.push(*byte),
+            }
+        }
+        output.push(b'\'');
+    }
+
+    fn native_var_export_starts_multiline(
+        &self,
+        encoded: i64,
+        traversal: &NativeJsonTraversal,
+    ) -> Option<bool> {
+        match self.native_comparison_value(encoded)? {
+            NativeComparisonValue::Array { identity, .. } => {
+                Some(!traversal.array_is_active(identity))
+            }
+            NativeComparisonValue::Object(object) => {
+                Some(!traversal.object_is_active(object.identity))
+            }
+            _ => Some(false),
+        }
+    }
+
+    fn write_native_var_export(
+        &self,
+        encoded: i64,
+        indent: usize,
+        output: &mut Vec<u8>,
+        traversal: &mut NativeJsonTraversal,
+    ) -> Option<()> {
+        let write_indent = |output: &mut Vec<u8>, width: usize| {
+            output.extend(std::iter::repeat_n(b' ', width));
+        };
+        match self.native_comparison_value(encoded)? {
+            NativeComparisonValue::Null => output.extend_from_slice(b"NULL"),
+            NativeComparisonValue::Bool(true) => output.extend_from_slice(b"true"),
+            NativeComparisonValue::Bool(false) => output.extend_from_slice(b"false"),
+            NativeComparisonValue::Int(value) => {
+                let mut bytes = [0_u8; 20];
+                output.extend_from_slice(native_i64_ascii(value, &mut bytes));
+            }
+            NativeComparisonValue::Float(value) => {
+                let precision = self.native_serialize_precision()?;
+                output.extend_from_slice(
+                    php_runtime::api::php_float_export_string(
+                        php_runtime::api::FloatValue::from_f64(value),
+                        precision,
+                    )
+                    .as_bytes(),
+                );
+            }
+            NativeComparisonValue::String(bytes) => {
+                Self::write_native_export_string(output, bytes);
+            }
+            NativeComparisonValue::Array { identity, entries } => {
+                if traversal.array_is_active(identity) {
+                    return None;
+                }
+                traversal.push_array(identity)?;
+                output.extend_from_slice(b"array (\n");
+                for entry in entries {
+                    write_indent(output, indent + 2);
+                    match self.native_comparison_value(entry.key)? {
+                        NativeComparisonValue::Int(key) => {
+                            let mut bytes = [0_u8; 20];
+                            output.extend_from_slice(native_i64_ascii(key, &mut bytes));
+                        }
+                        NativeComparisonValue::String(key) => {
+                            Self::write_native_export_string(output, key);
+                        }
+                        _ => return None,
+                    }
+                    output.extend_from_slice(b" => ");
+                    if self.native_var_export_starts_multiline(entry.value, traversal)? {
+                        output.push(b'\n');
+                        write_indent(output, indent + 2);
+                    }
+                    self.write_native_var_export(entry.value, indent + 2, output, traversal)?;
+                    output.extend_from_slice(b",\n");
+                }
+                write_indent(output, indent);
+                output.push(b')');
+                traversal.pop_array();
+            }
+            NativeComparisonValue::Object(object) => {
+                if traversal.object_is_active(object.identity) {
+                    return None;
+                }
+                let layout = object.layout_id?;
+                traversal.push_object(object.identity)?;
+                let std_class = object.owner.display_name().eq_ignore_ascii_case("stdClass");
+                if std_class {
+                    output.extend_from_slice(b"(object) array(\n");
+                } else {
+                    output.push(b'\\');
+                    output.extend_from_slice(object.owner.display_name().as_bytes());
+                    output.extend_from_slice(b"::__set_state(array(\n");
+                }
+                let result = object
+                    .owner
+                    .with_native_array_cast_view(
+                        layout,
+                        |declared_names, declared, dynamic_order, dynamic| {
+                            for (name, slot) in declared_names.iter().zip(declared) {
+                                if slot.initialized == 0 || name == "__phrust_trace_string" {
+                                    continue;
+                                }
+                                write_indent(output, indent + 3);
+                                Self::write_native_export_string(output, name.as_bytes());
+                                output.extend_from_slice(b" => ");
+                                if self.native_var_export_starts_multiline(
+                                    slot.value,
+                                    traversal,
+                                )? {
+                                    output.push(b'\n');
+                                    write_indent(output, indent + 2);
+                                }
+                                self.write_native_var_export(
+                                    slot.value,
+                                    indent + 2,
+                                    output,
+                                    traversal,
+                                )?;
+                                output.extend_from_slice(b",\n");
+                            }
+                            for name in dynamic_order {
+                                let property = dynamic.get(name)?;
+                                if property.slot.initialized == 0
+                                    || name.as_str() == "__phrust_trace_string"
+                                {
+                                    continue;
+                                }
+                                write_indent(output, indent + 3);
+                                Self::write_native_export_string(output, name.as_bytes());
+                                output.extend_from_slice(b" => ");
+                                if self.native_var_export_starts_multiline(
+                                    property.slot.value,
+                                    traversal,
+                                )? {
+                                    output.push(b'\n');
+                                    write_indent(output, indent + 2);
+                                }
+                                self.write_native_var_export(
+                                    property.slot.value,
+                                    indent + 2,
+                                    output,
+                                    traversal,
+                                )?;
+                                output.extend_from_slice(b",\n");
+                            }
+                            write_indent(output, indent);
+                            output.extend_from_slice(if std_class { b")" } else { b"))" });
+                            Some(())
+                        },
+                    )
+                    .flatten();
+                traversal.pop_object();
+                result?;
+            }
+            NativeComparisonValue::Resource(identity) => {
+                output.extend_from_slice(b"NULL /* resource #");
+                let mut bytes = [0_u8; 20];
+                output.extend_from_slice(native_i64_ascii(
+                    i64::try_from(identity).ok()?,
+                    &mut bytes,
+                ));
+                output.extend_from_slice(b" */");
+            }
+            NativeComparisonValue::OpaqueIdentity(_) => return None,
+        }
+        Some(())
+    }
+
+    fn write_native_print_r(
+        &self,
+        encoded: i64,
+        indent: usize,
+        output: &mut Vec<u8>,
+        traversal: &mut NativeJsonTraversal,
+    ) -> Option<()> {
+        let write_indent = |output: &mut Vec<u8>, width: usize| {
+            output.extend(std::iter::repeat_n(b' ', width));
+        };
+        match self.native_comparison_value(encoded)? {
+            NativeComparisonValue::Null | NativeComparisonValue::Bool(false) => {}
+            NativeComparisonValue::Bool(true) => output.push(b'1'),
+            NativeComparisonValue::Int(value) => {
+                let mut bytes = [0_u8; 20];
+                output.extend_from_slice(native_i64_ascii(value, &mut bytes));
+            }
+            NativeComparisonValue::Float(value) => {
+                let mut bytes = [0_u8; php_runtime::api::PHP_FLOAT_STRING_BUFFER_CAPACITY];
+                output.extend_from_slice(php_runtime::api::float_to_php_string_bytes(
+                    value, &mut bytes,
+                ));
+            }
+            NativeComparisonValue::String(bytes) => output.extend_from_slice(bytes),
+            NativeComparisonValue::Array { identity, entries } => {
+                if traversal.array_is_active(identity) {
+                    output.extend_from_slice(b"Array\n *RECURSION*");
+                    return Some(());
+                }
+                traversal.push_array(identity)?;
+                output.extend_from_slice(b"Array\n");
+                write_indent(output, indent);
+                output.extend_from_slice(b"(\n");
+                for entry in entries {
+                    write_indent(output, indent + 4);
+                    output.push(b'[');
+                    match self.native_comparison_value(entry.key)? {
+                        NativeComparisonValue::Int(key) => {
+                            let mut bytes = [0_u8; 20];
+                            output.extend_from_slice(native_i64_ascii(key, &mut bytes));
+                        }
+                        NativeComparisonValue::String(key) => output.extend_from_slice(key),
+                        _ => return None,
+                    }
+                    output.extend_from_slice(b"] => ");
+                    let child_indent = if self.native_print_r_starts_multiline(entry.value)? {
+                        indent + 8
+                    } else {
+                        indent + 4
+                    };
+                    self.write_native_print_r(entry.value, child_indent, output, traversal)?;
+                    output.push(b'\n');
+                }
+                write_indent(output, indent);
+                output.extend_from_slice(b")\n");
+                traversal.pop_array();
+            }
+            NativeComparisonValue::Object(object) => {
+                if traversal.object_is_active(object.identity) {
+                    output.extend_from_slice(b"*RECURSION*");
+                    return Some(());
+                }
+                let layout = object.layout_id?;
+                traversal.push_object(object.identity)?;
+                output.extend_from_slice(object.owner.display_name().as_bytes());
+                output.extend_from_slice(b" Object\n");
+                write_indent(output, indent);
+                output.extend_from_slice(b"(\n");
+                let result = object
+                    .owner
+                    .with_native_array_cast_view(
+                        layout,
+                        |declared_names, declared, dynamic_order, dynamic| {
+                            for (name, slot) in declared_names.iter().zip(declared) {
+                                if slot.initialized == 0 {
+                                    continue;
+                                }
+                                write_indent(output, indent + 4);
+                                output.push(b'[');
+                                let bytes = name.as_bytes();
+                                if let Some(rest) = bytes.strip_prefix(b"\0*\0") {
+                                    output.extend_from_slice(rest);
+                                    output.extend_from_slice(b":protected");
+                                } else if let Some(rest) = bytes.strip_prefix(b"\0") {
+                                    let split = rest.iter().position(|byte| *byte == 0)?;
+                                    output.extend_from_slice(&rest[split + 1..]);
+                                    output.push(b':');
+                                    output.extend_from_slice(&rest[..split]);
+                                    output.extend_from_slice(b":private");
+                                } else {
+                                    output.extend_from_slice(bytes);
+                                }
+                                output.extend_from_slice(b"] => ");
+                                let child_indent =
+                                    if self.native_print_r_starts_multiline(slot.value)? {
+                                        indent + 8
+                                    } else {
+                                        indent + 4
+                                    };
+                                self.write_native_print_r(
+                                    slot.value,
+                                    child_indent,
+                                    output,
+                                    traversal,
+                                )?;
+                                output.push(b'\n');
+                            }
+                            for name in dynamic_order {
+                                let property = dynamic.get(name)?;
+                                if property.slot.initialized == 0 {
+                                    continue;
+                                }
+                                write_indent(output, indent + 4);
+                                output.push(b'[');
+                                output.extend_from_slice(name.as_bytes());
+                                output.extend_from_slice(b"] => ");
+                                let child_indent =
+                                    if self.native_print_r_starts_multiline(property.slot.value)? {
+                                        indent + 8
+                                    } else {
+                                        indent + 4
+                                    };
+                                self.write_native_print_r(
+                                    property.slot.value,
+                                    child_indent,
+                                    output,
+                                    traversal,
+                                )?;
+                                output.push(b'\n');
+                            }
+                            write_indent(output, indent);
+                            output.extend_from_slice(b")\n");
+                            Some(())
+                        },
+                    )
+                    .flatten();
+                traversal.pop_object();
+                result?;
+            }
+            NativeComparisonValue::Resource(identity) => {
+                output.extend_from_slice(b"Resource id #");
+                let mut bytes = [0_u8; 20];
+                output
+                    .extend_from_slice(native_i64_ascii(i64::try_from(identity).ok()?, &mut bytes));
+            }
+            NativeComparisonValue::OpaqueIdentity(_) => {
+                output.extend_from_slice(b"Closure Object\n(\n)\n")
+            }
+        }
+        Some(())
+    }
+
+    fn write_native_var_dump(
+        &self,
+        encoded: i64,
+        indent: usize,
+        output: &mut Vec<u8>,
+        traversal: &mut NativeJsonTraversal,
+    ) -> Option<()> {
+        let write_indent = |output: &mut Vec<u8>, width: usize| {
+            output.extend(std::iter::repeat_n(b' ', width));
+        };
+        match self.native_comparison_value(encoded)? {
+            NativeComparisonValue::Null => output.extend_from_slice(b"NULL\n"),
+            NativeComparisonValue::Bool(value) => {
+                output.extend_from_slice(if value {
+                    b"bool(true)\n"
+                } else {
+                    b"bool(false)\n"
+                });
+            }
+            NativeComparisonValue::Int(value) => {
+                output.extend_from_slice(b"int(");
+                let mut bytes = [0_u8; 20];
+                output.extend_from_slice(native_i64_ascii(value, &mut bytes));
+                output.extend_from_slice(b")\n");
+            }
+            NativeComparisonValue::Float(value) => {
+                output.extend_from_slice(b"float(");
+                let mut bytes = [0_u8; php_runtime::api::PHP_FLOAT_STRING_BUFFER_CAPACITY];
+                output.extend_from_slice(php_runtime::api::float_to_php_string_bytes(
+                    value, &mut bytes,
+                ));
+                output.extend_from_slice(b")\n");
+            }
+            NativeComparisonValue::String(bytes) => {
+                output.extend_from_slice(b"string(");
+                let mut length = [0_u8; 20];
+                output.extend_from_slice(native_i64_ascii(
+                    i64::try_from(bytes.len()).ok()?,
+                    &mut length,
+                ));
+                output.extend_from_slice(b") \"");
+                output.extend_from_slice(bytes);
+                output.extend_from_slice(b"\"\n");
+            }
+            NativeComparisonValue::Array { identity, entries } => {
+                if traversal.array_is_active(identity) {
+                    output.extend_from_slice(b"*RECURSION*\n");
+                    return Some(());
+                }
+                traversal.push_array(identity)?;
+                output.extend_from_slice(b"array(");
+                let mut length = [0_u8; 20];
+                output.extend_from_slice(native_i64_ascii(
+                    i64::try_from(entries.len()).ok()?,
+                    &mut length,
+                ));
+                output.extend_from_slice(b") {\n");
+                for entry in entries {
+                    write_indent(output, indent + 2);
+                    output.push(b'[');
+                    match self.native_comparison_value(entry.key)? {
+                        NativeComparisonValue::Int(key) => {
+                            let mut bytes = [0_u8; 20];
+                            output.extend_from_slice(native_i64_ascii(key, &mut bytes));
+                        }
+                        NativeComparisonValue::String(key) => {
+                            output.push(b'\"');
+                            output.extend_from_slice(key);
+                            output.push(b'\"');
+                        }
+                        _ => return None,
+                    }
+                    output.extend_from_slice(b"]=>\n");
+                    write_indent(output, indent + 2);
+                    self.write_native_var_dump(entry.value, indent + 2, output, traversal)?;
+                }
+                write_indent(output, indent);
+                output.extend_from_slice(b"}\n");
+                traversal.pop_array();
+            }
+            NativeComparisonValue::Object(object) => {
+                if traversal.object_is_active(object.identity) {
+                    output.extend_from_slice(b"*RECURSION*\n");
+                    return Some(());
+                }
+                let layout = object.layout_id?;
+                traversal.push_object(object.identity)?;
+                let result = object
+                    .owner
+                    .with_native_array_cast_view(
+                        layout,
+                        |declared_names, declared, dynamic_order, dynamic| {
+                            let count =
+                                declared.iter().filter(|slot| slot.initialized != 0).count()
+                                    + dynamic_order
+                                        .iter()
+                                        .filter(|name| {
+                                            dynamic
+                                                .get(*name)
+                                                .is_some_and(|cell| cell.slot.initialized != 0)
+                                        })
+                                        .count();
+                            output.extend_from_slice(b"object(");
+                            output.extend_from_slice(object.owner.display_name().as_bytes());
+                            output.extend_from_slice(b")#");
+                            let mut identity = [0_u8; 20];
+                            output.extend_from_slice(native_i64_ascii(
+                                i64::try_from(object.identity).ok()?,
+                                &mut identity,
+                            ));
+                            output.extend_from_slice(b" (");
+                            let mut count_bytes = [0_u8; 20];
+                            output.extend_from_slice(native_i64_ascii(
+                                i64::try_from(count).ok()?,
+                                &mut count_bytes,
+                            ));
+                            output.extend_from_slice(b") {\n");
+                            for (name, slot) in declared_names.iter().zip(declared) {
+                                if slot.initialized == 0 {
+                                    continue;
+                                }
+                                write_indent(output, indent + 2);
+                                output.extend_from_slice(b"[\"");
+                                output.extend_from_slice(name.as_bytes());
+                                output.extend_from_slice(b"\"]=>\n");
+                                write_indent(output, indent + 2);
+                                self.write_native_var_dump(
+                                    slot.value,
+                                    indent + 2,
+                                    output,
+                                    traversal,
+                                )?;
+                            }
+                            for name in dynamic_order {
+                                let property = dynamic.get(name)?;
+                                if property.slot.initialized == 0 {
+                                    continue;
+                                }
+                                write_indent(output, indent + 2);
+                                output.extend_from_slice(b"[\"");
+                                output.extend_from_slice(name.as_bytes());
+                                output.extend_from_slice(b"\"]=>\n");
+                                write_indent(output, indent + 2);
+                                self.write_native_var_dump(
+                                    property.slot.value,
+                                    indent + 2,
+                                    output,
+                                    traversal,
+                                )?;
+                            }
+                            write_indent(output, indent);
+                            output.extend_from_slice(b"}\n");
+                            Some(())
+                        },
+                    )
+                    .flatten();
+                traversal.pop_object();
+                result?;
+            }
+            NativeComparisonValue::Resource(identity) => {
+                output.extend_from_slice(b"resource(");
+                let mut bytes = [0_u8; 20];
+                output
+                    .extend_from_slice(native_i64_ascii(i64::try_from(identity).ok()?, &mut bytes));
+                output.extend_from_slice(b") of type (Unknown)\n");
+            }
+            NativeComparisonValue::OpaqueIdentity(_) => output.extend_from_slice(b"object\n"),
+        }
+        Some(())
+    }
+
     /// Borrows the authoritative request-local output stack without
     /// recovering the baseline coordinator.
     #[allow(unsafe_code)] // Safety: the native request owns every published pointer for the synchronous activation.
@@ -5885,7 +7043,7 @@ impl NativeRequestFastState {
     }
 
     #[allow(unsafe_code)] // Safety: the native request owns every published pointer for the synchronous activation.
-    fn retain_direct_encoded(&mut self, encoded: i64) -> Result<(), &'static str> {
+    pub(crate) fn retain_direct_encoded(&mut self, encoded: i64) -> Result<(), &'static str> {
         let Some(runtime_index) = php_jit::jit_decode_runtime_value(encoded) else {
             return Ok(());
         };
@@ -5911,7 +7069,7 @@ impl NativeRequestFastState {
         Ok(())
     }
 
-    /// Publishes a new scalar/string constant without recovering the cold
+    /// Publishes a new scalar/string/array constant without recovering the cold
     /// coordinator or constructing a Rust `Value`. The native map owns one
     /// handle and every prepared FetchConst slot owns one additional handle.
     #[allow(unsafe_code)] // Safety: the native request owns every published pointer for the synchronous activation.
@@ -5920,7 +7078,12 @@ impl NativeRequestFastState {
             let Some((_, slot)) = self.direct_slot(encoded) else {
                 return false;
             };
-            if slot.kind != php_jit::JIT_NATIVE_VALUE_VIEW_STRING {
+            if !matches!(
+                slot.kind,
+                php_jit::JIT_NATIVE_VALUE_VIEW_STRING
+                    | php_jit::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY
+                    | php_jit::JIT_NATIVE_VALUE_VIEW_FLOAT
+            ) {
                 return false;
             }
         } else if php_jit::jit_decode_constant(encoded)
@@ -5932,7 +7095,14 @@ impl NativeRequestFastState {
         }
 
         let view = self.header.active_runtime_view();
-        let (plan_indices, plan_count) = self.symbol_query.dynamic_constant_sites(&name);
+        let plan_groups = self
+            .symbol_query
+            .dynamic_constant_site_groups(&name, view.trusted_constant_slots);
+        let plan_count = plan_groups
+            .iter()
+            .fold(0_usize, |count, (_, _, group_count)| {
+                count.saturating_add(*group_count)
+            });
 
         let owner_count = 1_usize.saturating_add(plan_count);
         let mut retained = 0_usize;
@@ -5959,16 +7129,17 @@ impl NativeRequestFastState {
             }
             return false;
         }
-        let plans =
-            view.trusted_constant_slots as usize as *mut php_jit::JitNativeTrustedConstantSlot;
-        for plan_index in 0..plan_count {
-            let index = unsafe { *plan_indices.add(plan_index) };
-            unsafe {
-                *plans.add(index) = php_jit::JitNativeTrustedConstantSlot {
-                    value: encoded,
-                    state: php_jit::JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED,
-                    reserved: 0,
-                };
+        for (slots, plan_indices, group_count) in plan_groups {
+            let plans = slots as usize as *mut php_jit::JitNativeTrustedConstantSlot;
+            for plan_index in 0..group_count {
+                let index = unsafe { *plan_indices.add(plan_index) };
+                unsafe {
+                    *plans.add(index) = php_jit::JitNativeTrustedConstantSlot {
+                        value: encoded,
+                        state: php_jit::JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED,
+                        reserved: 0,
+                    };
+                }
             }
         }
         let pending = view.root_mutation_pending as usize as *mut u32;
@@ -6227,11 +7398,13 @@ impl NativeRequestFastState {
         let layout_id = object.class_layout_epoch();
         let native_slots = object.native_declared_slots_view(layout_id);
         let object_id = object.id();
-        let object_type_flags = u32::from(object.is_native_countable())
-            * php_jit::JIT_NATIVE_OBJECT_COUNTABLE
-            | u32::from(object.is_native_traversable()) * php_jit::JIT_NATIVE_OBJECT_TRAVERSABLE
-            | u32::from(object.class_name().eq_ignore_ascii_case("stdClass"))
-                * php_jit::JIT_NATIVE_OBJECT_STDCLASS;
+        let object_type_flags = (u32::from(object.is_native_countable())
+            * php_jit::JIT_NATIVE_OBJECT_COUNTABLE)
+            | (u32::from(object.is_native_traversable()) * php_jit::JIT_NATIVE_OBJECT_TRAVERSABLE)
+            | (u32::from(object.class_name().eq_ignore_ascii_case("stdClass"))
+                * php_jit::JIT_NATIVE_OBJECT_STDCLASS)
+            | (u32::from(object.allows_native_dynamic_properties())
+                * php_jit::JIT_NATIVE_OBJECT_ALLOWS_DYNAMIC_PROPERTIES);
         let owner = Box::into_raw(Box::new(object));
         let view = self.header.active_runtime_view();
         let slots = view.direct_value_slots as usize as *mut php_jit::JitNativeValueSlot;

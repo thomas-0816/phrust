@@ -36,7 +36,12 @@ pub(super) struct StaticLocalSpec {
     pub(super) initializer: Option<ExprId>,
 }
 
-const MIN_COMPACT_CONSTANT_ARRAY_ENTRIES: usize = 128;
+// A published immutable array literal is one native owner load, while the
+// expanded form needs a fresh allocation plus key/value ownership traffic for
+// every nested entry. Eight aggregate entries is already comfortably past
+// the publication break-even point and keeps ordinary configuration tables
+// from dominating generated CFG size.
+const MIN_COMPACT_CONSTANT_ARRAY_ENTRIES: usize = 8;
 
 fn constant_array_entry_count(constant: &IrConstant) -> usize {
     let IrConstant::Array(entries) = constant else {
@@ -95,7 +100,7 @@ fn constant_array_matches_expression(
         })
 }
 
-fn call_argument_discard_registers(args: &[IrCallArg], dst: RegId) -> Vec<RegId> {
+pub(super) fn call_argument_discard_registers(args: &[IrCallArg], dst: RegId) -> Vec<RegId> {
     let mut registers = Vec::new();
     for arg in args {
         let Operand::Register(register) = arg.value else {
@@ -1896,37 +1901,6 @@ impl LoweringContext<'_> {
         None
     }
 
-    pub(super) fn lower_static_property_fetch_to_register(
-        &mut self,
-        builder: &mut IrBuilder,
-        site: LowerSite,
-        target: StaticPropertyTarget,
-    ) -> Option<LoweredExpr> {
-        let dst = builder.alloc_register(site.function);
-        let instruction = builder.emit(
-            site.function,
-            site.block,
-            InstructionKind::FetchStaticProperty {
-                dst,
-                class_name: target.class_name,
-                property: target.property,
-            },
-            site.span,
-        );
-        self.add_expr_source_map(
-            builder,
-            site.function,
-            site.block,
-            instruction,
-            site.expr,
-            site.span,
-        );
-        Some(LoweredExpr {
-            register: dst,
-            block: site.block,
-        })
-    }
-
     pub(super) fn lower_dynamic_static_property_fetch_to_register(
         &mut self,
         builder: &mut IrBuilder,
@@ -2675,7 +2649,7 @@ impl LoweringContext<'_> {
         }
     }
 
-    fn emit_register_discards(
+    pub(super) fn emit_register_discards(
         &mut self,
         builder: &mut IrBuilder,
         function: FunctionId,
@@ -2739,6 +2713,16 @@ impl LoweringContext<'_> {
                 }
                 let (operands, current) =
                     self.lower_call_args_for_function(builder, site, &normalized_name, &args)?;
+                if let Some(error) = self.emit_static_builtin_binding_error(
+                    builder,
+                    site,
+                    &normalized_name,
+                    &operands,
+                    dst,
+                    current,
+                ) {
+                    return Some(error);
+                }
                 let discard_args = call_argument_discard_registers(&operands, dst);
                 (
                     InstructionKind::CallFunction {
@@ -3416,6 +3400,16 @@ impl LoweringContext<'_> {
         let (operands, current) =
             self.lower_call_args_for_function(builder, site, &normalized_name, &args)?;
         let dst = builder.alloc_register(site.function);
+        if let Some(error) = self.emit_static_builtin_binding_error(
+            builder,
+            site,
+            &normalized_name,
+            &operands,
+            dst,
+            current,
+        ) {
+            return Some(error);
+        }
         let instruction = builder.emit(
             site.function,
             current,

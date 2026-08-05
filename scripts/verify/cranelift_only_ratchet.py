@@ -368,9 +368,15 @@ def verify_runtime(server: Path, failures: list[str]) -> None:
         ("entry and baseline/default", "baseline_and_default_policies_both_execute_native_code"),
         ("include", "include_executes_only_after_native_dynamic_compiler_returns_entry_result"),
         ("eval", "eval_executes_only_after_native_dynamic_compiler_returns_entry_result"),
-        ("callback re-entry", "cranelift_dynamic_call_uses_typed_native_trampoline"),
+        (
+            "generated call re-entry",
+            "optimizing_published_linked_function_uses_native_view_and_restores_caller",
+        ),
         ("generator resume", "generator_yield_send_and_throw_use_native_resume_entry"),
-        ("fiber resume", "fiber_suspend_and_resume_use_native_continuation"),
+        (
+            "fiber resume",
+            "fiber_suspend_and_resume_publish_generic_for_untyped_optimizing_return",
+        ),
     ):
         run_proof(label, test_filter, failures)
     cache = command([str(ROOT / "scripts/verify/cranelift_native_cache.py")], check=False)

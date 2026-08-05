@@ -43,9 +43,6 @@ def main() -> int:
     views = read("crates/php_runtime/src/builtins/context/service_views.rs")
     vm = read("crates/php_vm/src/vm/mod.rs")
     vm_jit_abi = read_rust_module(ROOT / "crates/php_vm/src/vm/jit_abi.rs")
-    vm_native_builtins = read_rust_module(
-        ROOT / "crates/php_vm/src/vm/jit_abi/baseline_native_builtins.rs"
-    )
     extensions = read("crates/php_extensions/src/lib.rs")
     apcu = read("crates/php_extensions/src/apcu.rs")
     migration = read("docs/runtime/request-state-slots.md")
@@ -137,17 +134,14 @@ def main() -> int:
     request_state_borrow = "BuiltinContext::with_borrowed_runtime_request_state("
     if request_state_borrow in vm:
         failures.append("VM facade must not construct builtin request-state services")
-    if vm_native_builtins.count(request_state_borrow) != 1:
-        failures.append(
-            "native builtin adapter must borrow its request-state owner exactly once"
-        )
+    if request_state_borrow in vm_jit_abi:
+        failures.append("native generated/exact paths must not rebuild a BuiltinContext adapter")
     for symbol in (
         "NativeRegisteredExtensionRequestState",
         'request_state_slot("apcu")',
         "registry.create_request_state()",
-        "registered_extensions.bind(&mut builtin)",
     ):
-        if symbol not in vm_jit_abi and symbol not in vm_native_builtins:
+        if symbol not in vm_jit_abi:
             failures.append(f"native VM APCu registry integration is missing {symbol}")
     for symbol in ("create_request_state", "request_state_slot"):
         if symbol not in extensions:

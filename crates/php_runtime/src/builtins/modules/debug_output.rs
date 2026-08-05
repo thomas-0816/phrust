@@ -818,10 +818,7 @@ pub(in crate::builtins::modules) fn php_float_debug_scientific_string(value: f64
     )
 }
 
-pub(in crate::builtins::modules) fn php_float_export_string(
-    value: FloatValue,
-    serialize_precision: i32,
-) -> String {
+pub fn php_float_export_string(value: FloatValue, serialize_precision: i32) -> String {
     let value = value.to_f64();
     if value.is_nan() {
         return "NAN".to_owned();

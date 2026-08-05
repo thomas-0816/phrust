@@ -329,6 +329,22 @@ pub const PATHINFO_BASENAME: i64 = 2;
 pub const PATHINFO_EXTENSION: i64 = 4;
 /// `pathinfo()` filename selector.
 pub const PATHINFO_FILENAME: i64 = 8;
+/// `phpinfo()` general-information section.
+pub const INFO_GENERAL: i64 = 1;
+/// `phpinfo()` credits section.
+pub const INFO_CREDITS: i64 = 2;
+/// `phpinfo()` configuration section.
+pub const INFO_CONFIGURATION: i64 = 4;
+/// `phpinfo()` loaded-modules section.
+pub const INFO_MODULES: i64 = 8;
+/// `phpinfo()` environment section.
+pub const INFO_ENVIRONMENT: i64 = 16;
+/// `phpinfo()` predefined-variables section.
+pub const INFO_VARIABLES: i64 = 32;
+/// `phpinfo()` license section.
+pub const INFO_LICENSE: i64 = 64;
+/// All `phpinfo()` sections.
+pub const INFO_ALL: i64 = -1;
 /// INI setting may be changed in user scripts.
 pub const INI_USER: i64 = 1;
 /// INI setting may be changed in directory-level configuration.

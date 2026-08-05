@@ -24,7 +24,7 @@ const QUALITY_REGALLOC_COST_THRESHOLD: usize = 50_000;
 /// Scheduler class for bounded native compiler work.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum NativeCompilePriority {
-    RequestCriticalBaseline,
+    RequestCriticalGeneric,
     BackgroundOptimizing,
     CacheMaintenance,
 }
@@ -45,7 +45,7 @@ pub(crate) struct NativeCompileAdmission {
 impl NativeCompileAdmission {
     pub(crate) const fn request_critical(cost_tokens: usize) -> Self {
         Self {
-            priority: NativeCompilePriority::RequestCriticalBaseline,
+            priority: NativeCompilePriority::RequestCriticalGeneric,
             cost_tokens,
         }
     }
@@ -262,12 +262,12 @@ const fn regalloc_mode_for_admission(admission: NativeCompileAdmission) -> Nativ
         // groups remain quality-allocated because the single-pass allocator
         // can more than double their emitted spill code even after structural
         // fragmentation, violating the function artifact ceiling.
-        NativeCompilePriority::RequestCriticalBaseline
+        NativeCompilePriority::RequestCriticalGeneric
             if admission.cost_tokens < QUALITY_REGALLOC_COST_THRESHOLD =>
         {
             NativeRegallocMode::Fast
         }
-        NativeCompilePriority::RequestCriticalBaseline => NativeRegallocMode::Quality,
+        NativeCompilePriority::RequestCriticalGeneric => NativeRegallocMode::Quality,
         // Optimizing work is admitted separately and may spend allocation
         // time on machine-code quality without delaying a cold request.
         NativeCompilePriority::BackgroundOptimizing => NativeRegallocMode::Quality,
@@ -577,11 +577,18 @@ impl CraneliftCodeManager {
         flags
             .set("preserve_frame_pointers", "true")
             .map_err(|error| CraneliftCodeManagerError::Flags(error.to_string()))?;
-        // The request-critical baseline is deliberately a translation tier.
-        // Its emitted control/state shape is compacted before Cranelift, so
-        // backend optimization would only add cold latency to every fragment.
+        // Steady-state execution is the only thing this backend is measured
+        // on; a cold compile costs single-digit milliseconds and never sits on
+        // a request's critical path twice. Measured on a tight integer loop
+        // with the tier composition pinned so publication timing cannot skew
+        // the result (five runs each):
+        //   none            1157-1209 ms, 56024 code bytes
+        //   speed           1046-1091 ms, 54288 code bytes
+        //   speed_and_size  1067-1107 ms, 54288 code bytes
+        // for about +1.5 ms of compile time. The backend therefore optimizes
+        // rather than merely translating.
         flags
-            .set("opt_level", "none")
+            .set("opt_level", "speed")
             .map_err(|error| CraneliftCodeManagerError::Flags(error.to_string()))?;
         // Most request-critical functions are tiny and favor linear-time
         // allocation. Structurally large groups have already been fragmented
@@ -965,8 +972,20 @@ impl CraneliftCodeManager {
                     builder_context,
                 } = &mut *compiler;
                 match module.as_mut() {
-                    Some(module) => compile(module, context, builder_context, &symbol)
-                        .map_err(ManagedCompileError::Compile),
+                    Some(module) => {
+                        match compile(module, context, builder_context, &symbol) {
+                            Ok(compiled) => Ok(compiled),
+                            Err(error) => {
+                                // A publication-time rejection may occur while
+                                // CLIF preflight still owns partial frontend
+                                // state. The immediate baseline retry must
+                                // start from a completely empty scratch pair.
+                                module.clear_context(context);
+                                *builder_context = FunctionBuilderContext::new();
+                                Err(ManagedCompileError::Compile(error))
+                            }
+                        }
+                    }
                     None => Err(ManagedCompileError::Manager(
                         CraneliftCodeManagerError::Poisoned("retired generation"),
                     )),
@@ -1093,9 +1112,9 @@ impl CraneliftCodeManager {
                 let identity = NativeFunctionCellIdentity::from(&key);
                 if let Some(cell) = state.function_cells.get(&identity) {
                     let tier = if key.compiler_tier == "optimizing" {
-                        NativeFunctionTier::Optimized
+                        NativeFunctionTier::Optimizing
                     } else {
-                        NativeFunctionTier::Baseline
+                        NativeFunctionTier::Generic
                     };
                     cell.retire_tier(tier);
                 }
@@ -1125,15 +1144,15 @@ impl CraneliftCodeManager {
             return;
         };
         let tier = if code_key.compiler_tier == "optimizing" {
-            NativeFunctionTier::Optimized
+            NativeFunctionTier::Optimizing
         } else {
-            NativeFunctionTier::Baseline
+            NativeFunctionTier::Generic
         };
         let entries = metadata.function_entries.clone();
         self.metrics
             .function_body_compile_count
             .fetch_add(entries.len() as u64, Ordering::Relaxed);
-        if tier == NativeFunctionTier::Optimized {
+        if tier == NativeFunctionTier::Optimizing {
             self.metrics
                 .optimized_function_publications
                 .fetch_add(entries.len() as u64, Ordering::Relaxed);
@@ -1336,7 +1355,7 @@ mod tests {
             compiled_unit: format!("unit-{index}"),
             region: format!("function-{index}"),
             abi_hash: JIT_RUNTIME_ABI_HASH,
-            compiler_tier: "baseline".to_owned(),
+            compiler_tier: "generic".to_owned(),
             helper_abi_hash: JIT_RUNTIME_ABI_HASH,
             helper_binding_hash: 0,
             target_cpu: "test-target:test-cpu".to_owned(),
@@ -1646,7 +1665,7 @@ mod tests {
                 deployment_unit: "lock-free-diagnostic".to_owned(),
                 function_id: 1,
                 signature_hash: 2,
-                compiler_tier: "baseline".to_owned(),
+                compiler_tier: "generic".to_owned(),
                 version: "test".to_owned(),
                 invalidation_generation: 0,
             }])

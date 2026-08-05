@@ -225,6 +225,8 @@ const SODIUM_CRYPTO_GENERICHASH_BYTES_MIN: usize =
 const SODIUM_CRYPTO_GENERICHASH_BYTES_MAX: usize =
     sodium_sys::crypto_generichash_BYTES_MAX as usize;
 const SODIUM_CRYPTO_GENERICHASH_KEYBYTES: usize = sodium_sys::crypto_generichash_KEYBYTES as usize;
+const SODIUM_CRYPTO_GENERICHASH_KEYBYTES_MIN: usize =
+    sodium_sys::crypto_generichash_KEYBYTES_MIN as usize;
 const SODIUM_CRYPTO_SIGN_BYTES: usize = sodium_sys::crypto_sign_BYTES as usize;
 const SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES: usize = sodium_sys::crypto_sign_PUBLICKEYBYTES as usize;
 const SODIUM_CRYPTO_SIGN_SECRETKEYBYTES: usize = sodium_sys::crypto_sign_SECRETKEYBYTES as usize;
@@ -266,22 +268,34 @@ fn builtin_sodium_crypto_generichash(
             "output length must be between 16 and 64 bytes",
         ));
     }
-    let mut params = blake2b_simd::Params::new();
-    params.hash_length(length as usize);
     if let Some(key) = key.as_ref()
         && !key.is_empty()
     {
-        if key.len() > SODIUM_CRYPTO_GENERICHASH_BYTES_MAX {
+        if !(SODIUM_CRYPTO_GENERICHASH_KEYBYTES_MIN..=SODIUM_CRYPTO_GENERICHASH_BYTES_MAX)
+            .contains(&key.len())
+        {
             return Err(value_error(
                 "sodium_crypto_generichash",
-                "key length must be at most 64 bytes",
+                "key length must be between 16 and 64 bytes",
             ));
         }
-        params.key(key.as_bytes());
     }
-    Ok(Value::string(
-        params.hash(message.as_bytes()).as_bytes().to_vec(),
-    ))
+    Ok(Value::string(native_sodium_crypto_generichash(
+        message.as_bytes(),
+        key.as_ref().map_or(&[], |key| key.as_bytes()),
+        length as usize,
+    )))
+}
+
+/// Computes the Value-free BLAKE2b payload shared by the cold builtin and the
+/// exact generated-code leaf. Callers validate PHP-visible length/key bounds.
+pub fn native_sodium_crypto_generichash(message: &[u8], key: &[u8], length: usize) -> Vec<u8> {
+    let mut params = blake2b_simd::Params::new();
+    params.hash_length(length);
+    if !key.is_empty() {
+        params.key(key);
+    }
+    params.hash(message).as_bytes().to_vec()
 }
 
 fn builtin_sodium_crypto_generichash_keygen(
@@ -1299,9 +1313,15 @@ fn builtin_sodium_bin2base64(
     }
     let input = string_arg("sodium_bin2base64", &args[0])?;
     let variant = int_arg("sodium_bin2base64", &args[1])?;
-    Ok(Value::string(
-        base64_engine(variant)?.encode(input.as_bytes()),
-    ))
+    let encoded = native_sodium_bin2base64(input.as_bytes(), variant)
+        .ok_or_else(|| value_error("sodium_base64", "unsupported base64 variant"))?;
+    Ok(Value::string(encoded))
+}
+
+/// Encodes one byte slice with a fixed libsodium base64 variant without
+/// constructing PHP runtime values.
+pub fn native_sodium_bin2base64(input: &[u8], variant: i64) -> Option<Vec<u8>> {
+    Some(base64_engine(variant).ok()?.encode(input).into_bytes())
 }
 
 fn builtin_sodium_base642bin(

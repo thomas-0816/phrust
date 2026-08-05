@@ -1,17 +1,20 @@
-# Goal: Authoritative Native Value, Call, and Storage Cutover
+# Goal: Generic and Optimizing Cranelift Cutover
 
 ## Outcome
 
-Complete the native hot-path replacement described by `AGENTS.md` and
+Complete the native hot-path replacement described by `AGENTS.md`,
+`/tmp/phrust-generic-optimizing-cranelift-cutover-prompt-pack.md`, and
 `/data/src/ml/phrust/hotpack.md` without returning to operation-by-operation
 fast paths.
 
 The end state is:
 
-> Optimizing code produces, stores, passes, returns, and consumes only native
-> encodings backed by authoritative native slots. Rust `Value` exists only
-> behind an explicit baseline/cold, extension, reflection/debug, or final
-> outer-result boundary.
+> Every ordinary PHP body executes as Generic or Optimizing Cranelift using
+> one authoritative native value plane and one generated-function ABI.
+> Generated callers invoke generated callees through stable entry cells. Rust
+> `Value` exists only behind an explicit cold, extension, reflection/debug, or
+> final outer-result boundary, and Rust never executes an ordinary userland
+> PHP body.
 
 This is one coordinated vertical cutover. Introducing a representation and
 leaving the old common path available is not an intermediate completion.
@@ -60,8 +63,20 @@ consumer:
    representation across the boundary.
 4. PHP-visible type, reference, COW, visibility, warning, exception,
    destructor, and GC semantics are preserved.
-5. An unsupported semantic shape takes one exact baseline continuation. It
-   does not enter a local fast/slow helper chain.
+5. An unsupported semantic shape takes one exact typed leaf or a Generic
+   Cranelift continuation. It does not enter a local fast/slow helper chain or
+   a Rust PHP-function executor.
+
+## Tier and performance invariant
+
+- Generic Cranelift is semantically complete and always available.
+- Optimizing Cranelift uses the same encoded values, slots, call frame,
+  control result, runtime view, ownership rules, and entry cells.
+- Exact typed runtime leaves are allowed; operation-ID and generic call or
+  builtin dispatchers are not.
+- The existing WordPress contract is c1 p50 at most 80 ms and p95 at most
+  100 ms. The sharper target is at most 2.0x the simultaneously measured
+  PHP-FPM control; neither target replaces the other.
 
 Ordinary optimizing execution must not call or depend on:
 

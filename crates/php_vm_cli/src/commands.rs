@@ -498,7 +498,7 @@ where
         native_optimization: if options.opt_level == OptimizationLevel::O2 {
             NativeOptimizationPolicy::Optimizing
         } else {
-            NativeOptimizationPolicy::Baseline
+            NativeOptimizationPolicy::Generic
         },
         ..VmOptions::default()
     });

@@ -34,16 +34,16 @@ pub use bind::{
 };
 pub use builder::{RegionBuilder, RegionBuilderOptions, build_minimal_scalar_region};
 pub use coverage::{
-    BASELINE_INSTRUCTION_MANIFEST, BASELINE_TERMINATOR_MANIFEST, BaselineEffectFlags,
-    BaselineLoweringClass, BaselineLoweringManifestEntry, baseline_binary_class,
+    GENERIC_INSTRUCTION_MANIFEST, GENERIC_TERMINATOR_MANIFEST, GenericEffectFlags,
+    GenericLoweringClass, GenericLoweringManifestEntry, baseline_binary_class,
     baseline_call_arg_class, baseline_callable_class, baseline_cast_class, baseline_compare_class,
-    baseline_include_class, baseline_instruction_lowering, baseline_terminator_lowering,
-    baseline_unary_class,
+    baseline_include_class, baseline_unary_class, generic_instruction_lowering,
+    generic_terminator_lowering,
 };
 pub use dump::dump_region_graph;
 pub(crate) use executable::native_function_parameter_locals;
 pub use executable::{
-    BaselineRegionBuilder, CompileMetadata, NativeCompileError, NativeCompilerTier,
+    CompileMetadata, GenericRegionBuilder, NativeCompileError, NativeCompilerTier,
     RegionArrayCallbackCall, RegionArrayCallbackOperation, RegionArrayCallbackTarget,
     RegionBinaryOp, RegionBlock, RegionCallResult, RegionCallTarget, RegionCastOp,
     RegionCompareOpCode, RegionDeclarationMetadata, RegionExceptionRegion, RegionGraph,
@@ -76,8 +76,9 @@ pub use ssa::{
     build_executable_ssa,
 };
 pub use value_flow::{
-    ExecutableValueFlow, LocalStorageClass, analyze_baseline_value_ownership,
-    analyze_executable_value_flow,
+    ExecutableValueFlow, LocalStorageClass, analyze_executable_value_flow,
+    analyze_executable_value_flow_with_function_returns, analyze_generic_value_ownership,
+    generated_fact_satisfies_type,
 };
 pub use verify::{RegionVerifyError, verify_region_graph};
 

@@ -18,4 +18,13 @@ function scalar_count(): int
     }
 }
 
-var_dump(scalar_sizeof(), scalar_count());
+function uninitialized_count(): int
+{
+    try {
+        return @count($missing);
+    } catch (TypeError $error) {
+        return 99;
+    }
+}
+
+var_dump(scalar_sizeof(), scalar_count(), uninitialized_count());

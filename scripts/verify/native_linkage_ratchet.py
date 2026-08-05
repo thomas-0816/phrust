@@ -48,7 +48,6 @@ def main() -> int:
     vm_cache = text("crates/php_vm/src/vm/native_compile_cache.rs")
     worker = text("crates/php_server/src/worker_pool.rs")
     vm_tests = text("crates/php_vm/src/vm/mod.rs")
-    dispatch = text("crates/php_vm/src/vm/jit_abi/call_dispatch.rs")
     compiled_unit = text("crates/php_vm/src/compiled_unit.rs")
     arena = text("crates/php_vm/src/vm/jit_abi/frame_arena.rs")
 
@@ -139,26 +138,25 @@ def main() -> int:
     )
     require(
         failures,
-        "instruction_for_source" not in dispatch
-        and "prepared_callsite_instruction" not in dispatch
-        and "instruction_for_continuation" not in dispatch
-        and "prepared_native_callsite" in dispatch
-        and "NativeCallSiteDescriptor" in compiled_unit,
-        "dynamic dispatch returned to source-instruction recovery instead of typed descriptors",
+        not (ROOT / "crates/php_vm/src/vm/jit_abi/call_dispatch.rs").exists()
+        and "trusted_preferred_function_entries" in text(
+            "crates/php_jit/src/cranelift_lowering.rs"
+        )
+        and ".atomic_load(pointer_type, MemFlagsData::new(), preferred_entry)" in text(
+            "crates/php_jit/src/cranelift_lowering.rs"
+        )
+        and "Every generated-to-generated PHP call" in text(
+            "crates/php_jit/src/cranelift_lowering.rs"
+        ),
+        "generated calls are not linked through the preferred native entry cells",
     )
     require(
         failures,
-        "native_call_encoded_scratch" in dispatch and ".collect::<Vec<i64>>" not in dispatch,
-        "dynamic common-call argument vectors are allocated per call",
-    )
-    require(
-        failures,
-        "lookup_native_method_pic" in dispatch
-        and "PersistentNativeMethodPic" in compiled_unit
-        and "OnceLock<PersistentNativeMethodPicEntry>" in compiled_unit
-        and "NATIVE_METHOD_PIC_LIMIT: usize = 4" in text("crates/php_vm/src/vm/jit_abi.rs")
-        and "warmed_method_pic_reclassifies_stable_call_as_direct" in vm_tests,
-        "process-persistent monomorphic/polymorphic method linkage is not ratcheted",
+        "NativeCallSiteDescriptor" not in compiled_unit
+        and "jit_baseline_native_call_dispatch_impl" not in text(
+            "crates/php_vm/src/vm/jit_abi.rs"
+        ),
+        "the superseded Rust call-dispatch descriptor path is still present",
     )
     require(
         failures,

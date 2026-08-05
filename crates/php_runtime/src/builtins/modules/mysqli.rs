@@ -819,7 +819,9 @@ pub(in crate::builtins::modules) fn builtin_mysqli_real_escape_string(
     expect_arity("mysqli_real_escape_string", &args, 2)?;
     let _object = mysqli_object_arg("mysqli_real_escape_string", args.first())?;
     let value = string_arg("mysqli_real_escape_string", &args[1])?;
-    Ok(Value::string(mysql_escape_string(value.as_bytes())))
+    Ok(Value::string(crate::db::mysql::native_mysql_escape_string(
+        value.as_bytes(),
+    )))
 }
 
 pub(in crate::builtins::modules) fn builtin_mysqli_report(
@@ -2220,23 +2222,6 @@ fn stmt_string_status(
         value
     });
     Ok(Value::String(PhpString::from(text.into_bytes())))
-}
-
-fn mysql_escape_string(value: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(value.len());
-    for byte in value {
-        match byte {
-            0 => out.extend_from_slice(b"\\0"),
-            b'\n' => out.extend_from_slice(b"\\n"),
-            b'\r' => out.extend_from_slice(b"\\r"),
-            b'\\' => out.extend_from_slice(b"\\\\"),
-            b'\'' => out.extend_from_slice(b"\\'"),
-            b'"' => out.extend_from_slice(b"\\\""),
-            0x1a => out.extend_from_slice(b"\\Z"),
-            other => out.push(*other),
-        }
-    }
-    out
 }
 
 fn sync_mysqli_status_properties(object: &ObjectRef, state: &crate::MysqlState) {

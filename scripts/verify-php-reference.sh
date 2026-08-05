@@ -49,7 +49,11 @@ if [[ -x "$PHP_REF_DIR/sapi/cli/php" ]]; then
   if [[ "$tokenizer_available" != "true" ]]; then
     fail "reference PHP CLI does not provide token_get_all"
   fi
-  printf '  cli: %s/sapi/cli/php (%s, token_get_all available)\n' "$PHP_REF_DIR" "$php_version"
+  mysqli_available="$("$PHP_REF_DIR/sapi/cli/php" -r 'var_export(extension_loaded("mysqli") && extension_loaded("mysqlnd") && class_exists("mysqli") && function_exists("mysqli_connect"));')"
+  if [[ "$mysqli_available" != "true" ]]; then
+    fail "reference PHP CLI does not provide the mysqli/mysqlnd WordPress oracle capability"
+  fi
+  printf '  cli: %s/sapi/cli/php (%s, token_get_all and mysqli/mysqlnd available)\n' "$PHP_REF_DIR" "$php_version"
 else
   printf 'info: reference PHP CLI not built; run `nix develop -c just build-ref-php` if needed.\n'
 fi

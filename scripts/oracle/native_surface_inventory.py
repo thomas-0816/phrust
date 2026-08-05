@@ -437,21 +437,17 @@ def load_phpt_evidence(manifest: Path, symbols: Path) -> dict[str, list[str]]:
 
 
 def native_direct_function_names() -> set[str]:
-    path = ROOT / "crates/php_vm/src/vm/jit_abi/native_builtins.rs"
-    source = path.read_text(encoding="utf-8")
-    names: set[str] = set()
-    for function in ["execute_native_internal_builtin", "execute_native_builtin"]:
-        body = rust_function_body(source, function)
-        for value in re.findall(r'"([A-Za-z_\\][A-Za-z0-9_\\]*)"', body):
-            names.add(value.lower())
-    return names
+    # The optimizing runtime has no monolithic name-dispatch executor. Exact
+    # builtin symbols are reported from emitted artifacts, not inferred from
+    # a deleted Rust dispatch table.
+    return set()
 
 
 def native_method_route(class_name: str, method: str) -> bool:
     sources = [
-        ROOT / "crates/php_vm/src/vm/jit_abi/internal_classes.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/object_support.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/call_dispatch.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/cold_class_metadata.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/class_plans.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/exact_call_dispatch.rs",
     ]
     text = "\n".join(path.read_text(encoding="utf-8") for path in sources if path.is_file()).lower()
     return class_name.lower() in text and method.lower() in text

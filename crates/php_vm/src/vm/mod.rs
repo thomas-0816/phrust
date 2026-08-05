@@ -11,42 +11,38 @@ pub use options::{NativeBlacklistMode, NativeOptimizationPolicy, VmOptions};
 pub use result::VmResult;
 
 use crate::compiled_unit::CompiledUnit;
-pub(crate) use jit_abi::native_fixed_callable_plan;
+pub(crate) use crate::native_exact::native_fixed_callable_plan;
 use jit_abi::{
-    NativeRequestOwner, activate_native_context, jit_baseline_native_binary_abi,
-    jit_baseline_native_builtin_dispatch_abi, jit_baseline_native_builtin_dispatch_diagnostic_abi,
-    jit_baseline_native_call_dispatch_abi, jit_baseline_native_call_dispatch_diagnostic_abi,
-    jit_baseline_native_cast_abi, jit_baseline_native_compare_abi,
-    jit_baseline_native_semantic_dispatch_abi,
-    jit_baseline_native_semantic_dispatch_diagnostic_abi, jit_baseline_native_unary_abi,
+    NativeRequestOwner, activate_native_context, jit_cold_dynamic_unit_resolve_abi,
     jit_native_acos_f64_abi, jit_native_acosh_f64_abi, jit_native_acquire_callable_abi,
-    jit_native_argument_check_abi, jit_native_array_cast_abi, jit_native_array_fetch_abi,
-    jit_native_array_insert_abi, jit_native_array_insert_local_abi, jit_native_array_new_abi,
-    jit_native_array_spread_abi, jit_native_array_union_abi, jit_native_array_unset_abi,
+    jit_native_acquire_class_plan_abi, jit_native_acquire_method_callable_abi, jit_native_add_abi,
+    jit_native_array_cast_abi, jit_native_array_offset_warning_abi, jit_native_array_union_abi,
     jit_native_asin_f64_abi, jit_native_asinh_f64_abi, jit_native_atan_f64_abi,
     jit_native_atan2_f64_abi, jit_native_atanh_f64_abi, jit_native_base_convert_abi,
     jit_native_basename_abi, jit_native_bindec_abi, jit_native_bit_and_abi, jit_native_bit_not_abi,
     jit_native_bit_or_abi, jit_native_bit_xor_abi, jit_native_callback_return_string_abi,
     jit_native_chmod_abi, jit_native_class_exists_abi, jit_native_closedir_abi,
-    jit_native_concat_abi, jit_native_constant_abi, jit_native_constant_fetch_abi,
-    jit_native_cos_f64_abi, jit_native_cosh_f64_abi, jit_native_decbin_abi, jit_native_dechex_abi,
+    jit_native_concat_abi, jit_native_constant_abi, jit_native_cos_f64_abi,
+    jit_native_cosh_f64_abi, jit_native_decbin_abi, jit_native_dechex_abi,
+    jit_native_declared_argument_contract_abi, jit_native_declared_return_contract_abi,
     jit_native_decoct_abi, jit_native_define_abi, jit_native_defined_abi,
     jit_native_deg2rad_f64_abi, jit_native_dirname_abi, jit_native_disk_free_space_abi,
-    jit_native_disk_total_space_abi, jit_native_dynamic_code_abi,
-    jit_native_dynamic_property_slot_abi, jit_native_dynamic_property_test_slot_abi,
-    jit_native_echo_abi, jit_native_echo_bytes_abi, jit_native_enum_exists_abi,
-    jit_native_equal_abi, jit_native_exception_new_abi, jit_native_execution_poll_abi,
-    jit_native_exp_f64_abi, jit_native_expm1_f64_abi, jit_native_fclose_abi, jit_native_feof_abi,
-    jit_native_fflush_abi, jit_native_fgetc_abi, jit_native_fgets_abi, jit_native_file_abi,
-    jit_native_file_exists_abi, jit_native_file_get_contents_abi, jit_native_file_put_contents_abi,
-    jit_native_filegroup_abi, jit_native_filemtime_abi, jit_native_fileowner_abi,
-    jit_native_fileperms_abi, jit_native_filesize_abi, jit_native_filetype_abi,
-    jit_native_float_cast_abi, jit_native_float_to_string_abi, jit_native_fmod_f64_abi,
-    jit_native_fopen_abi, jit_native_foreach_cleanup_abi, jit_native_foreach_init_abi,
-    jit_native_foreach_next_abi, jit_native_fpow_f64_abi, jit_native_frame_alloc_abi,
-    jit_native_frame_release_abi, jit_native_fread_abi, jit_native_fseek_abi, jit_native_ftell_abi,
-    jit_native_ftruncate_abi, jit_native_function_exists_abi, jit_native_function_resolve_abi,
-    jit_native_fwrite_abi, jit_native_get_exception_handler_abi, jit_native_glob_abi,
+    jit_native_disk_total_space_abi, jit_native_divide_abi, jit_native_dynamic_property_slot_abi,
+    jit_native_dynamic_property_test_slot_abi, jit_native_echo_bytes_abi,
+    jit_native_enum_exists_abi, jit_native_equal_abi, jit_native_error_log_abi,
+    jit_native_exact_bit_and_abi, jit_native_exact_bit_or_abi, jit_native_exact_bit_xor_abi,
+    jit_native_execution_poll_abi, jit_native_exp_f64_abi, jit_native_expm1_f64_abi,
+    jit_native_fclose_abi, jit_native_feof_abi, jit_native_fflush_abi, jit_native_fgetc_abi,
+    jit_native_fgets_abi, jit_native_file_abi, jit_native_file_exists_abi,
+    jit_native_file_get_contents_abi, jit_native_file_put_contents_abi, jit_native_filegroup_abi,
+    jit_native_filemtime_abi, jit_native_fileowner_abi, jit_native_fileperms_abi,
+    jit_native_filesize_abi, jit_native_filetype_abi, jit_native_float_cast_abi,
+    jit_native_float_to_string_abi, jit_native_fmod_f64_abi, jit_native_fopen_abi,
+    jit_native_fpow_f64_abi, jit_native_frame_alloc_abi, jit_native_frame_release_abi,
+    jit_native_fread_abi, jit_native_fseek_abi, jit_native_ftell_abi, jit_native_ftruncate_abi,
+    jit_native_function_exists_abi, jit_native_function_resolve_abi, jit_native_fwrite_abi,
+    jit_native_get_exception_handler_abi, jit_native_glob_abi,
+    jit_native_global_binding_rebind_abi, jit_native_global_binding_unset_abi,
     jit_native_greater_abi, jit_native_greater_equal_abi, jit_native_gzcompress_abi,
     jit_native_gzdecode_abi, jit_native_gzdeflate_abi, jit_native_gzencode_abi,
     jit_native_gzinflate_abi, jit_native_gzuncompress_abi, jit_native_hash_abi,
@@ -58,46 +54,63 @@ use jit_abi::{
     jit_native_is_readable_abi, jit_native_is_uploaded_file_abi, jit_native_is_writable_abi,
     jit_native_json_decode_abi, jit_native_json_encode_abi, jit_native_json_last_error_abi,
     jit_native_json_last_error_msg_abi, jit_native_json_validate_abi, jit_native_less_abi,
-    jit_native_less_equal_abi, jit_native_local_fetch_abi, jit_native_local_store_abi,
-    jit_native_log_f64_abi, jit_native_log1p_f64_abi, jit_native_log10_f64_abi,
-    jit_native_long2ip_abi, jit_native_lstat_abi, jit_native_md5_abi, jit_native_method_exists_abi,
-    jit_native_mkdir_abi, jit_native_not_equal_abi, jit_native_not_identical_abi,
-    jit_native_number_format_abi, jit_native_numeric_string_abi, jit_native_ob_end_clean_abi,
-    jit_native_ob_end_flush_abi, jit_native_ob_get_clean_abi, jit_native_ob_get_contents_abi,
-    jit_native_ob_get_flush_abi, jit_native_ob_get_length_abi, jit_native_ob_get_level_abi,
-    jit_native_ob_start_abi, jit_native_object_cast_abi, jit_native_object_class_name_abi,
-    jit_native_object_clone_abi, jit_native_object_clone_with_abi, jit_native_object_new_abi,
-    jit_native_octdec_abi, jit_native_opendir_abi, jit_native_pack_abi, jit_native_pathinfo_abi,
-    jit_native_plain_object_clone_abi, jit_native_preg_callback_assemble_abi,
-    jit_native_preg_callback_plan_abi, jit_native_preg_filter_abi, jit_native_preg_grep_abi,
-    jit_native_preg_last_error_abi, jit_native_preg_last_error_msg_abi, jit_native_preg_match_abi,
-    jit_native_preg_match_all_abi, jit_native_preg_quote_abi, jit_native_preg_replace_abi,
-    jit_native_preg_split_abi, jit_native_prepared_closure_new_abi,
-    jit_native_prepared_exception_new_abi, jit_native_prepared_object_new_abi,
-    jit_native_printf_abi, jit_native_property_assign_abi, jit_native_property_exists_abi,
-    jit_native_property_fetch_abi, jit_native_rad2deg_f64_abi, jit_native_readdir_abi,
-    jit_native_readfile_abi, jit_native_realpath_abi, jit_native_reference_bind_abi,
+    jit_native_less_equal_abi, jit_native_log_f64_abi, jit_native_log1p_f64_abi,
+    jit_native_log10_f64_abi, jit_native_long2ip_abi, jit_native_lstat_abi, jit_native_md5_abi,
+    jit_native_method_exists_abi, jit_native_mkdir_abi, jit_native_modulo_abi,
+    jit_native_move_uploaded_file_abi, jit_native_multiply_abi,
+    jit_native_mysqli_affected_rows_abi, jit_native_mysqli_character_set_name_abi,
+    jit_native_mysqli_close_abi, jit_native_mysqli_connect_errno_abi,
+    jit_native_mysqli_connect_error_abi, jit_native_mysqli_errno_abi, jit_native_mysqli_error_abi,
+    jit_native_mysqli_fetch_array_abi, jit_native_mysqli_fetch_field_abi,
+    jit_native_mysqli_fetch_object_abi, jit_native_mysqli_field_count_abi,
+    jit_native_mysqli_free_result_abi, jit_native_mysqli_get_server_info_abi,
+    jit_native_mysqli_init_abi, jit_native_mysqli_insert_id_abi,
+    jit_native_mysqli_more_results_abi, jit_native_mysqli_next_result_abi,
+    jit_native_mysqli_num_fields_abi, jit_native_mysqli_num_rows_abi,
+    jit_native_mysqli_options_abi, jit_native_mysqli_query_abi, jit_native_mysqli_real_connect_abi,
+    jit_native_mysqli_real_escape_string_abi, jit_native_mysqli_report_abi,
+    jit_native_mysqli_select_db_abi, jit_native_mysqli_set_charset_abi,
+    jit_native_named_dynamic_property_slot_abi, jit_native_not_equal_abi,
+    jit_native_not_identical_abi, jit_native_number_format_abi, jit_native_numeric_string_abi,
+    jit_native_ob_end_clean_abi, jit_native_ob_end_flush_abi, jit_native_ob_get_clean_abi,
+    jit_native_ob_get_contents_abi, jit_native_ob_get_flush_abi, jit_native_ob_get_length_abi,
+    jit_native_ob_get_level_abi, jit_native_ob_start_abi, jit_native_object_cast_abi,
+    jit_native_object_class_name_abi, jit_native_octdec_abi, jit_native_opendir_abi,
+    jit_native_pack_abi, jit_native_pathinfo_abi, jit_native_plain_object_clone_abi,
+    jit_native_power_abi, jit_native_preg_callback_assemble_abi, jit_native_preg_callback_plan_abi,
+    jit_native_preg_filter_abi, jit_native_preg_grep_abi, jit_native_preg_last_error_abi,
+    jit_native_preg_last_error_msg_abi, jit_native_preg_match_abi, jit_native_preg_match_all_abi,
+    jit_native_preg_quote_abi, jit_native_preg_replace_abi, jit_native_preg_split_abi,
+    jit_native_prepared_closure_new_abi, jit_native_prepared_exception_new_abi,
+    jit_native_prepared_object_new_abi, jit_native_print_abi, jit_native_print_r_abi,
+    jit_native_printf_abi, jit_native_property_exists_abi, jit_native_rad2deg_f64_abi,
+    jit_native_readdir_abi, jit_native_readfile_abi, jit_native_realpath_abi,
     jit_native_register_shutdown_function_abi, jit_native_rename_abi,
     jit_native_resolve_callable_abi, jit_native_restore_error_handler_abi,
-    jit_native_restore_exception_handler_abi, jit_native_return_check_abi, jit_native_rewind_abi,
-    jit_native_rewinddir_abi, jit_native_rmdir_abi, jit_native_round_f64_abi,
-    jit_native_runtime_fatal_abi, jit_native_scandir_abi, jit_native_set_error_handler_abi,
-    jit_native_set_exception_handler_abi, jit_native_sha1_abi, jit_native_sin_f64_abi,
-    jit_native_sinh_f64_abi, jit_native_spaceship_abi, jit_native_spl_autoload_functions_abi,
-    jit_native_spl_autoload_register_abi, jit_native_spl_autoload_unregister_abi,
-    jit_native_sprintf_abi, jit_native_stable_length_abi, jit_native_stat_abi,
+    jit_native_restore_exception_handler_abi, jit_native_rewind_abi, jit_native_rewinddir_abi,
+    jit_native_rmdir_abi, jit_native_round_f64_abi, jit_native_scandir_abi,
+    jit_native_set_error_handler_abi, jit_native_set_exception_handler_abi, jit_native_sha1_abi,
+    jit_native_shift_left_abi, jit_native_shift_right_abi, jit_native_sin_f64_abi,
+    jit_native_sinh_f64_abi, jit_native_sleep_abi, jit_native_spaceship_abi,
+    jit_native_spl_autoload_functions_abi, jit_native_spl_autoload_register_abi,
+    jit_native_spl_autoload_unregister_abi, jit_native_sprintf_abi, jit_native_stat_abi,
     jit_native_stream_copy_to_stream_abi, jit_native_stream_get_contents_abi,
-    jit_native_string_cast_abi, jit_native_string_predicate_abi, jit_native_symlink_abi,
+    jit_native_string_cast_abi, jit_native_subtract_abi, jit_native_symlink_abi,
     jit_native_tan_f64_abi, jit_native_tanh_f64_abi, jit_native_tempnam_abi,
+    jit_native_throwable_get_code_abi, jit_native_throwable_get_file_abi,
+    jit_native_throwable_get_line_abi, jit_native_throwable_get_message_abi,
+    jit_native_throwable_get_previous_abi, jit_native_throwable_get_trace_abi,
     jit_native_tmpfile_abi, jit_native_touch_abi, jit_native_trait_exists_abi,
-    jit_native_truthy_abi, jit_native_type_predicate_abi, jit_native_unary_minus_abi,
-    jit_native_unary_plus_abi, jit_native_unlink_abi, jit_native_unpack_abi,
-    jit_native_value_release_abi, jit_native_vprintf_abi, jit_native_vsprintf_abi,
-    jit_native_zlib_decode_abi, jit_native_zlib_encode_abi, resume_native_optimizing_exit,
+    jit_native_trigger_error_abi, jit_native_type_name_abi, jit_native_unary_minus_abi,
+    jit_native_unary_plus_abi, jit_native_undefined_array_key_warning_abi,
+    jit_native_undefined_variable_warning_abi, jit_native_unlink_abi, jit_native_unpack_abi,
+    jit_native_var_dump_abi, jit_native_var_export_abi, jit_native_vprintf_abi,
+    jit_native_vsprintf_abi, jit_native_zlib_decode_abi, jit_native_zlib_encode_abi,
+    resume_native_optimizing_exit,
 };
 use php_runtime::api::{OutputBuffer, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Process-owned state shared by native request coordinators.
@@ -110,6 +123,8 @@ pub struct VmWorkerState {
     tiering_options: crate::tiering::TieringOptions,
     tiering_state: Arc<Mutex<BackgroundTieringState>>,
     native_request_pool: Arc<Mutex<jit_abi::NativeRequestPool>>,
+    native_compile_descriptors: Arc<Mutex<Vec<crate::counters::NativeCompileDescriptor>>>,
+    generated_callback_continuation: Arc<OnceLock<Result<php_jit::JitFunctionHandle, String>>>,
 }
 
 #[derive(Debug, Default)]
@@ -176,38 +191,111 @@ type NativeOptimizationJob = Box<dyn FnOnce() + Send + 'static>;
 /// independent code generators from doubling RSS and competing for the same
 /// CPU after a request boundary.
 const NATIVE_OPTIMIZATION_WORKERS: usize = 1;
-const NATIVE_OPTIMIZATION_QUEUE_CAPACITY: usize = 1;
 const NATIVE_OPTIMIZATION_BATCH_CAPACITY: usize = 128;
+// Cranelift's legalization/register-allocation recursion can exceed the
+// platform's small default thread stack for large application functions.
+// Request workers already reserve this bounded stack size; give the single
+// process compiler worker the same production envelope.
+const NATIVE_OPTIMIZATION_STACK_BYTES: usize = 128 * 1024 * 1024;
 
-static NATIVE_OPTIMIZATION_QUEUE: OnceLock<mpsc::SyncSender<NativeOptimizationJob>> =
-    OnceLock::new();
+struct PendingNativeOptimization {
+    heat: u64,
+    job: NativeOptimizationJob,
+}
 
-fn submit_native_optimization_job(job: impl FnOnce() + Send + 'static) -> bool {
-    let sender = NATIVE_OPTIMIZATION_QUEUE.get_or_init(|| {
-        let (sender, receiver) =
-            mpsc::sync_channel::<NativeOptimizationJob>(NATIVE_OPTIMIZATION_QUEUE_CAPACITY);
-        let receiver = Arc::new(Mutex::new(receiver));
+#[derive(Default)]
+struct NativeOptimizationSchedulerState {
+    pending: HashMap<native_compile_cache::NativeCompileCacheKey, PendingNativeOptimization>,
+    running: HashSet<native_compile_cache::NativeCompileCacheKey>,
+}
+
+struct NativeOptimizationScheduler {
+    state: Mutex<NativeOptimizationSchedulerState>,
+    ready: Condvar,
+}
+
+impl NativeOptimizationScheduler {
+    fn start(thread_prefix: &str) -> Arc<Self> {
+        let scheduler = Arc::new(Self {
+            state: Mutex::new(NativeOptimizationSchedulerState::default()),
+            ready: Condvar::new(),
+        });
         for index in 0..NATIVE_OPTIMIZATION_WORKERS {
-            let receiver = Arc::clone(&receiver);
+            let worker = Arc::clone(&scheduler);
             std::thread::Builder::new()
-                .name(format!("phrust-optimize-{index}"))
-                .spawn(move || {
-                    loop {
-                        let job = lock_unpoisoned(&receiver).recv();
-                        let Ok(job) = job else {
-                            break;
-                        };
-                        job();
-                    }
-                })
+                .name(format!("{thread_prefix}-{index}"))
+                .stack_size(NATIVE_OPTIMIZATION_STACK_BYTES)
+                .spawn(move || worker.run())
                 .expect("native optimization worker must start");
         }
-        sender
-    });
-    // Optimization is never allowed to delay a request. Request completion
-    // submits the hottest candidates first; a full queue rejects the colder
-    // tail and lets a later request reconsider it after more entry evidence.
-    sender.try_send(Box::new(job)).is_ok()
+        scheduler
+    }
+
+    fn submit(
+        &self,
+        key: native_compile_cache::NativeCompileCacheKey,
+        heat: u64,
+        job: NativeOptimizationJob,
+    ) {
+        let mut state = lock_unpoisoned(&self.state);
+        if state.running.contains(&key) {
+            return;
+        }
+        if let Some(pending) = state.pending.get_mut(&key) {
+            pending.heat = pending.heat.max(heat);
+            return;
+        }
+        state
+            .pending
+            .insert(key, PendingNativeOptimization { heat, job });
+        self.ready.notify_one();
+    }
+
+    fn run(&self) {
+        loop {
+            let batch = {
+                let mut state = lock_unpoisoned(&self.state);
+                while state.pending.is_empty() {
+                    state = self
+                        .ready
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                let mut candidates = state
+                    .pending
+                    .iter()
+                    .map(|(key, pending)| (*key, pending.heat))
+                    .collect::<Vec<_>>();
+                candidates.sort_unstable_by(|left, right| {
+                    right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0))
+                });
+                candidates
+                    .into_iter()
+                    .take(NATIVE_OPTIMIZATION_BATCH_CAPACITY)
+                    .filter_map(|(key, _)| {
+                        let pending = state.pending.remove(&key)?;
+                        state.running.insert(key);
+                        Some((key, pending.job))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for (key, job) in batch {
+                job();
+                lock_unpoisoned(&self.state).running.remove(&key);
+            }
+        }
+    }
+}
+
+static NATIVE_OPTIMIZATION_SCHEDULER: OnceLock<Arc<NativeOptimizationScheduler>> = OnceLock::new();
+
+fn submit_native_optimization_job(
+    decision: BackgroundTieringDecision,
+    job: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_OPTIMIZATION_SCHEDULER
+        .get_or_init(|| NativeOptimizationScheduler::start("phrust-optimize"))
+        .submit(decision.key, decision.entries, Box::new(job));
 }
 
 impl Default for VmWorkerState {
@@ -225,6 +313,8 @@ impl Default for VmWorkerState {
             tiering_options,
             tiering_state: Arc::new(Mutex::new(BackgroundTieringState::default())),
             native_request_pool: Arc::new(Mutex::new(jit_abi::NativeRequestPool::default())),
+            native_compile_descriptors: Arc::new(Mutex::new(Vec::new())),
+            generated_callback_continuation: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -248,6 +338,119 @@ impl VmWorkerState {
         }
     }
 
+    /// Returns the one process-owned Generic Cranelift entry used by cold
+    /// request orchestration to issue a userland callback action. Rust passes
+    /// native values to this entry, but only the generated trampoline
+    /// acquires the callable and invokes its published generated body.
+    fn generated_callback_continuation(
+        &self,
+        options: &VmOptions,
+    ) -> Result<php_jit::JitFunctionHandle, String> {
+        self.generated_callback_continuation
+            .get_or_init(|| {
+                let mut builder = php_ir::IrBuilder::new(php_ir::UnitId::new(u32::MAX - 1));
+                let file = builder.add_file("<generated-callback-trampoline>");
+                let span = php_ir::IrSpan::new(file, 0, 0);
+                let function = builder.start_function(
+                    "{phrust_generated_callback_continuation}",
+                    php_ir::FunctionFlags::default(),
+                    span,
+                );
+                let callable_local = builder.intern_local(function, "__phrust:callable");
+                let arguments_local = builder.intern_local(function, "__phrust:arguments");
+                builder.push_param(
+                    function,
+                    php_ir::IrParam {
+                        name: "__phrust:callable".to_owned(),
+                        local: callable_local,
+                        required: true,
+                        default: None,
+                        type_: None,
+                        by_ref: false,
+                        variadic: false,
+                        attributes: Vec::new(),
+                    },
+                );
+                builder.push_param(
+                    function,
+                    php_ir::IrParam {
+                        name: "__phrust:arguments".to_owned(),
+                        local: arguments_local,
+                        required: true,
+                        default: None,
+                        type_: None,
+                        by_ref: false,
+                        variadic: false,
+                        attributes: Vec::new(),
+                    },
+                );
+                let block = builder.append_block(function);
+                let callable = builder.alloc_register(function);
+                let acquired_callable = builder.alloc_register(function);
+                let arguments = builder.alloc_register(function);
+                let result = builder.alloc_register(function);
+                builder.emit(
+                    function,
+                    block,
+                    php_ir::InstructionKind::LoadLocal {
+                        dst: callable,
+                        local: callable_local,
+                    },
+                    span,
+                );
+                builder.emit(
+                    function,
+                    block,
+                    php_ir::InstructionKind::AcquireCallable {
+                        dst: acquired_callable,
+                        value: php_ir::Operand::Register(callable),
+                    },
+                    span,
+                );
+                builder.emit(
+                    function,
+                    block,
+                    php_ir::InstructionKind::LoadLocal {
+                        dst: arguments,
+                        local: arguments_local,
+                    },
+                    span,
+                );
+                builder.emit(
+                    function,
+                    block,
+                    php_ir::InstructionKind::CallCallable {
+                        dst: result,
+                        callee: php_ir::Operand::Register(acquired_callable),
+                        args: vec![php_ir::instruction::IrCallArg {
+                            name: None,
+                            value: php_ir::Operand::Register(arguments),
+                            unpack: true,
+                            value_kind: php_ir::instruction::IrCallArgValueKind::Direct,
+                            by_ref_local: None,
+                            by_ref_dim: None,
+                            by_ref_property: None,
+                            by_ref_property_dim: None,
+                        }],
+                    },
+                    span,
+                );
+                builder.terminate_return(
+                    function,
+                    block,
+                    Some(php_ir::Operand::Register(result)),
+                    span,
+                );
+                builder.set_entry(function);
+                let unit = CompiledUnit::new(builder.finish());
+                let mut generic_options = options.clone();
+                generic_options.native_optimization = NativeOptimizationPolicy::Generic;
+                generic_options.tiering.enabled = false;
+                self.resolve_native_function(&unit, function, &generic_options, &[])
+            })
+            .clone()
+    }
+
     #[cfg(test)]
     fn isolated_for_restart_test() -> Self {
         Self {
@@ -260,6 +463,8 @@ impl VmWorkerState {
             tiering_options: crate::tiering::TieringOptions::default(),
             tiering_state: Arc::new(Mutex::new(BackgroundTieringState::default())),
             native_request_pool: Arc::new(Mutex::new(jit_abi::NativeRequestPool::default())),
+            native_compile_descriptors: Arc::new(Mutex::new(Vec::new())),
+            generated_callback_continuation: Arc::new(OnceLock::new()),
         }
     }
 
@@ -278,6 +483,119 @@ impl VmWorkerState {
     #[must_use]
     pub fn native_compile_cache_stats(&self) -> NativeCompileCacheStats {
         self.native_compiles.stats()
+    }
+
+    fn record_native_compile_descriptor(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        options: &VmOptions,
+        function_ir_fingerprint: &str,
+        external_signatures_hash: u64,
+        background: bool,
+        disposition: native_compile_cache::NativeCompileCacheDisposition,
+        records: &[php_jit::JitUnitCompileRecord],
+    ) {
+        if !options.collect_counters || !disposition.compiled() {
+            return;
+        }
+        const MAX_NATIVE_COMPILE_DESCRIPTORS: usize = 4_096;
+        let Some(record) = records.iter().find(|record| record.function == function) else {
+            return;
+        };
+        let metadata = &unit.unit().functions[function.index()];
+        let receiver_layout_hash = if options.native_optimization.is_optimizing() {
+            unit.prepared_method_specializations(function)
+                .into_iter()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, specialization| {
+                    (hash ^ specialization.receiver_layout_id).wrapping_mul(0x0000_0100_0000_01b3)
+                })
+        } else {
+            // Link and receiver-layout state is absent from Generic identity,
+            // so the diagnostic component must be absent as well rather than
+            // exposing the FNV seed for an empty specialization set.
+            0
+        };
+        let replan_index = record
+            .result
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| {
+                diagnostic
+                    .split("pre_regalloc_replans=")
+                    .nth(1)
+                    .and_then(|value| value.split_whitespace().next())
+                    .and_then(|value| value.parse::<u32>().ok())
+            })
+            .max()
+            .unwrap_or(0);
+        let publication_result = match record.result.status {
+            php_jit::JitCompileStatus::Compiled => "compiled-awaiting-publication".to_owned(),
+            php_jit::JitCompileStatus::Rejected { ref reason } => {
+                format!("rejected:{reason}")
+            }
+        };
+        let target_isa = php_jit::cranelift_host_isa_identity().map_or_else(
+            |_| "unavailable".to_owned(),
+            |identity| {
+                format!(
+                    "{}:{}:{}",
+                    identity.target_triple, identity.isa_name, identity.feature_fingerprint
+                )
+            },
+        );
+        let mut descriptors = lock_unpoisoned(&self.native_compile_descriptors);
+        if descriptors.len() >= MAX_NATIVE_COMPILE_DESCRIPTORS {
+            return;
+        }
+        descriptors.push(crate::counters::NativeCompileDescriptor {
+            source_identity: unit.prepared_dependency_identity().to_owned(),
+            function_id: function.raw(),
+            function_name: metadata.name.clone(),
+            ir_fingerprint: function_ir_fingerprint.to_owned(),
+            tier: options.native_optimization.as_str().to_owned(),
+            generic_key: format!(
+                "{}:function:{}:generic",
+                unit.cache_identity(),
+                function.raw()
+            ),
+            specialization: format!("external-signatures-{external_signatures_hash:016x}"),
+            external_signatures_hash,
+            receiver_layout_hash,
+            trigger: if background {
+                "entry-or-backedge-heat"
+            } else {
+                "foreground-or-precompile"
+            }
+            .to_owned(),
+            cache_disposition: format!("{disposition:?}").to_ascii_lowercase(),
+            replan_index,
+            publication_result,
+            code_bytes: record.result.stats.native_code_bytes,
+            compile_time_nanos: record.result.stats.native_compile_time_nanos,
+            target_isa,
+            runtime_abi_hash: php_jit::JIT_RUNTIME_ABI_HASH,
+            helper_abi_hash: php_jit::JIT_HELPER_REGISTRY_ABI_HASH,
+            config_hash: u64::from(options.native_optimization.opt_level())
+                | (u64::from(options.collect_counters) << 8),
+        });
+    }
+
+    pub(super) fn record_native_publication_result(
+        &self,
+        unit: &CompiledUnit,
+        function: php_ir::FunctionId,
+        tier: NativeOptimizationPolicy,
+        result: &str,
+    ) {
+        let mut descriptors = lock_unpoisoned(&self.native_compile_descriptors);
+        if let Some(descriptor) = descriptors.iter_mut().rev().find(|descriptor| {
+            descriptor.source_identity == unit.prepared_dependency_identity()
+                && descriptor.function_id == function.raw()
+                && descriptor.tier == tier.as_str()
+        }) {
+            descriptor.publication_result = result.to_owned();
+        }
     }
 
     /// Returns process-worker threshold and background publication counters.
@@ -358,8 +676,14 @@ impl VmWorkerState {
         // those calls to the generic baseline dispatcher. Complete the
         // compile-time set with late-bound link records here; publication
         // fills the same slots once the target unit is declared.
-        let external_signatures =
-            linked_external_function_signatures(unit, function, external_signatures);
+        let external_signatures = if options.native_optimization.is_optimizing() {
+            linked_external_function_signatures(unit, function, external_signatures)
+        } else {
+            // Generic code owns writable link cells for every immutable source
+            // callsite. Current declaration visibility and signatures are
+            // runtime table state, not machine-code identity.
+            linked_external_function_signatures(unit, function, &[])
+        };
         let external_signatures = external_signatures.as_slice();
         let function_metadata = unit
             .unit()
@@ -438,6 +762,41 @@ impl VmWorkerState {
         } else {
             self.native_compiles.get_or_compile(key, compile)
         }?;
+        self.record_native_compile_descriptor(
+            unit,
+            function,
+            options,
+            function_ir_fingerprint,
+            external_signatures_hash,
+            background,
+            compiled.1,
+            &compiled.0,
+        );
+        if !background
+            && options.native_optimization == NativeOptimizationPolicy::Optimizing
+            && compiled.0.iter().any(|record| {
+                matches!(
+                    &record.result.status,
+                    php_jit::JitCompileStatus::Rejected { reason }
+                        if reason.starts_with("JIT_CRANELIFT_REJECT_")
+                )
+            })
+        {
+            // Publication has proved that this function cannot enter an
+            // optimizing region. Select its separately keyed baseline product
+            // once, before invocation; never publish baseline code under the
+            // optimizing cache identity.
+            let mut baseline_options = options.clone();
+            baseline_options.native_optimization = NativeOptimizationPolicy::Generic;
+            baseline_options.tiering.enabled = false;
+            return self.compile_native_with_priority(
+                unit,
+                function,
+                &baseline_options,
+                external_signatures,
+                false,
+            );
+        }
         if std::env::var_os("PHRUST_NATIVE_COMPILE_FUNCTION_LOG").is_some()
             && compiled.1.compiled()
             && let Some(record) = compiled.0.first()
@@ -465,7 +824,7 @@ impl VmWorkerState {
         Ok(compiled)
     }
 
-    fn prepare_native_baseline_entry(
+    fn prepare_native_generic_entry(
         &self,
         unit: &CompiledUnit,
         function: php_ir::FunctionId,
@@ -474,7 +833,7 @@ impl VmWorkerState {
     ) -> Result<usize, String> {
         let deployment = unit.prepared_deployment_image();
         let baseline_cell = deployment
-            .native_function_entries
+            .generic_function_entries
             .get(function.index())
             .ok_or_else(|| {
                 format!(
@@ -492,13 +851,10 @@ impl VmWorkerState {
                 )
             })?;
         let previous_address = baseline_cell.load(std::sync::atomic::Ordering::Acquire);
-        if previous_address != 0 && external_signatures.is_empty() {
-            // A baseline artifact has no external ABI specialization when
-            // this function owns no linked dependencies. Its deployment cell
-            // is therefore the complete publication proof; rebuilding a
-            // worker cache key here adds one identity lookup (and, across
-            // baseline policies, an unnecessary third artifact) to every
-            // optimizing publication.
+        if previous_address != 0 {
+            // Generic code is independent of current link signatures. The
+            // deployment cell is therefore the complete publication proof;
+            // mutable link cells can change without rebuilding this body.
             let _ = preferred.compare_exchange(
                 0,
                 previous_address,
@@ -508,17 +864,7 @@ impl VmWorkerState {
             return Ok(previous_address);
         }
         let mut baseline_options = options.clone();
-        baseline_options.native_optimization = match options.native_optimization {
-            NativeOptimizationPolicy::Optimizing
-                if options.tiering.enabled && !options.tiering.native_eager =>
-            {
-                NativeOptimizationPolicy::TieredBaseline
-            }
-            NativeOptimizationPolicy::Optimizing | NativeOptimizationPolicy::Baseline => {
-                NativeOptimizationPolicy::Baseline
-            }
-            NativeOptimizationPolicy::TieredBaseline => NativeOptimizationPolicy::TieredBaseline,
-        };
+        baseline_options.native_optimization = NativeOptimizationPolicy::Generic;
         baseline_options.tiering.enabled = false;
         let key = native_compile_cache_key(
             unit,
@@ -573,7 +919,7 @@ impl VmWorkerState {
             {
                 let callee_signatures =
                     linked_external_function_signatures(unit, callee, external_signatures);
-                self.prepare_native_baseline_entry(unit, callee, options, &callee_signatures)?;
+                self.prepare_native_generic_entry(unit, callee, options, &callee_signatures)?;
             }
         }
         if preferred
@@ -587,6 +933,12 @@ impl VmWorkerState {
         {
             unit.publish_preferred_function_metadata(function, &baseline);
         }
+        self.record_native_publication_result(
+            unit,
+            function,
+            NativeOptimizationPolicy::Generic,
+            "published-generic",
+        );
         Ok(address)
     }
 
@@ -650,12 +1002,9 @@ impl VmWorkerState {
             external_signatures,
         };
         let worker = self.clone();
-        let submitted = submit_native_optimization_job(move || {
+        submit_native_optimization_job(decision, move || {
             worker.run_background_optimization(work);
         });
-        if !submitted {
-            self.reject_submitted_optimizations(std::slice::from_ref(&decision));
-        }
     }
 
     fn claim_background_optimization(&self, decision: BackgroundTieringDecision) -> bool {
@@ -687,20 +1036,6 @@ impl VmWorkerState {
         state.scheduled.insert(decision.key);
         state.stats.optimized_candidates = state.stats.optimized_candidates.saturating_add(1);
         true
-    }
-
-    fn reject_submitted_optimizations(&self, decisions: &[BackgroundTieringDecision]) {
-        if decisions.is_empty() {
-            return;
-        }
-        let mut state = lock_unpoisoned(&self.tiering_state);
-        for decision in decisions {
-            state.scheduled.remove(&decision.key);
-        }
-        state.stats.native_compile_budget_rejections = state
-            .stats
-            .native_compile_budget_rejections
-            .saturating_add(u64::try_from(decisions.len()).unwrap_or(u64::MAX));
     }
 
     fn run_background_optimization(&self, work: BackgroundOptimizationWork) {
@@ -763,6 +1098,12 @@ impl VmWorkerState {
                     .publish_preferred_function_metadata(work.function, handle);
             }
             cell.store(address, std::sync::atomic::Ordering::Release);
+            self.record_native_publication_result(
+                &work.unit,
+                work.function,
+                NativeOptimizationPolicy::Optimizing,
+                "published-preferred",
+            );
         }
         let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let mut state = lock_unpoisoned(&self.tiering_state);
@@ -821,15 +1162,12 @@ impl VmWorkerState {
         if work.is_empty() {
             return;
         }
-        let decisions = work.iter().map(|work| work.decision).collect::<Vec<_>>();
-        let worker = self.clone();
-        let submitted = submit_native_optimization_job(move || {
-            for work in work {
+        for work in work {
+            let decision = work.decision;
+            let worker = self.clone();
+            submit_native_optimization_job(decision, move || {
                 worker.run_background_optimization(work);
-            }
-        });
-        if !submitted {
-            self.reject_submitted_optimizations(&decisions);
+            });
         }
     }
 
@@ -910,12 +1248,15 @@ impl VmWorkerState {
         function: php_ir::FunctionId,
         external_signatures: &[php_jit::JitExternalFunctionSignature],
     ) -> bool {
-        self.native_compiles.contains(native_compile_cache_key(
+        let linked_external_signatures =
+            linked_external_function_signatures(unit, function, external_signatures);
+        let key = native_compile_cache_key(
             unit,
             function,
             NativeOptimizationPolicy::Optimizing.opt_level(),
-            external_signatures,
-        ))
+            &linked_external_signatures,
+        );
+        self.native_compiles.contains(key)
     }
 
     fn resolved_native_function(
@@ -1142,10 +1483,10 @@ fn native_dependency_signature_hash(
     external_signatures: &[php_jit::JitExternalFunctionSignature],
     include_method_specializations: bool,
 ) -> u64 {
-    let mut hash = external_function_signatures_hash(external_signatures);
     if !include_method_specializations {
-        return hash;
+        return 0;
     }
+    let mut hash = external_function_signatures_hash(external_signatures);
     for specialization in unit.prepared_method_specializations(function) {
         hash =
             (hash ^ u64::from(specialization.instruction_id)).wrapping_mul(0x0000_0100_0000_01b3);
@@ -1203,68 +1544,114 @@ impl Vm {
         }
     }
 
+    /// Publishes a Generic generated entry for every ordinary body before
+    /// application execution starts. Dynamic method/callable resolution can
+    /// therefore select a cell without compiling or invoking PHP from Rust.
+    fn prepare_all_generic_entries(&self, unit: &CompiledUnit) -> Result<(), String> {
+        let deployment = unit.prepared_deployment_image();
+        let mut generic_options = self.options.clone();
+        generic_options.native_optimization = NativeOptimizationPolicy::Generic;
+        generic_options.tiering.enabled = false;
+        for index in 0..unit.unit().functions.len() {
+            if deployment.generic_function_entries[index].load(std::sync::atomic::Ordering::Acquire)
+                != 0
+            {
+                continue;
+            }
+            let function = php_ir::FunctionId::new(
+                u32::try_from(index).map_err(|_| "native function table overflow".to_owned())?,
+            );
+            let handle =
+                self.worker_state
+                    .resolve_native_function(unit, function, &generic_options, &[])?;
+            let address = handle.native_entry_address().ok_or_else(|| {
+                format!("Generic function {} has no native entry", function.raw())
+            })?;
+            deployment.generic_function_entries[index]
+                .store(address, std::sync::atomic::Ordering::Release);
+            if deployment.preferred_function_entries[index]
+                .compare_exchange(
+                    0,
+                    address,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                unit.publish_preferred_function_metadata(function, &handle);
+            }
+        }
+        Ok(())
+    }
+
     /// Compile and publish native entries without entering application code.
     #[must_use]
     pub fn prewarm_cranelift(&self, unit: &CompiledUnit) -> u64 {
-        let entry = unit.unit().entry;
-        if unit.unit().functions.get(entry.index()).is_none() {
+        if unit.unit().functions.is_empty() {
             return 0;
         }
         let deployment = unit.prepared_deployment_image();
+        let functions = (0..unit.unit().functions.len())
+            .map(|index| php_ir::FunctionId::new(u32::try_from(index).unwrap_or(u32::MAX)))
+            .collect::<Vec<_>>();
         if self.options.native_optimization == NativeOptimizationPolicy::Optimizing {
             let mut baseline_options = self.options.clone();
-            baseline_options.native_optimization =
-                if self.options.tiering.enabled && !self.options.tiering.native_eager {
-                    NativeOptimizationPolicy::TieredBaseline
-                } else {
-                    NativeOptimizationPolicy::Baseline
-                };
+            baseline_options.native_optimization = NativeOptimizationPolicy::Generic;
             baseline_options.tiering.enabled = false;
-            let Ok(baseline) =
-                self.worker_state
-                    .resolve_native_function(unit, entry, &baseline_options, &[])
-            else {
-                return 0;
-            };
-            let Some(baseline_address) = baseline.native_entry_address() else {
-                return 0;
-            };
-            if let Some(cell) = deployment.native_function_entries.get(entry.index()) {
-                cell.store(baseline_address, std::sync::atomic::Ordering::Release);
+            let mut compiled = Vec::with_capacity(functions.len());
+            for function in functions.iter().copied() {
+                let Ok(generic) = self.worker_state.resolve_native_function(
+                    unit,
+                    function,
+                    &baseline_options,
+                    &[],
+                ) else {
+                    return 0;
+                };
+                let Ok(optimizing) =
+                    self.worker_state
+                        .resolve_native_function(unit, function, &self.options, &[])
+                else {
+                    return 0;
+                };
+                let (Some(generic_address), Some(optimizing_address)) = (
+                    generic.native_entry_address(),
+                    optimizing.native_entry_address(),
+                ) else {
+                    return 0;
+                };
+                if !optimizing.region_state_metadata().is_some_and(|metadata| {
+                    metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Optimizing
+                }) {
+                    return 0;
+                }
+                compiled.push((function, generic_address, optimizing_address, optimizing));
             }
-            let Ok(optimizing) =
-                self.worker_state
-                    .resolve_native_function(unit, entry, &self.options, &[])
-            else {
-                return 0;
-            };
-            let Some(address) = optimizing.native_entry_address() else {
-                return 0;
-            };
-            if !optimizing.region_state_metadata().is_some_and(|metadata| {
-                metadata.compiler_tier == php_jit::region_ir::NativeCompilerTier::Optimizing
-            }) {
-                return 0;
-            }
-            if let Some(preferred) = deployment.preferred_function_entries.get(entry.index()) {
-                unit.publish_preferred_function_metadata(entry, &optimizing);
-                preferred.store(address, std::sync::atomic::Ordering::Release);
+            for (function, generic_address, optimizing_address, optimizing) in compiled {
+                deployment.generic_function_entries[function.index()]
+                    .store(generic_address, std::sync::atomic::Ordering::Release);
+                unit.publish_preferred_function_metadata(function, &optimizing);
+                deployment.preferred_function_entries[function.index()]
+                    .store(optimizing_address, std::sync::atomic::Ordering::Release);
             }
         } else {
-            let Ok(handle) =
-                self.worker_state
-                    .resolve_native_function(unit, entry, &self.options, &[])
-            else {
-                return 0;
-            };
-            let Some(address) = handle.native_entry_address() else {
-                return 0;
-            };
-            if let Some(baseline) = deployment.native_function_entries.get(entry.index()) {
-                baseline.store(address, std::sync::atomic::Ordering::Release);
+            let mut compiled = Vec::with_capacity(functions.len());
+            for function in functions.iter().copied() {
+                let Ok(handle) =
+                    self.worker_state
+                        .resolve_native_function(unit, function, &self.options, &[])
+                else {
+                    return 0;
+                };
+                let Some(address) = handle.native_entry_address() else {
+                    return 0;
+                };
+                compiled.push((function, address, handle));
             }
-            if let Some(preferred) = deployment.preferred_function_entries.get(entry.index()) {
-                if preferred
+            for (function, address, handle) in compiled {
+                deployment.generic_function_entries[function.index()]
+                    .store(address, std::sync::atomic::Ordering::Release);
+                if deployment.preferred_function_entries[function.index()]
                     .compare_exchange(
                         0,
                         address,
@@ -1273,11 +1660,11 @@ impl Vm {
                     )
                     .is_ok()
                 {
-                    unit.publish_preferred_function_metadata(entry, &handle);
+                    unit.publish_preferred_function_metadata(function, &handle);
                 }
             }
         }
-        1
+        u64::try_from(functions.len()).unwrap_or(u64::MAX)
     }
 
     /// Compiles one selected function with the production Cranelift helper ABI
@@ -1320,12 +1707,14 @@ impl Vm {
         })?;
         let function_name = function_entry.name.clone();
         let mut compiler = php_jit::JitEngine::new();
+        let external_signatures = linked_external_function_signatures(unit, function, &[]);
         let request = php_jit::JitCompileRequest::new(format!(
             "probe.unit.{}.function.{}",
             unit.unit().id.raw(),
             function.raw()
         ))
         .with_function_name(function_name.clone())
+        .with_external_function_signatures(external_signatures)
         .with_opt_level(self.options.native_optimization.opt_level());
         let result = compiler
             .compile_function_with_runtime_helpers(
@@ -1382,20 +1771,18 @@ impl Vm {
             external_signatures,
         ) {
             let mut baseline_options = self.options.clone();
-            baseline_options.native_optimization = NativeOptimizationPolicy::TieredBaseline;
+            baseline_options.native_optimization = NativeOptimizationPolicy::Generic;
             baseline_options.tiering.enabled = false;
             let mut result =
                 Vm::with_options_and_worker_state(baseline_options, self.worker_state.clone())
                     .execute_with_external_function_signatures(unit.clone(), external_signatures);
-            if result.status.is_success() {
-                self.worker_state.schedule_background_optimization(
-                    decision,
-                    unit,
-                    entry,
-                    &self.options,
-                    external_signatures.to_vec(),
-                );
-            }
+            self.worker_state.schedule_background_optimization(
+                decision,
+                unit,
+                entry,
+                &self.options,
+                external_signatures.to_vec(),
+            );
             if self.options.tiering.collect_stats {
                 result.tiering_stats = Some(Box::new(self.worker_state.tiering_stats()));
             }
@@ -1643,6 +2030,17 @@ impl Vm {
                     .map(|handle| (record.function, handle))
             })
             .collect();
+        if let Err(error) = self.prepare_all_generic_entries(&unit) {
+            let result =
+                VmResult::compile_error(output, format!("E_NATIVE_COMPILE_SETUP: {error}"));
+            return self.attach_optional_native_cache_metrics(
+                result,
+                cache.as_ref(),
+                cache_load_time,
+                native_compile_time,
+                worker_cache_before,
+            );
+        }
         let native_entries = Arc::new(native_entries);
         let mut context = NativeRequestOwner::new(
             &unit,
@@ -1663,21 +2061,9 @@ impl Vm {
             php_jit::JIT_RUNTIME_ABI_HASH,
             runtime,
             |types, value| {
-                let class = context
-                    .materialize_outer_result(value)
-                    .ok()
-                    .and_then(native_exception_fields)
-                    .map(|(class, _, _)| class);
-                class.is_some_and(|class| {
-                    types.iter().any(|type_| {
-                        type_.eq_ignore_ascii_case(&class)
-                            || type_.eq_ignore_ascii_case("Throwable")
-                            || (type_.eq_ignore_ascii_case("Exception")
-                                && class.ends_with("Exception"))
-                            || (type_.eq_ignore_ascii_case("Error")
-                                && (class == "Error" || class.ends_with("Error")))
-                    })
-                })
+                types
+                    .iter()
+                    .any(|type_| context.direct_object_is_a(value, type_))
             },
         );
         let outcome = resume_native_optimizing_exit(&mut context, handle.clone(), outcome);
@@ -1775,8 +2161,7 @@ impl Vm {
                 Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. })
                     if status == php_jit::JitCallStatus::RUNTIME_ERROR.0 as i32 =>
                 {
-                    let operation =
-                        context.instruction_kind_debug(state.function_id, state.continuation_id);
+                    let operation = context.instruction_kind_debug_for_state(&state);
                     let message = context
                         .diagnostic
                         .as_ref()
@@ -1821,11 +2206,20 @@ impl Vm {
                 {
                     VmResult::success(std::mem::take(&mut context.output), None)
                 }
-                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, .. }) => {
+                Ok(php_jit::JitI64InvokeOutcome::SideExit { status, state, .. }) => {
+                    let operation = context.instruction_kind_debug_for_state(&state);
                     VmResult::runtime_error(
                         std::mem::take(&mut context.output),
                         context.diagnostic.take(),
-                        format!("native entry returned status {status}"),
+                        format!(
+                            "native entry returned status {status} at function {} continuation {} ({operation}) native version {} control {} detail {:#x} value {}",
+                            state.function_id,
+                            state.continuation_id,
+                            state.native_version,
+                            state.control_status.0,
+                            state.control_reserved,
+                            state.control_value,
+                        ),
                     )
                 }
                 Err(error) => VmResult::compile_error(
@@ -1955,6 +2349,13 @@ impl Vm {
             counters.native_compile_successes = worker_cache.insertions;
             counters.native_compile_failures = worker_cache.compile_failures;
             counters.native_compile_time_nanos = result.native_compile_nanos;
+            counters.native_compile_descriptors =
+                lock_unpoisoned(&self.worker_state.native_compile_descriptors).clone();
+            counters.native_compile_code_bytes = counters
+                .native_compile_descriptors
+                .iter()
+                .map(|descriptor| descriptor.code_bytes)
+                .sum();
             counters.native_execution_entries =
                 counters.native_execution_entries.max(u64::from(executed));
             counters.native_region_entries =
@@ -2016,6 +2417,7 @@ fn linked_external_function_signatures(
                     native_arity: 0,
                     requires_non_reference_trampoline: false,
                     returns_by_reference: false,
+                    return_type: None,
                     exception_routes: None,
                 })
         })
@@ -2035,7 +2437,11 @@ fn native_compile_cache_key(
     external_signatures: &[php_jit::JitExternalFunctionSignature],
 ) -> native_compile_cache::NativeCompileCacheKey {
     let external_signatures =
-        linked_external_function_signatures(unit, function, external_signatures);
+        if optimization_level >= NativeOptimizationPolicy::Optimizing.opt_level() {
+            linked_external_function_signatures(unit, function, external_signatures)
+        } else {
+            linked_external_function_signatures(unit, function, &[])
+        };
     native_compile_cache::NativeCompileCacheKey::new(
         unit.cache_identity(),
         function,
@@ -2356,14 +2762,13 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
         };
     }
     php_jit::JitRuntimeHelperAddresses {
-        baseline_call_dispatch: helper_address!(
-            jit_baseline_native_call_dispatch_abi,
-            jit_baseline_native_call_dispatch_diagnostic_abi
-        ),
-        baseline_builtin_dispatch: helper_address!(
-            jit_baseline_native_builtin_dispatch_abi,
-            jit_baseline_native_builtin_dispatch_diagnostic_abi
-        ),
+        native_undefined_variable_warning: jit_native_undefined_variable_warning_abi as *const ()
+            as usize,
+        native_undefined_array_key_warning: jit_native_undefined_array_key_warning_abi as *const ()
+            as usize,
+        native_array_offset_warning: jit_native_array_offset_warning_abi as *const () as usize,
+        native_global_binding_unset: jit_native_global_binding_unset_abi as *const () as usize,
+        native_global_binding_rebind: jit_native_global_binding_rebind_abi as *const () as usize,
         native_define: jit_native_define_abi as *const () as usize,
         native_defined: jit_native_defined_abi as *const () as usize,
         native_constant: jit_native_constant_abi as *const () as usize,
@@ -2401,6 +2806,8 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
         native_hash: jit_native_hash_abi as *const () as usize,
         native_hash_hmac: jit_native_hash_hmac_abi as *const () as usize,
         native_hash_equals: jit_native_hash_equals_abi as *const () as usize,
+        native_sodium_crypto_generichash: jit_abi::jit_native_sodium_crypto_generichash_abi
+            as *const () as usize,
         native_base64_encode: jit_abi::jit_native_base64_encode_abi as *const () as usize,
         native_base64_decode: jit_abi::jit_native_base64_decode_abi as *const () as usize,
         native_bin2hex: jit_abi::jit_native_bin2hex_abi as *const () as usize,
@@ -2419,6 +2826,7 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
         native_quotemeta: jit_abi::jit_native_quotemeta_abi as *const () as usize,
         native_pack: jit_native_pack_abi as *const () as usize,
         native_unpack: jit_native_unpack_abi as *const () as usize,
+        native_sodium_bin2base64: jit_abi::jit_native_sodium_bin2base64_abi as *const () as usize,
         native_basename: jit_native_basename_abi as *const () as usize,
         native_dirname: jit_native_dirname_abi as *const () as usize,
         native_realpath: jit_native_realpath_abi as *const () as usize,
@@ -2475,6 +2883,7 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
         native_symlink: jit_native_symlink_abi as *const () as usize,
         native_readfile: jit_native_readfile_abi as *const () as usize,
         native_is_uploaded_file: jit_native_is_uploaded_file_abi as *const () as usize,
+        native_move_uploaded_file: jit_native_move_uploaded_file_abi as *const () as usize,
         native_tempnam: jit_native_tempnam_abi as *const () as usize,
         native_tmpfile: jit_native_tmpfile_abi as *const () as usize,
         native_filesize: jit_native_filesize_abi as *const () as usize,
@@ -2509,11 +2918,56 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_native_ob_get_level_abi as *const () as usize,
             jit_native_ob_end_flush_abi as *const () as usize,
             jit_native_ob_end_clean_abi as *const () as usize,
+            jit_abi::jit_native_phpinfo_abi as *const () as usize,
         ],
-        baseline_semantic_dispatch: helper_address!(
-            jit_baseline_native_semantic_dispatch_abi,
-            jit_baseline_native_semantic_dispatch_diagnostic_abi
-        ),
+        native_print: jit_native_print_abi as *const () as usize,
+        native_print_r: jit_native_print_r_abi as *const () as usize,
+        native_var_dump: jit_native_var_dump_abi as *const () as usize,
+        native_var_export: jit_native_var_export_abi as *const () as usize,
+        native_mysqli_set_charset: jit_native_mysqli_set_charset_abi as *const () as usize,
+        native_mysqli_query: jit_native_mysqli_query_abi as *const () as usize,
+        native_mysqli_fetch_array: jit_native_mysqli_fetch_array_abi as *const () as usize,
+        native_mysqli_fetch_object: jit_native_mysqli_fetch_object_abi as *const () as usize,
+        native_mysqli_character_set_name: jit_native_mysqli_character_set_name_abi as *const ()
+            as usize,
+        native_mysqli_result_count: [
+            jit_native_mysqli_num_fields_abi as *const () as usize,
+            jit_native_mysqli_num_rows_abi as *const () as usize,
+        ],
+        native_mysqli_fetch_field: jit_native_mysqli_fetch_field_abi as *const () as usize,
+        native_mysqli_connect_status: [
+            jit_native_mysqli_connect_errno_abi as *const () as usize,
+            jit_native_mysqli_connect_error_abi as *const () as usize,
+        ],
+        native_mysqli_close: jit_native_mysqli_close_abi as *const () as usize,
+        native_mysqli_get_server_info: jit_native_mysqli_get_server_info_abi as *const () as usize,
+        native_mysqli_select_db: jit_native_mysqli_select_db_abi as *const () as usize,
+        native_mysqli_real_escape_string: jit_native_mysqli_real_escape_string_abi as *const ()
+            as usize,
+        native_mysqli_connection_status: [
+            jit_native_mysqli_error_abi as *const () as usize,
+            jit_native_mysqli_errno_abi as *const () as usize,
+            jit_native_mysqli_affected_rows_abi as *const () as usize,
+            jit_native_mysqli_insert_id_abi as *const () as usize,
+            jit_native_mysqli_field_count_abi as *const () as usize,
+        ],
+        native_error_log: jit_native_error_log_abi as *const () as usize,
+        native_sleep: jit_native_sleep_abi as *const () as usize,
+        native_mysqli_free_result: jit_native_mysqli_free_result_abi as *const () as usize,
+        native_mysqli_more_results: jit_native_mysqli_more_results_abi as *const () as usize,
+        native_mysqli_next_result: jit_native_mysqli_next_result_abi as *const () as usize,
+        native_mysqli_report: jit_native_mysqli_report_abi as *const () as usize,
+        native_mysqli_init: jit_native_mysqli_init_abi as *const () as usize,
+        native_mysqli_options: jit_native_mysqli_options_abi as *const () as usize,
+        native_mysqli_real_connect: jit_native_mysqli_real_connect_abi as *const () as usize,
+        native_throwable_method: [
+            jit_native_throwable_get_message_abi as *const () as usize,
+            jit_native_throwable_get_code_abi as *const () as usize,
+            jit_native_throwable_get_file_abi as *const () as usize,
+            jit_native_throwable_get_line_abi as *const () as usize,
+            jit_native_throwable_get_previous_abi as *const () as usize,
+            jit_native_throwable_get_trace_abi as *const () as usize,
+        ],
         native_function_resolve: helper_address!(
             jit_native_function_resolve_abi,
             jit_abi::jit_native_function_resolve_diagnostic_abi
@@ -2526,23 +2980,28 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_native_frame_release_abi,
             jit_abi::jit_native_frame_release_diagnostic_abi
         ),
-        native_dynamic_code: helper_address!(
-            jit_native_dynamic_code_abi,
-            jit_abi::jit_native_dynamic_code_diagnostic_abi
-        ),
-        baseline_unary: helper_address!(
-            jit_baseline_native_unary_abi,
-            jit_abi::jit_baseline_native_unary_diagnostic_abi
+        cold_dynamic_unit_resolve: helper_address!(
+            jit_cold_dynamic_unit_resolve_abi,
+            jit_abi::jit_cold_dynamic_unit_resolve_diagnostic_abi
         ),
         native_exact_unary: [
             jit_native_unary_plus_abi as *const () as usize,
             jit_native_unary_minus_abi as *const () as usize,
             jit_native_bit_not_abi as *const () as usize,
         ],
-        baseline_binary: helper_address!(
-            jit_baseline_native_binary_abi,
-            jit_abi::jit_baseline_native_binary_diagnostic_abi
-        ),
+        native_exact_arithmetic: [
+            jit_native_add_abi as *const () as usize,
+            jit_native_subtract_abi as *const () as usize,
+            jit_native_multiply_abi as *const () as usize,
+            jit_native_divide_abi as *const () as usize,
+            jit_native_modulo_abi as *const () as usize,
+            jit_native_power_abi as *const () as usize,
+            jit_native_exact_bit_and_abi as *const () as usize,
+            jit_native_exact_bit_or_abi as *const () as usize,
+            jit_native_exact_bit_xor_abi as *const () as usize,
+            jit_native_shift_left_abi as *const () as usize,
+            jit_native_shift_right_abi as *const () as usize,
+        ],
         native_array_union: jit_native_array_union_abi as *const () as usize,
         native_concat: jit_native_concat_abi as *const () as usize,
         native_string_bitwise: [
@@ -2550,10 +3009,6 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_native_bit_or_abi as *const () as usize,
             jit_native_bit_xor_abi as *const () as usize,
         ],
-        baseline_compare: helper_address!(
-            jit_baseline_native_compare_abi,
-            jit_abi::jit_baseline_native_compare_diagnostic_abi
-        ),
         native_exact_compare: [
             jit_native_equal_abi as *const () as usize,
             jit_native_not_equal_abi as *const () as usize,
@@ -2565,11 +3020,6 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_native_greater_equal_abi as *const () as usize,
             jit_native_spaceship_abi as *const () as usize,
         ],
-        baseline_cast: helper_address!(
-            jit_baseline_native_cast_abi,
-            jit_abi::jit_baseline_native_cast_diagnostic_abi
-        ),
-        native_echo: helper_address!(jit_native_echo_abi, jit_abi::jit_native_echo_diagnostic_abi),
         native_echo_bytes: jit_native_echo_bytes_abi as *const () as usize,
         native_float_to_string: jit_native_float_to_string_abi as *const () as usize,
         native_numeric_string: jit_native_numeric_string_abi as *const () as usize,
@@ -2632,6 +3082,7 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_abi::jit_native_htmlentities_abi as *const () as usize,
             jit_abi::jit_native_html_entity_decode_abi as *const () as usize,
             jit_abi::jit_native_htmlspecialchars_decode_abi as *const () as usize,
+            jit_abi::jit_native_get_html_translation_table_abi as *const () as usize,
         ],
         native_url_query: [
             jit_abi::jit_native_parse_url_abi as *const () as usize,
@@ -2696,6 +3147,9 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_abi::jit_native_mb_ord_abi as *const () as usize,
             jit_abi::jit_native_mb_chr_abi as *const () as usize,
             jit_abi::jit_native_mb_parse_str_abi as *const () as usize,
+            jit_abi::jit_native_iconv_abi as *const () as usize,
+            jit_abi::jit_native_normalizer_normalize_abi as *const () as usize,
+            jit_abi::jit_native_normalizer_is_normalized_abi as *const () as usize,
         ],
         native_bcmath: [
             jit_abi::jit_native_bcadd_abi as *const () as usize,
@@ -2778,6 +3232,16 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_abi::jit_native_get_resource_type_abi as *const () as usize,
             jit_abi::jit_native_get_resources_abi as *const () as usize,
         ],
+        native_fileinfo: [
+            jit_abi::jit_native_finfo_open_abi as *const () as usize,
+            jit_abi::jit_native_finfo_close_abi as *const () as usize,
+            jit_abi::jit_native_finfo_buffer_abi as *const () as usize,
+            jit_abi::jit_native_finfo_file_abi as *const () as usize,
+            jit_abi::jit_native_finfo_set_flags_abi as *const () as usize,
+            jit_abi::jit_native_exif_imagetype_abi as *const () as usize,
+            jit_abi::jit_native_image_type_to_mime_type_abi as *const () as usize,
+            jit_abi::jit_native_getimagesize_abi as *const () as usize,
+        ],
         native_error_state: [
             jit_abi::jit_native_error_get_last_abi as *const () as usize,
             jit_abi::jit_native_error_clear_last_abi as *const () as usize,
@@ -2808,6 +3272,9 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_abi::jit_native_time_abi as *const () as usize,
             jit_abi::jit_native_microtime_abi as *const () as usize,
             jit_abi::jit_native_hrtime_abi as *const () as usize,
+            jit_abi::jit_native_usleep_abi as *const () as usize,
+            jit_abi::jit_native_set_time_limit_abi as *const () as usize,
+            jit_abi::jit_native_uniqid_abi as *const () as usize,
         ],
         native_date: [
             jit_abi::jit_native_checkdate_abi as *const () as usize,
@@ -2817,6 +3284,8 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_abi::jit_native_mktime_abi as *const () as usize,
             jit_abi::jit_native_gmmktime_abi as *const () as usize,
             jit_abi::jit_native_timezone_identifiers_list_abi as *const () as usize,
+            jit_abi::jit_native_date_create_abi as *const () as usize,
+            jit_abi::jit_native_timezone_open_abi as *const () as usize,
         ],
         native_random: [
             jit_abi::jit_native_random_bytes_abi as *const () as usize,
@@ -2853,6 +3322,7 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_abi::jit_native_func_num_args_abi as *const () as usize,
             jit_abi::jit_native_func_get_arg_abi as *const () as usize,
             jit_abi::jit_native_func_get_args_abi as *const () as usize,
+            jit_abi::jit_native_debug_backtrace_abi as *const () as usize,
         ],
         native_network_address: [
             jit_native_ip2long_abi as *const () as usize,
@@ -2877,7 +3347,11 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
         native_callback_return_string: jit_native_callback_return_string_abi as *const () as usize,
         native_object_cast: jit_native_object_cast_abi as *const () as usize,
         native_object_class_name: jit_native_object_class_name_abi as *const () as usize,
+        native_type_name: jit_native_type_name_abi as *const () as usize,
         native_acquire_callable: jit_native_acquire_callable_abi as *const () as usize,
+        native_acquire_method_callable: jit_native_acquire_method_callable_abi as *const ()
+            as usize,
+        native_acquire_class_plan: jit_native_acquire_class_plan_abi as *const () as usize,
         native_is_callable: jit_native_is_callable_abi as *const () as usize,
         native_callback_handler: [
             jit_native_set_error_handler_abi as *const () as usize,
@@ -2885,6 +3359,7 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
             jit_native_set_exception_handler_abi as *const () as usize,
             jit_native_restore_exception_handler_abi as *const () as usize,
             jit_native_get_exception_handler_abi as *const () as usize,
+            jit_native_trigger_error_abi as *const () as usize,
         ],
         native_autoload_callback: [
             jit_native_spl_autoload_register_abi as *const () as usize,
@@ -2896,118 +3371,34 @@ fn runtime_helper_addresses(diagnostic: bool) -> php_jit::JitRuntimeHelperAddres
         native_resolve_callable: jit_native_resolve_callable_abi as *const () as usize,
         native_prepared_object_new: jit_native_prepared_object_new_abi as *const () as usize,
         native_prepared_exception_new: jit_native_prepared_exception_new_abi as *const () as usize,
+        native_static_property_contract: jit_abi::jit_native_static_property_contract_abi
+            as *const () as usize,
+        native_typed_static_reference_bind: jit_abi::jit_native_typed_static_reference_bind_abi
+            as *const () as usize,
+        native_typed_reference_store: jit_abi::jit_native_typed_reference_store_abi as *const ()
+            as usize,
+        native_typed_reference_array_init: jit_abi::jit_native_typed_reference_array_init_abi
+            as *const () as usize,
+        native_undefined_constant: jit_abi::jit_native_undefined_constant_abi as *const () as usize,
         native_prepared_closure_new: jit_native_prepared_closure_new_abi as *const () as usize,
         native_plain_object_clone: jit_native_plain_object_clone_abi as *const () as usize,
         native_dynamic_property_slot: jit_native_dynamic_property_slot_abi as *const () as usize,
+        native_named_dynamic_property_slot: jit_native_named_dynamic_property_slot_abi as *const ()
+            as usize,
         native_dynamic_property_test_slot: jit_native_dynamic_property_test_slot_abi as *const ()
             as usize,
-        native_local_fetch: helper_address!(
-            jit_native_local_fetch_abi,
-            jit_abi::jit_native_local_fetch_diagnostic_abi
+        native_object_release: [
+            jit_abi::jit_native_object_release_prepare_abi as *const () as usize,
+            jit_abi::jit_native_object_release_finalize_abi as *const () as usize,
+            jit_abi::jit_native_object_release_children_drop_abi as *const () as usize,
+        ],
+        native_declared_argument_contract: helper_address!(
+            jit_native_declared_argument_contract_abi,
+            jit_abi::jit_native_declared_argument_contract_diagnostic_abi
         ),
-        native_local_store: helper_address!(
-            jit_native_local_store_abi,
-            jit_abi::jit_native_local_store_diagnostic_abi
-        ),
-        native_value_release: helper_address!(
-            jit_native_value_release_abi,
-            jit_abi::jit_native_value_release_diagnostic_abi
-        ),
-        native_reference_bind: helper_address!(
-            jit_native_reference_bind_abi,
-            jit_abi::jit_native_reference_bind_diagnostic_abi
-        ),
-        native_argument_check: helper_address!(
-            jit_native_argument_check_abi,
-            jit_abi::jit_native_argument_check_diagnostic_abi
-        ),
-        native_return_check: helper_address!(
-            jit_native_return_check_abi,
-            jit_abi::jit_native_return_check_diagnostic_abi
-        ),
-        native_exception_new: helper_address!(
-            jit_native_exception_new_abi,
-            jit_abi::jit_native_exception_new_diagnostic_abi
-        ),
-        native_array_new: helper_address!(
-            jit_native_array_new_abi,
-            jit_abi::jit_native_array_new_diagnostic_abi
-        ),
-        native_object_new: helper_address!(
-            jit_native_object_new_abi,
-            jit_abi::jit_native_object_new_diagnostic_abi
-        ),
-        native_property_fetch: helper_address!(
-            jit_native_property_fetch_abi,
-            jit_abi::jit_native_property_fetch_diagnostic_abi
-        ),
-        native_property_assign: helper_address!(
-            jit_native_property_assign_abi,
-            jit_abi::jit_native_property_assign_diagnostic_abi
-        ),
-        native_object_clone: helper_address!(
-            jit_native_object_clone_abi,
-            jit_abi::jit_native_object_clone_diagnostic_abi
-        ),
-        native_object_clone_with: helper_address!(
-            jit_native_object_clone_with_abi,
-            jit_abi::jit_native_object_clone_with_diagnostic_abi
-        ),
-        native_array_insert: helper_address!(
-            jit_native_array_insert_abi,
-            jit_abi::jit_native_array_insert_diagnostic_abi
-        ),
-        native_array_insert_local: helper_address!(
-            jit_native_array_insert_local_abi,
-            jit_abi::jit_native_array_insert_local_diagnostic_abi
-        ),
-        native_array_fetch: helper_address!(
-            jit_native_array_fetch_abi,
-            jit_abi::jit_native_array_fetch_diagnostic_abi
-        ),
-        native_array_unset: helper_address!(
-            jit_native_array_unset_abi,
-            jit_abi::jit_native_array_unset_diagnostic_abi
-        ),
-        native_array_spread: helper_address!(
-            jit_native_array_spread_abi,
-            jit_abi::jit_native_array_spread_diagnostic_abi
-        ),
-        native_foreach_init: helper_address!(
-            jit_native_foreach_init_abi,
-            jit_abi::jit_native_foreach_init_diagnostic_abi
-        ),
-        native_foreach_next: helper_address!(
-            jit_native_foreach_next_abi,
-            jit_abi::jit_native_foreach_next_diagnostic_abi
-        ),
-        native_foreach_cleanup: helper_address!(
-            jit_native_foreach_cleanup_abi,
-            jit_abi::jit_native_foreach_cleanup_diagnostic_abi
-        ),
-        native_constant_fetch: helper_address!(
-            jit_native_constant_fetch_abi,
-            jit_abi::jit_native_constant_fetch_diagnostic_abi
-        ),
-        native_truthy: helper_address!(
-            jit_native_truthy_abi,
-            jit_abi::jit_native_truthy_diagnostic_abi
-        ),
-        native_type_predicate: helper_address!(
-            jit_native_type_predicate_abi,
-            jit_abi::jit_native_type_predicate_diagnostic_abi
-        ),
-        native_stable_length: helper_address!(
-            jit_native_stable_length_abi,
-            jit_abi::jit_native_stable_length_diagnostic_abi
-        ),
-        native_string_predicate: helper_address!(
-            jit_native_string_predicate_abi,
-            jit_abi::jit_native_string_predicate_diagnostic_abi
-        ),
-        native_runtime_fatal: helper_address!(
-            jit_native_runtime_fatal_abi,
-            jit_abi::jit_native_runtime_fatal_diagnostic_abi
+        native_declared_return_contract: helper_address!(
+            jit_native_declared_return_contract_abi,
+            jit_abi::jit_native_declared_return_contract_diagnostic_abi
         ),
         native_execution_poll: helper_address!(
             jit_native_execution_poll_abi,

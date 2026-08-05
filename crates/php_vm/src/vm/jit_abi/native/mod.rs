@@ -9,14 +9,30 @@ use crate::vm::jit_abi::{
     NativeComparisonObject, NativeComparisonTraversal, NativeComparisonValue,
     NativeDynamicFunction, NativeDynamicUnit, NativeExecutionScope, NativeFrameArena,
     NativeFunctionNameScope, NativeLastError, NativePreparedCallableOwner, NativePreparedClosure,
-    PreparedNativeRuntimeClass, PreparedNativeThrowableSite, native_comparison_truthy,
-    native_comparison_values_order, native_fixed_callable_plan, native_reference_state,
+    PreparedNativeBinaryThrowableSites, PreparedNativeCountThrowableSites,
+    PreparedNativeRuntimeClass, PreparedNativeStaticPropertyContract, PreparedNativeThrowableSite,
+    PreparedNativeUndefinedConstantContract, native_comparison_truthy,
+    native_comparison_values_order, native_reference_state,
 };
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub(super) static NATIVE_TEMPNAM_SEQUENCE: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+mod capability_impl;
+mod class_plans;
+pub(crate) use capability_impl::native_fixed_callable_plan;
+pub(crate) use exact_runtime_ops::{
+    jit_native_intval_php_entry, jit_native_is_int_php_entry, jit_native_is_numeric_php_entry,
+    jit_native_is_scalar_php_entry, jit_native_is_string_php_entry, jit_native_ltrim_php_entry,
+    jit_native_rtrim_php_entry, jit_native_strlen_php_entry, jit_native_trim_php_entry,
+};
+mod reflection_ops;
+pub(crate) use reflection_ops::{
+    jit_native_reflection_class_construct_php_entry,
+    jit_native_reflection_class_get_name_php_entry,
+    jit_native_reflection_class_has_property_php_entry,
+};
+mod strtr_impl;
+mod value_queries;
 
 pub(super) fn native_direct_string_hash(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
@@ -41,12 +57,23 @@ pub(super) fn php_core_runtime_constant(name: &str) -> bool {
 #[derive(Clone, Copy)]
 pub(crate) struct NativeFixedCallablePlan {
     pub(crate) function: php_ir::FunctionId,
+    /// Zero selects the already-active runtime view. Cross-unit publication
+    /// records the immutable target view so generated code indexes the
+    /// callee's entry cells without a Rust dispatch boundary.
+    pub(crate) runtime_view: u64,
+    /// Immutable native parameter metadata used by generated named binding.
+    pub(crate) binding_plan: u64,
     pub(crate) visible_arity: u32,
+    pub(crate) parameter_by_reference: [u64; 4],
     pub(crate) has_receiver: bool,
     pub(crate) first_parameter_by_reference: bool,
+    pub(crate) variadic: bool,
+    pub(crate) direct_packed_binding: bool,
+    pub(crate) returns_by_reference: bool,
     pub(crate) returns_int: bool,
     pub(crate) returns_string: bool,
     pub(crate) returns_releasable_scalar: bool,
+    pub(crate) magic_dispatch: bool,
 }
 
 /// Narrow live capability used by exact symbol-query builtins.
@@ -86,6 +113,7 @@ pub(super) struct NativeConfigurationCapability {
     pub(super) ini_registry: *mut php_runtime::api::IniRegistry,
     pub(super) include_path: *mut Arc<Vec<std::path::PathBuf>>,
     pub(super) display_errors: *mut bool,
+    pub(super) error_reporting: *mut i64,
     pub(super) default_timezone: *mut String,
 }
 
@@ -119,7 +147,17 @@ pub(super) struct NativeRequestQueryCapability {
 /// pointers address stable fields in the separately boxed request owner.
 #[derive(Default)]
 pub(super) struct NativeExecutionDeadlineCapability {
-    pub(super) deadline: *const Option<std::time::Instant>,
+    pub(super) deadline: *mut Option<std::time::Instant>,
+    pub(super) mutable: u8,
+    pub(super) diagnostic: *mut Option<php_runtime::api::RuntimeDiagnostic>,
+}
+
+/// Narrow live sink for recoverable diagnostics emitted by exact operations.
+///
+/// The sink is request-owned and stable for the activation lifetime. It does
+/// not expose the cold coordinator, output buffer, or compatibility values.
+#[derive(Default)]
+pub(super) struct NativeRuntimeDiagnosticCapability {
     pub(super) diagnostic: *mut Option<php_runtime::api::RuntimeDiagnostic>,
 }
 
@@ -181,6 +219,9 @@ pub(super) struct NativeFilterCapability {
 #[derive(Default)]
 pub(super) struct NativeSessionCapability {
     pub(super) control: *mut php_runtime::api::NativeSessionControlState,
+    /// Opaque handle accepted only by the dedicated cold session-transport
+    /// continuation. Ordinary exact handlers cannot inspect it.
+    pub(super) transport_context: *mut std::ffi::c_void,
     /// Canonical request-global reference for `$_SESSION`.
     pub(super) global_reference: i64,
     /// Independently owned native COW snapshot used by commit/abort/reset.
@@ -189,6 +230,16 @@ pub(super) struct NativeSessionCapability {
     /// continuation only when the requested operation actually needs them.
     pub(super) has_loader: u8,
     pub(super) has_id_generator: u8,
+}
+
+/// Opaque access to the one cold symbol-table transition required when a
+/// generated `unset($GLOBALS["name"])` detaches a canonical global reference.
+/// Ordinary global reads and writes stay on published native reference slots;
+/// only identity invalidation and cross-unit republication cross this handle.
+#[repr(C)]
+#[derive(Default)]
+pub(super) struct NativeGlobalBindingCapability {
+    pub(super) cold_context: *mut std::ffi::c_void,
 }
 
 /// Authoritative request-local stream-context option owners.
@@ -209,16 +260,10 @@ pub(crate) struct NativeRegisteredAutoloadCallback {
 }
 
 #[derive(Clone)]
-pub(crate) enum NativeRegisteredCallbackSource {
-    Cold(php_ir::Instruction),
-    NativeContinuation { function: u32, continuation: u32 },
-}
-
-#[derive(Clone)]
 pub(crate) struct NativeRegisteredShutdownCallback {
     pub(crate) callable: i64,
     pub(crate) arguments: Vec<i64>,
-    pub(crate) source: NativeRegisteredCallbackSource,
+    pub(crate) source: php_ir::Instruction,
     pub(crate) transient_export: bool,
 }
 
@@ -236,6 +281,32 @@ pub(crate) struct NativeRegisteredCallbackState {
     pub(crate) shutdown_callbacks: Vec<NativeRegisteredShutdownCallback>,
     pub(crate) error_handlers: Vec<NativeRegisteredErrorHandler>,
     pub(crate) exception_handlers: Vec<i64>,
+}
+
+pub(super) struct NativeClassAutoloadAction {
+    name: Box<[u8]>,
+    next_callback: usize,
+    callback_in_flight: bool,
+}
+
+pub(crate) enum NativeClassPlanResolution {
+    Ready(u64),
+    InvokeUserCallback(i64),
+    NotFound,
+}
+
+pub(crate) enum NativeMethodCallableResolution {
+    Ready(i64),
+    InvokeUserCallback(i64),
+    NotFound,
+}
+
+/// Request-owned native constraint list attached directly to one authoritative
+/// reference slot. Each entry points at immutable publication metadata; the
+/// boxed list itself remains stable while generated code holds its address in
+/// `JitNativeValueSlot::aux`.
+pub(super) struct NativeTypedReferenceConstraintSet {
+    pub(super) contracts: Vec<u64>,
 }
 
 /// Compact stable prefix passed through every generated entry and compiled
@@ -265,15 +336,43 @@ pub(crate) struct NativeRequestFastState {
     pub(super) request_query: NativeRequestQueryCapability,
     pub(super) mbstring: NativeMbstringCapability,
     pub(super) bcmath: NativeBcmathCapability,
+    pub(super) mysql_state: *const std::cell::RefCell<php_runtime::api::MysqlState>,
     pub(super) random: NativeRandomCapability,
     pub(super) filter: NativeFilterCapability,
     pub(super) session: NativeSessionCapability,
+    pub(super) global_binding: NativeGlobalBindingCapability,
     pub(super) stream_context: *mut NativeStreamContextState,
     pub(super) callback_handlers: *mut NativeRegisteredCallbackState,
     pub(super) callback_transient_export: u8,
+    pub(super) class_autoload_actions: Vec<NativeClassAutoloadAction>,
+    /// Immutable prepared allocation records for constructorless internal
+    /// classes whose layouts are supplied by the runtime rather than an IR
+    /// class table. Boxed records keep every pointer stable across map growth.
+    pub(super) internal_class_plans: std::collections::BTreeMap<
+        String,
+        (
+            Box<PreparedNativeRuntimeClass>,
+            Box<php_jit::JitNativePreparedClassPlan>,
+        ),
+    >,
+    /// Request-stable `DateTime` allocation metadata selected during cold
+    /// publication. Exact `date_create()` consumes this pointer directly and
+    /// never performs a class-table lookup per invocation.
+    pub(super) prepared_datetime_class: *const PreparedNativeRuntimeClass,
+    /// Request-stable `DateTimeZone` allocation metadata consumed directly by
+    /// exact `timezone_open()`.
+    pub(super) prepared_datetimezone_class: *const PreparedNativeRuntimeClass,
+    /// Request-stable `finfo` allocation layout used by exact fileinfo calls.
+    pub(super) prepared_finfo_class: *const PreparedNativeRuntimeClass,
+    /// Request-stable `mysqli_result` allocation layout used by exact queries.
+    pub(super) prepared_mysqli_result_class: *const PreparedNativeRuntimeClass,
+    /// Request-stable `mysqli` allocation layout used by exact initialization.
+    pub(super) prepared_mysqli_class: *const PreparedNativeRuntimeClass,
+    pub(super) typed_reference_constraint_sets: Vec<Box<NativeTypedReferenceConstraintSet>>,
     /// Request-stable immutable absence cell returned only by non-mutating
     /// dynamic-property tests on classes proven not to implement `__isset`.
     pub(super) absent_dynamic_property_slot: php_runtime::api::NativeDeclaredPropertySlot,
+    pub(super) runtime_diagnostic: NativeRuntimeDiagnosticCapability,
     pub(super) execution_deadline: NativeExecutionDeadlineCapability,
     pub(super) frame_arena: NativeFrameArenaCapability,
 }

@@ -10,31 +10,46 @@
       "unsafe_code": 25
     },
     "crates/php_vm/src/vm/jit_abi.rs": {
-      "unsafe_code": 108
+      "unsafe_code": 3
     },
-    "crates/php_vm/src/vm/jit_abi/call_dispatch.rs": {
-      "unsafe_code": 119
+    "crates/php_vm/src/vm/jit_abi/native_context.rs": {
+      "unsafe_code": 5
+    },
+    "crates/php_vm/src/vm/jit_abi/cold_value_plane.rs": {
+      "unsafe_code": 3
+    },
+    "crates/php_vm/src/vm/jit_abi/cold_request_state.rs": {
+      "unsafe_code": 34
     },
     "crates/php_vm/src/vm/jit_abi/diagnostic_helpers.rs": {
       "unsafe_code": 2
     },
-    "crates/php_vm/src/vm/jit_abi/dynamic_code.rs": {
-      "unsafe_code": 1
+    "crates/php_vm/src/vm/jit_abi/native/capability_impl.rs": {
+      "unsafe_code": 27
     },
-    "crates/php_vm/src/vm/jit_abi/dynamic_units.rs": {
+    "crates/php_vm/src/vm/jit_abi/native/exact_call_dispatch.rs": {
+      "unsafe_code": 93
+    },
+    "crates/php_vm/src/vm/jit_abi/native/exact_call_dispatch/recursive_array_family.rs": {
+      "unsafe_code": 3
+    },
+    "crates/php_vm/src/vm/jit_abi/native/exact_call_dispatch/scalar_and_filter_families.rs": {
+      "unsafe_code": 116
+    },
+    "crates/php_vm/src/vm/jit_abi/native/exact_runtime_ops.rs": {
+      "unsafe_code": 8
+    },
+    "crates/php_vm/src/vm/jit_abi/native/fast_state_impl.rs": {
+      "unsafe_code": 45
+    },
+    "crates/php_vm/src/vm/jit_abi/native/reflection_ops.rs": {
+      "unsafe_code": 4
+    },
+    "crates/php_vm/src/vm/jit_abi/native/mod.rs": {
       "unsafe_code": 2
     },
-    "crates/php_vm/src/vm/jit_abi/frame_arena.rs": {
+    "crates/php_vm/src/vm/jit_abi/native/strtr_impl.rs": {
       "unsafe_code": 1
-    },
-    "crates/php_vm/src/vm/jit_abi/native_builtins.rs": {
-      "unsafe_code": 3
-    },
-    "crates/php_vm/src/vm/jit_abi/runtime_ops.rs": {
-      "unsafe_code": 21
-    },
-    "crates/php_vm/src/vm/jit_abi/semantic_dispatch/mod.rs": {
-      "unsafe_code": 3
     }
   },
   "schema_version": 1

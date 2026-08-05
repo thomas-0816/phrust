@@ -23,6 +23,7 @@ mod host_isa;
 mod native_cache;
 pub mod region_ir;
 
+pub use abi::JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PAYLOAD_TOTAL;
 pub use abi::{
     JIT_DEOPT_LOCAL_MASK_WORDS, JIT_DEOPT_MAX_REGISTERS, JIT_DEOPT_MAX_SLOTS,
     JIT_NATIVE_ARRAY_VIEW_ABI_VERSION, JIT_NATIVE_CALLABLE_KIND_BOUND_CLASS_METHOD,
@@ -44,19 +45,24 @@ pub use abi::{
     JIT_NATIVE_DIRECT_STRING_MIN_CAPACITY, JIT_NATIVE_DIRECT_VALUE_CAPACITY,
     JIT_NATIVE_DIRECT_VALUE_INDEX_BASE, JIT_NATIVE_EXCEPTION_ROUTE_PUBLISHED,
     JIT_NATIVE_FIBER_SUSPENSION_CAPACITY, JIT_NATIVE_FOREACH_VIEW_ABI_VERSION,
-    JIT_NATIVE_INSTANCEOF_PLAN_PUBLISHED, JIT_NATIVE_NUMERIC_STRING_FLOAT,
-    JIT_NATIVE_NUMERIC_STRING_INT, JIT_NATIVE_NUMERIC_STRING_LEADING_FLOAT,
-    JIT_NATIVE_NUMERIC_STRING_LEADING_INT, JIT_NATIVE_NUMERIC_STRING_NON_NUMERIC,
+    JIT_NATIVE_GENERATED_RELEASE_CONTROL_DETAIL, JIT_NATIVE_INSTANCEOF_PLAN_PUBLISHED,
+    JIT_NATIVE_NUMERIC_STRING_FLOAT, JIT_NATIVE_NUMERIC_STRING_INT,
+    JIT_NATIVE_NUMERIC_STRING_LEADING_FLOAT, JIT_NATIVE_NUMERIC_STRING_LEADING_INT,
+    JIT_NATIVE_NUMERIC_STRING_NON_NUMERIC, JIT_NATIVE_OBJECT_ALLOWS_DYNAMIC_PROPERTIES,
     JIT_NATIVE_OBJECT_COUNTABLE, JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_MASK,
     JIT_NATIVE_OBJECT_PROPERTY_VIEW_ABI_VERSION, JIT_NATIVE_OBJECT_STDCLASS,
     JIT_NATIVE_OBJECT_TRAVERSABLE, JIT_NATIVE_OBJECT_TYPE_FLAGS,
-    JIT_NATIVE_PREPARED_CALLABLE_ABI_VERSION,
+    JIT_NATIVE_PARAMETER_BINDING_BY_REFERENCE, JIT_NATIVE_PARAMETER_BINDING_HAS_DEFAULT,
+    JIT_NATIVE_PARAMETER_BINDING_VARIADIC, JIT_NATIVE_PARAMETER_DEFAULT_NONE,
+    JIT_NATIVE_PREPARED_CALLABLE_ABI_VERSION, JIT_NATIVE_PREPARED_CALLABLE_DIRECT_PACKED_BINDING,
     JIT_NATIVE_PREPARED_CALLABLE_FIRST_PARAMETER_BY_REFERENCE,
     JIT_NATIVE_PREPARED_CALLABLE_FIXED_BINDING, JIT_NATIVE_PREPARED_CALLABLE_HAS_RECEIVER,
-    JIT_NATIVE_PREPARED_CALLABLE_HAS_SCOPE, JIT_NATIVE_PREPARED_CALLABLE_RETURNS_INT,
+    JIT_NATIVE_PREPARED_CALLABLE_HAS_SCOPE, JIT_NATIVE_PREPARED_CALLABLE_MAGIC_DISPATCH,
+    JIT_NATIVE_PREPARED_CALLABLE_RETURNS_INT, JIT_NATIVE_PREPARED_CALLABLE_RETURNS_REFERENCE,
     JIT_NATIVE_PREPARED_CALLABLE_RETURNS_RELEASABLE_SCALAR,
-    JIT_NATIVE_PREPARED_CALLABLE_RETURNS_STRING, JIT_NATIVE_PREPARED_CLASS_ALLOCATABLE,
-    JIT_NATIVE_PREPARED_CLASS_EMPTY, JIT_NATIVE_PREPARED_CLOSURE_HAS_IMPLICIT_THIS,
+    JIT_NATIVE_PREPARED_CALLABLE_RETURNS_STRING, JIT_NATIVE_PREPARED_CALLABLE_VARIADIC,
+    JIT_NATIVE_PREPARED_CLASS_ALLOCATABLE, JIT_NATIVE_PREPARED_CLASS_EMPTY,
+    JIT_NATIVE_PREPARED_CLASS_HAS_CONSTRUCTOR, JIT_NATIVE_PREPARED_CLOSURE_HAS_IMPLICIT_THIS,
     JIT_NATIVE_REFERENCE_ARRAY_KEY_INT, JIT_NATIVE_REFERENCE_ARRAY_KEY_STRING,
     JIT_NATIVE_REFERENCE_ARRAY_VALUE_FALSE, JIT_NATIVE_REFERENCE_ARRAY_VALUE_INT,
     JIT_NATIVE_REFERENCE_ARRAY_VALUE_NULL, JIT_NATIVE_REFERENCE_ARRAY_VALUE_STRING,
@@ -71,14 +77,17 @@ pub use abi::{
     JIT_NATIVE_REQUEST_LOCAL_EMPTY, JIT_NATIVE_REQUEST_LOCAL_PUBLISHED,
     JIT_NATIVE_SHARED_ARRAY_ABI_VERSION, JIT_NATIVE_STATIC_PROPERTY_CAPACITY,
     JIT_NATIVE_STRING_VALUE_ZERO, JIT_NATIVE_STRING_VIEW_ABI_VERSION,
-    JIT_NATIVE_TRUSTED_CONSTANT_EMPTY, JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED,
-    JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_EMPTY, JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED,
-    JIT_NATIVE_TRUSTED_LITERAL_EMPTY, JIT_NATIVE_TRUSTED_LITERAL_PUBLISHED,
-    JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_EMPTY,
-    JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_REFERENCEABLE,
-    JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE, JIT_NATIVE_TRUSTED_STATIC_LOCAL_EMPTY,
-    JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_EMPTY,
-    JIT_NATIVE_TRUSTED_STATIC_PROPERTY_READABLE, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_WRITABLE,
+    JIT_NATIVE_TRACE_FRAME_CAPACITY, JIT_NATIVE_TRACE_HAS_RECEIVER,
+    JIT_NATIVE_TRUSTED_CONSTANT_EMPTY, JIT_NATIVE_TRUSTED_CONSTANT_ERROR,
+    JIT_NATIVE_TRUSTED_CONSTANT_PUBLISHED, JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_EMPTY,
+    JIT_NATIVE_TRUSTED_GLOBAL_REFERENCE_PUBLISHED, JIT_NATIVE_TRUSTED_LITERAL_EMPTY,
+    JIT_NATIVE_TRUSTED_LITERAL_PUBLISHED, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_DIMENSION_WRITABLE,
+    JIT_NATIVE_TRUSTED_PROPERTY_SLOT_EMPTY, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_PUBLISHED,
+    JIT_NATIVE_TRUSTED_PROPERTY_SLOT_REFERENCEABLE, JIT_NATIVE_TRUSTED_PROPERTY_SLOT_WRITABLE,
+    JIT_NATIVE_TRUSTED_STATIC_LOCAL_EMPTY, JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED,
+    JIT_NATIVE_TRUSTED_STATIC_PROPERTY_ABSENT, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_EMPTY,
+    JIT_NATIVE_TRUSTED_STATIC_PROPERTY_ERROR, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_READABLE,
+    JIT_NATIVE_TRUSTED_STATIC_PROPERTY_TYPED, JIT_NATIVE_TRUSTED_STATIC_PROPERTY_WRITABLE,
     JIT_NATIVE_VALUE_VIEW_ARRAY, JIT_NATIVE_VALUE_VIEW_BORROWED_REFERENCE_ARRAY,
     JIT_NATIVE_VALUE_VIEW_COLD_GENERATOR, JIT_NATIVE_VALUE_VIEW_COLD_ITERATOR,
     JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY, JIT_NATIVE_VALUE_VIEW_DIRECT_FIBER,
@@ -96,26 +105,30 @@ pub use abi::{
     JitCValue, JitCValueTag, JitCallResult, JitCallStatus, JitDeoptState, JitExceptionMarker,
     JitFrameHandle, JitFrameView, JitNativeArgFlags, JitNativeCallArgument, JitNativeCallFrame,
     JitNativeCallKind, JitNativeCallTarget, JitNativeConstantView, JitNativeControlRecord,
-    JitNativeControlResult, JitNativeDestructorPoint, JitNativeDirectArrayEntry,
-    JitNativeDirectArrayState, JitNativeDispatchTrampoline, JitNativeDynamicCodeKind,
-    JitNativeDynamicCodeRequest, JitNativeDynamicCodeTrampoline, JitNativeExceptionHandler,
-    JitNativeExceptionRouteEntry, JitNativeExceptionRoutePlan, JitNativeFastStateHeader,
-    JitNativeFiberState, JitNativeForeachEntry, JitNativeForeachView, JitNativeFrameHeader,
+    JitNativeControlResult, JitNativeDestructorAction, JitNativeDestructorPoint,
+    JitNativeDirectArrayEntry, JitNativeDirectArrayState, JitNativeDispatchTrampoline,
+    JitNativeDynamicBinding, JitNativeDynamicCodeKind, JitNativeDynamicCodeRequest,
+    JitNativeDynamicCodeTrampoline, JitNativeDynamicUnitAction, JitNativeDynamicUnitResolution,
+    JitNativeExceptionHandler, JitNativeExceptionRouteEntry, JitNativeExceptionRoutePlan,
+    JitNativeFastStateHeader, JitNativeFiberState, JitNativeForeachEntry, JitNativeForeachView,
+    JitNativeFrameHeader, JitNativeFunctionBindingPlan, JitNativeFunctionContractView,
     JitNativeGeneratorState, JitNativeIndirectionEntry, JitNativeInstanceOfEntry,
     JitNativeInstanceOfPlan, JitNativeLinkedFunction, JitNativeNumericStringResult,
-    JitNativePcMetadata, JitNativePreparedCallableView, JitNativePreparedClassPlan,
-    JitNativePreparedClosureView, JitNativePreparedExceptionView, JitNativeReferenceArrayEntry,
-    JitNativeReferenceArrayView, JitNativeReferenceScalarView, JitNativeRequestLocalSlot,
+    JitNativeParameterBinding, JitNativePcMetadata, JitNativePhpEntry,
+    JitNativePreparedCallableView, JitNativePreparedClassPlan, JitNativePreparedClosureView,
+    JitNativePreparedExceptionView, JitNativeReferenceArrayEntry, JitNativeReferenceArrayView,
+    JitNativeReferenceScalarView, JitNativeReleaseChildren, JitNativeRequestLocalSlot,
     JitNativeResumeInputKind, JitNativeRootEntry, JitNativeRootKind, JitNativeRuntimeView,
     JitNativeRuntimeViewGuard, JitNativeStaticPropertySlot, JitNativeSuspendKind,
-    JitNativeSuspensionGenerationPolicy, JitNativeTransitionState, JitNativeTrustedConstantSlot,
-    JitNativeTrustedGlobalReferenceSlot, JitNativeTrustedLiteralSlot, JitNativeTrustedPropertySlot,
-    JitNativeTrustedStaticLocalSlot, JitNativeTrustedStaticPropertySlot, JitNativeValueSlot,
-    JitOpaqueHandle, JitOpaqueValueKind, JitRegionResult, JitRuntimeCallout,
-    JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle, SideExitReason,
-    activate_native_runtime_view, jit_native_direct_array_cursor, jit_native_direct_array_flags,
-    jit_native_direct_string_capacity, jit_native_direct_string_reserved,
-    jit_native_instanceof_index, jit_native_object_property_view_is_published,
+    JitNativeSuspensionGenerationPolicy, JitNativeTraceFrame, JitNativeTransitionState,
+    JitNativeTrustedConstantSlot, JitNativeTrustedGlobalReferenceSlot, JitNativeTrustedLiteralSlot,
+    JitNativeTrustedPropertySlot, JitNativeTrustedStaticLocalSlot,
+    JitNativeTrustedStaticPropertySlot, JitNativeValueSlot, JitOpaqueHandle, JitOpaqueValueKind,
+    JitRegionResult, JitRuntimeCallout, JitRuntimeCalloutResult, JitSideExit, JitVmContextHandle,
+    SideExitReason, activate_native_runtime_view, jit_native_direct_array_cursor,
+    jit_native_direct_array_flags, jit_native_direct_string_capacity,
+    jit_native_direct_string_reserved, jit_native_instanceof_index,
+    jit_native_object_property_view_is_published,
 };
 pub use backend::{NativeCompileOutcome, NativeCompileRequest, NativeCompilerApi};
 pub use code_manager::{
@@ -148,7 +161,7 @@ pub use native_cache::{
     NativeRelocationTarget, NativeResumeEntry, NativeRootMap, NativeSymbol, NativeTrapEntry,
     PNA_FORMAT_VERSION, PNA_MAGIC,
 };
-use php_ir::{BlockId, FunctionId, InstrId, IrSpan, IrUnit, LocalId};
+use php_ir::{BlockId, FunctionId, InstrId, IrSpan, IrUnit, LocalId, RegId};
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
@@ -166,6 +179,11 @@ pub(crate) const JIT_NATIVE_BIND_STRICT_ENTRY_RESUME_ID: i32 = -3;
 /// handler entry so the overwritten local is finalized exactly once before
 /// the catch body executes.
 pub const JIT_NATIVE_CATCH_BIND_TRANSITION_DETAIL: u32 = 0x4341_5443;
+/// Marks a terminal `RuntimeError` whose precise diagnostic is retained in
+/// the immutable source instruction and rendered only at the outer cold
+/// boundary. Generated code publishes this control directly; no runtime
+/// helper interprets an instruction or continuation identifier.
+pub const JIT_NATIVE_RUNTIME_FATAL_DETAIL: u32 = 0x4641_544c;
 /// Cranelift release included in restart-persistent native cache identity.
 pub const CRANELIFT_VERSION: &str = "0.133.1";
 
@@ -206,11 +224,21 @@ impl CraneliftCompilerIdentity {
 /// Runtime-owned helper addresses the backend may call from generated code.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct JitRuntimeHelperAddresses {
-    /// Baseline-only typed dynamic-call resolver/invoker. Optimizing
-    /// artifacts cannot acquire this capability.
-    pub baseline_call_dispatch: usize,
-    /// Baseline-only stable-ID builtin compatibility dispatcher.
-    pub baseline_builtin_dispatch: usize,
+    /// Emits the one exact PHP undefined-variable diagnostic selected by a
+    /// generated non-quiet local load. The operation carries immutable name
+    /// and source coordinates, never a local-operation selector.
+    pub native_undefined_variable_warning: usize,
+    /// Emits the exact PHP undefined-array-key diagnostic selected by a
+    /// generated non-quiet direct-array read. The key remains in the stable
+    /// native value representation across this ABI.
+    pub native_undefined_array_key_warning: usize,
+    pub native_array_offset_warning: usize,
+    /// Exact one-transition invalidation of a publication-proven top-level
+    /// global reference binding.
+    pub native_global_binding_unset: usize,
+    /// Exact one-transition rebinding of a published top-level global to an
+    /// authoritative native reference.
+    pub native_global_binding_rebind: usize,
     /// Exact prepared symbol/reflection query handlers. Each address names one
     /// fixed builtin; optimizing code never supplies an operation or registry ID.
     pub native_define: usize,
@@ -256,6 +284,8 @@ pub struct JitRuntimeHelperAddresses {
     pub native_hash: usize,
     pub native_hash_hmac: usize,
     pub native_hash_equals: usize,
+    /// Exact fixed BLAKE2b boundary for `sodium_crypto_generichash()`.
+    pub native_sodium_crypto_generichash: usize,
     /// Exact native byte-codec handlers.
     pub native_base64_encode: usize,
     pub native_base64_decode: usize,
@@ -274,6 +304,8 @@ pub struct JitRuntimeHelperAddresses {
     pub native_quotemeta: usize,
     pub native_pack: usize,
     pub native_unpack: usize,
+    /// Exact libsodium-compatible base64 encoder selected by native variant.
+    pub native_sodium_bin2base64: usize,
     /// Exact prepared path/filesystem handlers. Pure path handlers use only
     /// native values; filesystem queries receive the request's narrow
     /// cwd/capability view through FastState.
@@ -321,6 +353,7 @@ pub struct JitRuntimeHelperAddresses {
     pub native_symlink: usize,
     pub native_readfile: usize,
     pub native_is_uploaded_file: usize,
+    pub native_move_uploaded_file: usize,
     pub native_tempnam: usize,
     pub native_tmpfile: usize,
     pub native_filesize: usize,
@@ -347,24 +380,81 @@ pub struct JitRuntimeHelperAddresses {
     pub native_stream_get_contents: usize,
     pub native_stream_copy_to_stream: usize,
     /// Exact request-local output-buffer state and native-string handlers.
-    pub native_output_buffer: [usize; 8],
-    /// Baseline-only typed PHP semantic compatibility dispatcher.
-    pub baseline_semantic_dispatch: usize,
+    pub native_output_buffer: [usize; 9],
+    /// Exact scalar output for the `print` language builtin.
+    pub native_print: usize,
+    /// Exact native debug formatter for `print_r`.
+    pub native_print_r: usize,
+    /// Exact variadic `var_dump` over an authoritative native argument slice.
+    pub native_var_dump: usize,
+    /// Exact `var_export` formatter over an authoritative native value.
+    pub native_var_export: usize,
+    /// Exact prepared mysqli connection character-set mutation.
+    pub native_mysqli_set_charset: usize,
+    /// Exact prepared mysqli query over an authoritative connection and SQL string.
+    pub native_mysqli_query: usize,
+    /// Exact prepared mysqli buffered-row array fetch.
+    pub native_mysqli_fetch_array: usize,
+    /// Exact prepared mysqli buffered-row object fetch.
+    pub native_mysqli_fetch_object: usize,
+    /// Exact prepared mysqli connection character-set name query.
+    pub native_mysqli_character_set_name: usize,
+    /// Exact prepared mysqli result cardinality accessors, in
+    /// StableMysqliResultCountBuiltin order.
+    pub native_mysqli_result_count: [usize; 2],
+    /// Exact prepared mysqli sequential field metadata fetch.
+    pub native_mysqli_fetch_field: usize,
+    /// Exact request-local mysqli connection-attempt status accessors, in
+    /// StableMysqliConnectStatusBuiltin order.
+    pub native_mysqli_connect_status: [usize; 2],
+    /// Exact prepared mysqli connection close and handle invalidation.
+    pub native_mysqli_close: usize,
+    /// Exact prepared mysqli server-information query.
+    pub native_mysqli_get_server_info: usize,
+    /// Exact prepared mysqli database-selection mutation.
+    pub native_mysqli_select_db: usize,
+    /// Exact prepared mysqli connection-aware string escaping.
+    pub native_mysqli_real_escape_string: usize,
+    /// Exact prepared mysqli connection status accessors, in
+    /// StableMysqliConnectionStatusBuiltin order.
+    pub native_mysqli_connection_status: [usize; 5],
+    /// Exact PHP error-log sink operation.
+    pub native_error_log: usize,
+    /// Exact blocking sleep operation.
+    pub native_sleep: usize,
+    /// Exact prepared mysqli buffered-result release.
+    pub native_mysqli_free_result: usize,
+    /// Exact prepared mysqli multi-result availability query.
+    pub native_mysqli_more_results: usize,
+    /// Exact prepared mysqli multi-result advance mutation.
+    pub native_mysqli_next_result: usize,
+    /// Exact request-local mysqli report-policy mutation.
+    pub native_mysqli_report: usize,
+    /// Exact prepared mysqli object initialization.
+    pub native_mysqli_init: usize,
+    /// Exact prepared mysqli option admission.
+    pub native_mysqli_options: usize,
+    /// Exact prepared mysqli connection establishment.
+    pub native_mysqli_real_connect: usize,
+    /// Exact final accessors for internal Throwable fields, in
+    /// StableThrowableMethod order.
+    pub native_throwable_method: [usize; 6],
     /// Resolves or compiles one statically known PHP callee without invoking it.
     pub native_function_resolve: usize,
     /// Allocates bounded request-local native call-frame storage.
     pub native_frame_alloc: usize,
     /// Releases the most recent request-local call-frame allocation.
     pub native_frame_release: usize,
-    /// Dynamic include/eval/declaration compiler and native-entry invoker.
-    pub native_dynamic_code: usize,
-    /// Baseline-only typed PHP unary compatibility operation.
-    pub baseline_unary: usize,
+    /// Cold dynamic include/eval compiler and publication resolver. Generated
+    /// code, never this service, invokes a returned native entry.
+    pub cold_dynamic_unit_resolve: usize,
     /// Exact authoritative native unary family. Fixed order: unary plus,
     /// unary minus, bitwise not. Logical not remains direct CLIF.
     pub native_exact_unary: [usize; 3],
-    /// Baseline-only typed PHP binary compatibility operation.
-    pub baseline_binary: usize,
+    /// Exact authoritative arithmetic leaves for dynamically typed operands.
+    /// Fixed order: add, subtract, multiply. No operation selector crosses
+    /// the runtime ABI.
+    pub native_exact_arithmetic: [usize; 11],
     /// Total representation-heavy array union over publication-admitted
     /// authoritative direct arrays.
     pub native_array_union: usize,
@@ -373,17 +463,11 @@ pub struct JitRuntimeHelperAddresses {
     pub native_concat: usize,
     /// Total native string bit operations. Order: and, or, xor.
     pub native_string_bitwise: [usize; 3],
-    /// Baseline-only typed PHP comparison compatibility operation.
-    pub baseline_compare: usize,
     /// Exact authoritative native comparison family. Every entry has a fixed
     /// symbol; generated optimizing code never passes an operation ID.
     /// Order: equal, not-equal, identical, not-identical, less, less-equal,
     /// greater, greater-equal, spaceship.
     pub native_exact_compare: [usize; 9],
-    /// Baseline-only typed PHP cast compatibility operation.
-    pub baseline_cast: usize,
-    /// Typed PHP echo operation.
-    pub native_echo: usize,
     /// Exact direct-string output append without Rust `Value` materialization.
     pub native_echo_bytes: usize,
     /// Exact SSA-float to direct-string conversion without `Value` materialization.
@@ -409,7 +493,7 @@ pub struct JitRuntimeHelperAddresses {
     /// Exact native byte-string rewrite handlers.
     pub native_string_rewrite: [usize; 7],
     /// Exact stateless HTML entity codec handlers.
-    pub native_html_codec: [usize; 4],
+    pub native_html_codec: [usize; 5],
     /// Exact URL/query transforms over authoritative native strings/arrays.
     pub native_url_query: [usize; 3],
     /// Fixed scalar aggregate/count targets over authoritative native array
@@ -433,7 +517,7 @@ pub struct JitRuntimeHelperAddresses {
     pub native_tokenizer: [usize; 2],
     /// Exact mbstring operations over authoritative native strings and the
     /// narrow request-published encoding capability.
-    pub native_mbstring: [usize; 25],
+    pub native_mbstring: [usize; 28],
     /// Exact bcmath family over native decimal strings and one published
     /// request-local scale capability.
     pub native_bcmath: [usize; 10],
@@ -458,6 +542,8 @@ pub struct JitRuntimeHelperAddresses {
     pub native_gc: [usize; 6],
     /// Exact resource identity, type, and request inventory queries.
     pub native_resource_query: [usize; 3],
+    /// Exact libmagic-backed procedural file-information family.
+    pub native_fileinfo: [usize; 8],
     /// Exact request-local last-error observation and reset.
     pub native_error_state: [usize; 2],
     /// Exact reference-preserving `settype()` cast/store boundary.
@@ -472,10 +558,10 @@ pub struct JitRuntimeHelperAddresses {
     pub native_cookie: [usize; 2],
     /// Exact wall-clock reads with native integer, float, string, and packed
     /// array results.
-    pub native_clock: [usize; 3],
+    pub native_clock: [usize; 6],
     /// Exact procedural date/time scalar, formatting, parsing, construction,
     /// validation, and timezone-inventory operations.
-    pub native_date: [usize; 7],
+    pub native_date: [usize; 9],
     /// Exact random byte/range/scalar and native array sampling/shuffle
     /// operations over one request-published entropy capability.
     pub native_random: [usize; 8],
@@ -489,7 +575,7 @@ pub struct JitRuntimeHelperAddresses {
     /// Exact frame-local projection for `compact()`.
     pub native_compact: usize,
     /// Exact introspection over the active authoritative native call frame.
-    pub native_frame_introspection: [usize; 3],
+    pub native_frame_introspection: [usize; 4],
     /// Exact stateless textual/packed network-address conversions.
     pub native_network_address: [usize; 4],
     /// Exact stateless zlib/gzip encode-decode operations.
@@ -509,14 +595,24 @@ pub struct JitRuntimeHelperAddresses {
     pub native_object_cast: usize,
     /// Exact direct-object class-name read without generic property dispatch.
     pub native_object_class_name: usize,
+    /// Exact dynamic `gettype()` / `get_debug_type()` name query.
+    pub native_type_name: usize,
     /// Exact acquisition of representation-complete callable values from
     /// authoritative native strings, objects, arrays, and callable records.
     pub native_acquire_callable: usize,
+    /// Exact acquisition of a statically named method callable from an
+    /// authoritative object or class receiver. Resolution publishes the
+    /// generated entry contract but never invokes the PHP body.
+    pub native_acquire_method_callable: usize,
+    /// Exact acquisition of a published class-allocation plan from an
+    /// authoritative class-name value. Resolution never allocates an object
+    /// or invokes its constructor.
+    pub native_acquire_class_plan: usize,
     /// Exact PHP `is_callable` query over authoritative native values and an
     /// optional direct output reference.
     pub native_is_callable: usize,
     /// Exact request-scoped error/exception handler stack operations.
-    pub native_callback_handler: [usize; 5],
+    pub native_callback_handler: [usize; 6],
     /// Exact SPL autoload callback registration, removal, and inventory.
     pub native_autoload_callback: [usize; 3],
     /// Exact variadic shutdown callback registration.
@@ -529,6 +625,17 @@ pub struct JitRuntimeHelperAddresses {
     /// Exact internal throwable allocation from immutable continuation
     /// metadata and one authoritative native message value.
     pub native_prepared_exception_new: usize,
+    /// Exact type/error enforcement for one immutable static-property plan.
+    pub native_static_property_contract: usize,
+    /// Exact attachment of one immutable typed-static contract to an
+    /// authoritative native reference.
+    pub native_typed_static_reference_bind: usize,
+    /// Exact constrained mutation of an authoritative typed reference.
+    pub native_typed_reference_store: usize,
+    /// Exact array auto-initialization through an authoritative typed reference.
+    pub native_typed_reference_array_init: usize,
+    /// Exact source-prepared Error for an unresolved fixed constant.
+    pub native_undefined_constant: usize,
     /// Exact closure allocation from immutable callsite metadata and native
     /// capture owners.
     pub native_prepared_closure_new: usize,
@@ -537,63 +644,20 @@ pub struct JitRuntimeHelperAddresses {
     /// Resolves one stable authoritative undeclared-property cell. Generated
     /// code performs fetch/test/assign/unset directly on the returned slot.
     pub native_dynamic_property_slot: usize,
+    /// Resolves one stable authoritative undeclared-property cell from a
+    /// publication-stable UTF-8 name view.
+    pub native_named_dynamic_property_slot: usize,
     /// Resolves a stable authoritative or immutable-absence cell for
     /// non-mutating dynamic-property tests.
     pub native_dynamic_property_test_slot: usize,
-    /// Resolves one local load, including superglobal seeding and warnings.
-    pub native_local_fetch: usize,
-    /// Stores through a PHP reference cell or replaces a plain local value.
-    pub native_local_store: usize,
-    /// Performs the cold final release of one request-owned native value.
-    pub native_value_release: usize,
-    /// Creates or propagates one PHP reference cell.
-    pub native_reference_bind: usize,
+    /// Exact generated object-lifecycle leaves: prepare a destructor target,
+    /// finalize the direct owner into transferred children, then drop that
+    /// temporary child plan. None may invoke a PHP body.
+    pub native_object_release: [usize; 3],
     /// Enforces one declared PHP function parameter type at a direct call site.
-    pub native_argument_check: usize,
+    pub native_declared_argument_contract: usize,
     /// Enforces one declared PHP function return type.
-    pub native_return_check: usize,
-    /// Materializes one throwable value for explicit native throw flow.
-    pub native_exception_new: usize,
-    /// Creates one request-owned PHP array value.
-    pub native_array_new: usize,
-    /// Creates one request-owned PHP object value.
-    pub native_object_new: usize,
-    /// Reads one named PHP object property.
-    pub native_property_fetch: usize,
-    /// Writes one named PHP object property.
-    pub native_property_assign: usize,
-    /// Clones one PHP object into a distinct identity.
-    pub native_object_clone: usize,
-    /// Clones one PHP object and applies replacement properties.
-    pub native_object_clone_with: usize,
-    /// Inserts or appends one PHP array element.
-    pub native_array_insert: usize,
-    /// Consumes a local array owner, inserts, and returns its replacement.
-    pub native_array_insert_local: usize,
-    /// Fetches one PHP array dimension.
-    pub native_array_fetch: usize,
-    /// Removes one PHP array dimension.
-    pub native_array_unset: usize,
-    /// Spreads one PHP array into another.
-    pub native_array_spread: usize,
-    /// Creates one by-value PHP foreach iterator.
-    pub native_foreach_init: usize,
-    /// Advances one by-value PHP foreach iterator.
-    pub native_foreach_next: usize,
-    /// Releases one PHP foreach iterator.
-    pub native_foreach_cleanup: usize,
-    /// Resolves one named PHP constant into a native value handle.
-    pub native_constant_fetch: usize,
-    /// Typed PHP truthiness operation used by native branches.
-    pub native_truthy: usize,
-    /// Direct, non-allocating PHP type-predicate operation.
-    pub native_type_predicate: usize,
-    /// Typed `strlen`/array `count` slow path for stable value views.
-    pub native_stable_length: usize,
-    /// Direct string contains/starts-with/ends-with predicate over native handles.
-    pub native_string_predicate: usize,
-    /// Typed runtime-fatal publication operation.
-    pub native_runtime_fatal: usize,
+    pub native_declared_return_contract: usize,
     /// Cooperative execution-deadline poll emitted at native loop headers.
     pub native_execution_poll: usize,
 }
@@ -750,6 +814,8 @@ pub struct JitExternalFunctionSignature {
     pub requires_non_reference_trampoline: bool,
     /// True when the declaration returns a reference.
     pub returns_by_reference: bool,
+    /// Published PHP return type after declaration/default resolution.
+    pub return_type: Option<php_ir::IrReturnType>,
     /// Exact target function whose published native artifact owns catch/finally
     /// resume entries. `None` means the target has no exception handlers (or
     /// is not yet published), so a returned throw continues unwinding.
@@ -1028,7 +1094,9 @@ pub struct JitExceptionHandlerMetadata {
     pub protected_blocks: Vec<BlockId>,
     pub catch: Option<BlockId>,
     pub catch_types: Vec<String>,
+    pub catch_live_registers: Vec<RegId>,
     pub finally: Option<BlockId>,
+    pub finally_live_registers: Vec<RegId>,
     pub after: BlockId,
     pub exception_local: Option<LocalId>,
 }
@@ -1297,6 +1365,50 @@ impl JitRegionStateMetadata {
 
 impl Eq for JitFunctionHandle {}
 
+fn remap_native_handler_state(
+    state: &JitDeoptState,
+    live_registers: &[RegId],
+) -> Result<JitDeoptState, JitInvokeError> {
+    let source_slots = live_registers
+        .iter()
+        .map(|register| {
+            (0..JIT_DEOPT_MAX_REGISTERS).find(|slot| {
+                state.initialized_register_mask & (1_u64 << slot) != 0
+                    && state.register_ids[*slot] == register.raw()
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some((register, _)) = live_registers
+        .iter()
+        .zip(source_slots.iter())
+        .find(|(_, slot)| slot.is_none())
+    {
+        return Err(JitInvokeError::IncompleteNativeTransition {
+            function: state.function_id,
+            continuation: state.continuation_id,
+            missing_local: None,
+            missing_register: Some(register.raw()),
+        });
+    }
+    let mut remapped = *state;
+    remapped.initialized_register_mask = if live_registers.len() >= u64::BITS as usize {
+        u64::MAX
+    } else {
+        (1_u64 << live_registers.len()).saturating_sub(1)
+    };
+    remapped.register_ids.fill(u32::MAX);
+    remapped.registers.fill(0);
+    for (target, (register, source)) in live_registers
+        .iter()
+        .zip(source_slots.into_iter())
+        .enumerate()
+    {
+        remapped.register_ids[target] = register.raw();
+        remapped.registers[target] = state.registers[source.expect("handler state was checked")];
+    }
+    Ok(remapped)
+}
+
 impl JitFunctionHandle {
     /// Publishes one validated PNA1 function entry while retaining the RX
     /// mapping for the complete lifetime of the handle.
@@ -1320,7 +1432,7 @@ impl JitFunctionHandle {
                 address,
                 arity: function_image.arity,
                 abi_hash: JIT_RUNTIME_ABI_HASH,
-                kind: JitNativeEntryKind::PackedI64StatusOut,
+                kind: JitNativeEntryKind::NativeControl,
             }),
             code_bytes: function_image.code_len,
             helper_calls_per_invocation: 0,
@@ -1400,7 +1512,7 @@ impl JitFunctionHandle {
     /// Creates a status/out-pointer integer native-entry handle.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn i64_status_out_native(
+    pub(crate) fn native_control_entry(
         id: u64,
         region_id: String,
         compiler: CraneliftCompilerIdentity,
@@ -1419,7 +1531,7 @@ impl JitFunctionHandle {
                 address,
                 arity,
                 abi_hash: JIT_RUNTIME_ABI_HASH,
-                kind: JitNativeEntryKind::PackedI64StatusOut,
+                kind: JitNativeEntryKind::NativeControl,
             }),
             code_bytes,
             helper_calls_per_invocation,
@@ -1606,7 +1718,7 @@ impl JitFunctionHandle {
             .iter()
             .find(|entry| entry.function == function)?;
         let mut native_entry = self.native_entry?;
-        if native_entry.kind != JitNativeEntryKind::PackedI64StatusOut {
+        if native_entry.kind != JitNativeEntryKind::NativeControl {
             return None;
         }
         native_entry.address = function_entry.address;
@@ -1799,21 +1911,22 @@ impl JitFunctionHandle {
                     function: state.function_id,
                     continuation: state.continuation_id,
                 })?;
-        if require_baseline && metadata.compiler_tier != region_ir::NativeCompilerTier::Baseline {
+        if require_baseline && metadata.compiler_tier != region_ir::NativeCompilerTier::Generic {
             return Err(JitInvokeError::NativeTransitionRequiresBaseline);
         }
         if state.control_reserved == JIT_NATIVE_CATCH_BIND_TRANSITION_DETAIL {
             let block = BlockId::new(state.continuation_id);
-            let handler_exists = metadata.exception_handlers.iter().any(|entry| {
-                entry.function.raw() == state.function_id
-                    && (entry.catch == Some(block) || entry.finally == Some(block))
-            });
-            if !handler_exists {
-                return Err(JitInvokeError::MissingNativeTransition {
+            let handler = metadata
+                .exception_handlers
+                .iter()
+                .find(|entry| {
+                    entry.function.raw() == state.function_id
+                        && (entry.catch == Some(block) || entry.finally == Some(block))
+                })
+                .ok_or(JitInvokeError::MissingNativeTransition {
                     function: state.function_id,
                     continuation: state.continuation_id,
-                });
-            }
+                })?;
             let function_entry = metadata
                 .function_entries
                 .iter()
@@ -1828,7 +1941,12 @@ impl JitFunctionHandle {
             entry.address = function_entry.address;
             entry.arity = function_entry.arity;
             let args = vec![0_i64; usize::from(function_entry.arity)];
-            let mut resume_state = *state;
+            let live_registers = if handler.catch == Some(block) {
+                &handler.catch_live_registers
+            } else {
+                &handler.finally_live_registers
+            };
+            let mut resume_state = remap_native_handler_state(state, live_registers)?;
             resume_state.control_reserved = 0;
             return entry.invoke_i64_handler_resume(
                 &args,
@@ -1915,7 +2033,7 @@ impl JitFunctionHandle {
         entry.address = function_entry.address;
         entry.arity = function_entry.arity;
         let args = vec![0_i64; usize::from(function_entry.arity)];
-        entry.invoke_i64_status_out_with_resume(
+        entry.invoke_native_control_with_resume(
             &args,
             transition.resume_id,
             std::ptr::from_ref(&remapped_state),
@@ -2064,8 +2182,12 @@ impl JitFunctionHandle {
                 JitNativeUnwindTarget::Catch {
                     block,
                     exception_local: _,
-                    handler_index: _,
+                    handler_index,
                 } => {
+                    let state = remap_native_handler_state(
+                        &state,
+                        &metadata.exception_handlers[handler_index].catch_live_registers,
+                    )?;
                     outcome = entry.invoke_i64_handler_resume(
                         args,
                         block,
@@ -2078,8 +2200,12 @@ impl JitFunctionHandle {
                 JitNativeUnwindTarget::Finally {
                     block,
                     pending,
-                    handler_index: _,
+                    handler_index,
                 } => {
+                    let state = remap_native_handler_state(
+                        &state,
+                        &metadata.exception_handlers[handler_index].finally_live_registers,
+                    )?;
                     outcome = entry
                         .invoke_i64_handler_resume(args, block, pending, value, state, runtime)?;
                 }
@@ -2261,8 +2387,12 @@ impl JitFunctionHandle {
                 JitNativeUnwindTarget::Catch {
                     block,
                     exception_local: _,
-                    handler_index: _,
+                    handler_index,
                 } => {
+                    let state = remap_native_handler_state(
+                        &state,
+                        &metadata.exception_handlers[handler_index].catch_live_registers,
+                    )?;
                     outcome = entry.invoke_i64_handler_resume(
                         args,
                         block,
@@ -2275,8 +2405,12 @@ impl JitFunctionHandle {
                 JitNativeUnwindTarget::Finally {
                     block,
                     pending,
-                    handler_index: _,
+                    handler_index,
                 } => {
+                    let state = remap_native_handler_state(
+                        &state,
+                        &metadata.exception_handlers[handler_index].finally_live_registers,
+                    )?;
                     outcome = entry
                         .invoke_i64_handler_resume(args, block, pending, value, state, runtime)?;
                 }
@@ -2347,7 +2481,7 @@ struct JitNativeEntry {
 enum JitNativeEntryKind {
     #[allow(dead_code)]
     I64Return,
-    PackedI64StatusOut,
+    NativeControl,
 }
 
 macro_rules! invoke_i64_return_entry {
@@ -2363,13 +2497,13 @@ impl JitNativeEntry {
     fn invoke_i64(self, args: &[i64]) -> Result<i64, JitInvokeError> {
         match self.kind {
             JitNativeEntryKind::I64Return => self.invoke_i64_return(args),
-            JitNativeEntryKind::PackedI64StatusOut => self.invoke_i64_status_out(args),
+            JitNativeEntryKind::NativeControl => self.invoke_native_control(args),
         }
     }
 
     fn invoke_i64_with_deopt(self, args: &[i64]) -> Result<JitI64InvokeOutcome, JitInvokeError> {
         match self.kind {
-            JitNativeEntryKind::PackedI64StatusOut => self.invoke_i64_status_out_with_deopt(args),
+            JitNativeEntryKind::NativeControl => self.invoke_native_control_with_deopt(args),
             JitNativeEntryKind::I64Return => self
                 .invoke_i64_return(args)
                 .map(JitI64InvokeOutcome::Returned),
@@ -2382,10 +2516,10 @@ impl JitNativeEntry {
         entry_id: u32,
         state: &JitDeoptState,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        if self.kind != JitNativeEntryKind::PackedI64StatusOut {
+        if self.kind != JitNativeEntryKind::NativeControl {
             return Err(JitInvokeError::MissingOsrEntry(entry_id));
         }
-        self.invoke_i64_status_out_with_resume(
+        self.invoke_native_control_with_resume(
             args,
             entry_id as i32,
             state as *const _,
@@ -2402,12 +2536,12 @@ impl JitNativeEntry {
         mut state: JitDeoptState,
         runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        if self.kind != JitNativeEntryKind::PackedI64StatusOut {
+        if self.kind != JitNativeEntryKind::NativeControl {
             return Err(JitInvokeError::MissingNativeEntry);
         }
         state.control_status = status;
         state.control_value = value;
-        self.invoke_i64_status_out_with_resume(
+        self.invoke_native_control_with_resume(
             args,
             native_handler_resume_id(block),
             &state as *const _,
@@ -2423,7 +2557,7 @@ impl JitNativeEntry {
         value: i64,
         runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        if self.kind != JitNativeEntryKind::PackedI64StatusOut {
+        if self.kind != JitNativeEntryKind::NativeControl {
             return Err(JitInvokeError::MissingSuspensionEntry(
                 state.continuation_id,
             ));
@@ -2435,7 +2569,7 @@ impl JitNativeEntry {
             JitCallStatus::CONTINUE
         };
         resumed.control_value = value;
-        self.invoke_i64_status_out_with_resume(
+        self.invoke_native_control_with_resume(
             args,
             native_suspension_resume_id(state.continuation_id),
             &resumed as *const _,
@@ -2509,8 +2643,8 @@ impl JitNativeEntry {
         Ok(value)
     }
 
-    fn invoke_i64_status_out(self, args: &[i64]) -> Result<i64, JitInvokeError> {
-        match self.invoke_i64_status_out_with_deopt(args)? {
+    fn invoke_native_control(self, args: &[i64]) -> Result<i64, JitInvokeError> {
+        match self.invoke_native_control_with_deopt(args)? {
             JitI64InvokeOutcome::Returned(value) => Ok(value),
             JitI64InvokeOutcome::SideExit { status, .. } => {
                 Err(JitInvokeError::NativeStatus(status))
@@ -2518,11 +2652,11 @@ impl JitNativeEntry {
         }
     }
 
-    fn invoke_i64_status_out_with_deopt(
+    fn invoke_native_control_with_deopt(
         self,
         args: &[i64],
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        self.invoke_i64_status_out_with_resume(args, -1, std::ptr::null(), std::ptr::null_mut())
+        self.invoke_native_control_with_resume(args, -1, std::ptr::null(), std::ptr::null_mut())
     }
 
     fn invoke_i64_with_deopt_runtime(
@@ -2530,18 +2664,45 @@ impl JitNativeEntry {
         args: &[i64],
         runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        self.invoke_i64_status_out_with_resume(args, -1, std::ptr::null(), runtime)
+        self.invoke_native_control_with_resume(args, -1, std::ptr::null(), runtime)
     }
 
-    fn invoke_i64_status_out_with_resume(
+    fn invoke_native_control_with_resume(
         self,
         args: &[i64],
         resume_id: i32,
         resume_state: *const JitDeoptState,
-        runtime: *mut std::ffi::c_void,
+        mut runtime: *mut std::ffi::c_void,
     ) -> Result<JitI64InvokeOutcome, JitInvokeError> {
-        let mut out = 0_i64;
-        let out_ptr = &mut out as *mut i64;
+        // Standalone compiler/embedder entry is an outer boundary and may not
+        // own the VM's request Fast State. Generated-to-generated calls still
+        // require the same shadow-stack ABI, so provide one temporary state
+        // here rather than adding null checks to every generated callsite.
+        let mut standalone_trace_depth = 0_u32;
+        let mut standalone_trace_frames = runtime
+            .is_null()
+            .then(|| vec![JitNativeTraceFrame::default(); abi::JIT_NATIVE_TRACE_FRAME_CAPACITY]);
+        let mut standalone_runtime =
+            standalone_trace_frames
+                .as_mut()
+                .map(|trace_frames| JitNativeFastStateHeader {
+                    abi_version: JIT_RUNTIME_ABI_VERSION,
+                    flags: 0,
+                    runtime_view_pointer: 0,
+                    runtime_view: abi::current_native_runtime_view(),
+                    trace_frames: trace_frames.as_mut_ptr() as usize as u64,
+                    trace_depth: std::ptr::from_mut(&mut standalone_trace_depth) as usize as u64,
+                    trace_capacity: trace_frames.len() as u32,
+                    trace_reserved: 0,
+                });
+        if runtime.is_null() {
+            runtime = std::ptr::from_mut(
+                standalone_runtime
+                    .as_mut()
+                    .expect("standalone native runtime was initialized"),
+            )
+            .cast();
+        }
         // Normal native returns only use the request runtime view inside this
         // buffer. Do not clear the 256 local and 64 register slots for every
         // warm call; complete the sparse state only when native code actually
@@ -2549,38 +2710,24 @@ impl JitNativeEntry {
         let mut deopt = prepare_native_deopt_out(runtime);
         let deopt_ptr = deopt.as_mut_ptr();
         // SAFETY: Handles are created only after Cranelift defines the matching
-        // packed status/out signature. `args.as_ptr()` remains valid for the
+        // shared native-control signature. `args.as_ptr()` remains valid for the
         // synchronous native call, including the zero-length case where native
         // code performs no argument loads. The public method checks the ABI hash
         // and exact arity before reaching this call.
-        let status = unsafe {
-            let function: extern "C" fn(
-                *mut std::ffi::c_void,
-                *const i64,
-                *mut i64,
-                *mut JitDeoptState,
-                i32,
-                *const JitDeoptState,
-            ) -> i32 = mem::transmute(self.address);
-            function(
-                runtime,
-                args.as_ptr(),
-                out_ptr,
-                deopt_ptr,
-                resume_id,
-                resume_state,
-            )
+        let control = unsafe {
+            let function: JitNativePhpEntry = mem::transmute(self.address);
+            function(runtime, args.as_ptr(), deopt_ptr, resume_id, resume_state)
         };
-        if status == JitCallStatus::RETURN.0 as i32 {
-            Ok(JitI64InvokeOutcome::Returned(out))
+        if control.status == JitCallStatus::RETURN {
+            Ok(JitI64InvokeOutcome::Returned(control.value))
         } else {
             // SAFETY: the call initializes every slot selected by the masks.
             // The preparation initialized all scalar metadata; this fills the
             // complementary sparse slots before constructing the Rust value.
             let deopt = unsafe { complete_native_deopt_out(deopt) };
             Ok(JitI64InvokeOutcome::SideExit {
-                status,
-                value: out,
+                status: control.status.0 as i32,
+                value: control.value,
                 state: deopt,
             })
         }
@@ -2693,7 +2840,7 @@ pub enum JitInvokeError {
     IncompleteOsrState(u32),
     /// Requested baseline-native continuation is absent.
     MissingNativeTransition { function: u32, continuation: u32 },
-    /// The selected target is not a non-speculative baseline artifact.
+    /// The selected target is not a non-speculative Generic artifact.
     NativeTransitionRequiresBaseline,
     /// Guard state omits a local/register required by the continuation.
     IncompleteNativeTransition {
@@ -3328,27 +3475,6 @@ mod tests {
 
     #[test]
     fn compile_function_does_not_publish_same_unit_callee_body() {
-        extern "C" fn trampoline(
-            _runtime: *mut std::ffi::c_void,
-            _vm_context: u64,
-            _frame: *mut crate::JitNativeCallFrame,
-            out: *mut crate::JitCallResult,
-        ) -> i32 {
-            // SAFETY: The generated call owns the synchronous result record.
-            unsafe {
-                out.write(crate::JitCallResult {
-                    status: crate::JitCallStatus::RETURN,
-                    detail: 0,
-                    value: crate::JitAbiSlot {
-                        tag: 3,
-                        flags: 0,
-                        payload: 4,
-                    },
-                });
-            }
-            crate::JitCallStatus::RETURN.0 as i32
-        }
-
         let mut builder = IrBuilder::new(UnitId::new(44));
         let file = builder.add_file("unit.php");
         let span = IrSpan::new(file, 0, 8);
@@ -3403,34 +3529,25 @@ mod tests {
         builder.register_function_name("declared_later", declared);
         builder.set_entry(entry);
         let unit = builder.finish();
-        let mut failed_engine = JitEngine::new();
-        let failed = failed_engine
-            .compile_function(
-                &unit,
-                entry,
-                JitCompileRequest::new("function-on-demand-failure"),
-            )
-            .expect("rejected compile result");
-        assert!(matches!(
-            failed.status,
-            crate::JitCompileStatus::Rejected { .. }
-        ));
         let deployment = crate::stable_ir_fingerprint(&unit);
         let entry_function = &unit.functions[entry.index()];
         let entry_key = crate::native_function_key(
-            deployment,
+            deployment.clone(),
             entry.raw(),
             entry_function.params.len(),
             entry_function.local_count,
             false,
             0,
         );
-        let manager = crate::global_code_manager().expect("code manager");
-        let cell = manager
-            .function_cell(&entry_key)
-            .expect("declared entry cell");
-        assert_eq!(cell.state(), crate::NativeIndirectionState::Declared);
-        assert!(manager.published_function(&entry_key).is_none());
+        let declared_function = &unit.functions[declared.index()];
+        let declared_key = crate::native_function_key(
+            deployment,
+            declared.raw(),
+            declared_function.params.len(),
+            declared_function.local_count,
+            false,
+            0,
+        );
 
         let mut engine = JitEngine::new();
         let result = engine
@@ -3438,17 +3555,26 @@ mod tests {
                 &unit,
                 entry,
                 JitCompileRequest::new("function-on-demand"),
-                crate::JitRuntimeHelperAddresses {
-                    baseline_call_dispatch: trampoline as *const () as usize,
-                    ..crate::JitRuntimeHelperAddresses::default()
-                },
+                crate::JitRuntimeHelperAddresses::default(),
             )
             .expect("entry compile result");
 
         assert!(matches!(result.status, crate::JitCompileStatus::Compiled));
         assert_eq!(engine.stats().compile_requests, 1);
         let handle = result.handle.as_ref().expect("entry handle");
-        assert_eq!(cell.state(), crate::NativeIndirectionState::Published);
+        let manager = crate::global_code_manager().expect("code manager");
+        let entry_cell = manager
+            .function_cell(&entry_key)
+            .expect("published entry cell");
+        assert_eq!(entry_cell.state(), crate::NativeIndirectionState::Published);
+        let declared_cell = manager
+            .function_cell(&declared_key)
+            .expect("declared same-unit callee cell");
+        assert_eq!(
+            declared_cell.state(),
+            crate::NativeIndirectionState::Declared
+        );
+        assert!(manager.published_function(&declared_key).is_none());
         let metadata = handle.region_state_metadata().expect("entry metadata");
         assert_eq!(metadata.function_entries.len(), 1);
         assert_eq!(metadata.function_entries[0].function, entry);
@@ -3466,10 +3592,6 @@ mod tests {
                 .iter()
                 .filter(|function| function.function.index() < unit.functions.len())
                 .all(|function| function.function == entry)
-        );
-        assert_eq!(
-            handle.invoke_i64(&[], crate::JIT_RUNTIME_ABI_HASH).unwrap(),
-            4
         );
     }
 

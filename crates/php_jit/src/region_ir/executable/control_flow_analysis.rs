@@ -186,6 +186,199 @@ fn stable_callable_local_entries(
     entries.into_iter().map(Option::unwrap_or_default).collect()
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct StableObjectLocalState {
+    local_classes: BTreeMap<LocalId, u32>,
+    external_classes: BTreeMap<LocalId, String>,
+    exact: BTreeSet<LocalId>,
+}
+
+/// Carries immutable object-class facts across PHP basic blocks. The region
+/// builder already tracked these facts within a block, but dropping them at a
+/// jump could leave a later fixed declared-property operation without a
+/// publication plan while lowering still consumed its continuation slot.
+fn stable_object_local_entries(
+    unit: &IrUnit,
+    function: &php_ir::IrFunction,
+) -> Vec<StableObjectLocalState> {
+    let mut predecessors = vec![Vec::<usize>::new(); function.blocks.len()];
+    for block in &function.blocks {
+        for successor in ir_block_successors(function, block.id) {
+            if let Some(incoming) = predecessors.get_mut(successor.index()) {
+                incoming.push(block.id.index());
+            }
+        }
+    }
+    for incoming in &mut predecessors {
+        incoming.sort_unstable();
+        incoming.dedup();
+    }
+
+    let mut entries = vec![None::<StableObjectLocalState>; function.blocks.len()];
+    let mut exits = vec![None::<StableObjectLocalState>; function.blocks.len()];
+    if !entries.is_empty() {
+        entries[0] = Some(StableObjectLocalState::default());
+    }
+    loop {
+        let mut changed = false;
+        for (block_index, block) in function.blocks.iter().enumerate() {
+            let incoming = if block_index == 0 {
+                StableObjectLocalState::default()
+            } else {
+                let mut reachable = predecessors[block_index]
+                    .iter()
+                    .filter_map(|predecessor| exits[*predecessor].as_ref());
+                let Some(first) = reachable.next() else {
+                    continue;
+                };
+                let mut incoming = first.clone();
+                for predecessor in reachable {
+                    incoming
+                        .local_classes
+                        .retain(|local, class| predecessor.local_classes.get(local) == Some(class));
+                    incoming.external_classes.retain(|local, class| {
+                        predecessor.external_classes.get(local) == Some(class)
+                    });
+                    incoming
+                        .exact
+                        .retain(|local| predecessor.exact.contains(local));
+                }
+                incoming
+            };
+            if entries[block_index].as_ref() != Some(&incoming) {
+                entries[block_index] = Some(incoming.clone());
+                changed = true;
+            }
+            let outgoing = transfer_stable_object_locals(unit, block, incoming);
+            if exits[block_index].as_ref() != Some(&outgoing) {
+                exits[block_index] = Some(outgoing);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    entries.into_iter().map(Option::unwrap_or_default).collect()
+}
+
+fn transfer_stable_object_locals(
+    unit: &IrUnit,
+    block: &php_ir::BasicBlock,
+    mut locals: StableObjectLocalState,
+) -> StableObjectLocalState {
+    let mut local_registers = BTreeMap::<RegId, u32>::new();
+    let mut external_registers = BTreeMap::<RegId, String>::new();
+    let mut exact_registers = BTreeSet::<RegId>::new();
+    for instruction in &block.instructions {
+        match &instruction.kind {
+            InstructionKind::Move {
+                dst,
+                src: Operand::Register(src),
+            } => {
+                if let Some(class) = local_registers.get(src).copied() {
+                    local_registers.insert(*dst, class);
+                }
+                if let Some(class) = external_registers.get(src).cloned() {
+                    external_registers.insert(*dst, class);
+                }
+                if exact_registers.contains(src) {
+                    exact_registers.insert(*dst);
+                }
+            }
+            InstructionKind::LoadLocal { dst, local }
+            | InstructionKind::LoadLocalQuiet { dst, local } => {
+                if let Some(class) = locals.local_classes.get(local).copied() {
+                    local_registers.insert(*dst, class);
+                }
+                if let Some(class) = locals.external_classes.get(local).cloned() {
+                    external_registers.insert(*dst, class);
+                }
+                if locals.exact.contains(local) {
+                    exact_registers.insert(*dst);
+                }
+            }
+            InstructionKind::StoreLocal { local, src } => {
+                if let Operand::Register(src) = src
+                    && let Some(class) = local_registers.get(src).copied()
+                {
+                    locals.local_classes.insert(*local, class);
+                } else {
+                    locals.local_classes.remove(local);
+                }
+                if let Operand::Register(src) = src
+                    && let Some(class) = external_registers.get(src).cloned()
+                {
+                    locals.external_classes.insert(*local, class);
+                } else {
+                    locals.external_classes.remove(local);
+                }
+                if matches!(src, Operand::Register(src) if exact_registers.contains(src)) {
+                    locals.exact.insert(*local);
+                } else {
+                    locals.exact.remove(local);
+                }
+            }
+            InstructionKind::NewObject {
+                dst, class_name, ..
+            } => {
+                if let Some((class, _)) = find_class(unit, class_name) {
+                    local_registers.insert(*dst, class);
+                } else {
+                    external_registers
+                        .insert(*dst, class_name.trim_start_matches('\\').to_owned());
+                }
+                exact_registers.insert(*dst);
+            }
+            InstructionKind::CloneObject {
+                dst,
+                object: Operand::Register(src),
+            } if exact_registers.contains(src) => {
+                if let Some(class) = local_registers.get(src).copied() {
+                    local_registers.insert(*dst, class);
+                    exact_registers.insert(*dst);
+                }
+                if let Some(class) = external_registers.get(src).cloned() {
+                    external_registers.insert(*dst, class);
+                    exact_registers.insert(*dst);
+                }
+            }
+            InstructionKind::BindReference { target, source } => {
+                for local in [target, source] {
+                    locals.local_classes.remove(local);
+                    locals.external_classes.remove(local);
+                    locals.exact.remove(local);
+                }
+            }
+            InstructionKind::BindGlobal { local, .. }
+            | InstructionKind::InitStaticLocal { local, .. }
+            | InstructionKind::UnsetLocal { local }
+            | InstructionKind::ForeachInitRef { local, .. } => {
+                locals.local_classes.remove(local);
+                locals.external_classes.remove(local);
+                locals.exact.remove(local);
+            }
+            InstructionKind::BindReferenceFromProperty { target, .. }
+            | InstructionKind::BindReferenceFromPropertyDim { target, .. }
+            | InstructionKind::BindReferenceFromDim { target, .. }
+            | InstructionKind::BindReferenceFromStaticPropertyDim { target, .. }
+            | InstructionKind::BindReferenceFromCall { target, .. }
+            | InstructionKind::BindReferenceFromMethodCall { target, .. } => {
+                locals.local_classes.remove(target);
+                locals.external_classes.remove(target);
+                locals.exact.remove(target);
+            }
+            InstructionKind::ForeachNextRef { value_local, .. } => {
+                locals.local_classes.remove(value_local);
+                locals.external_classes.remove(value_local);
+                locals.exact.remove(value_local);
+            }
+            _ => {}
+        }
+    }
+    locals
+}
+
 fn transfer_stable_callable_locals(
     unit: &IrUnit,
     block: &php_ir::BasicBlock,
@@ -387,4 +580,3 @@ fn merge_handler_stack(slot: &mut Option<Vec<u32>>, candidate: &[u32]) -> bool {
     existing.truncate(common);
     true
 }
-

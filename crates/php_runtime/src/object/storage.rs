@@ -65,6 +65,9 @@ struct PropertyLayout {
     slot_names: Vec<String>,
     /// storage name -> slot index.
     slot_by_name: HashMap<String, u32>,
+    /// Public declared names that may be consumed by a fixed-name native
+    /// property leaf without a scope/visibility continuation.
+    public_slot_names: std::collections::HashSet<String>,
     /// PHP array-cast key for each declared slot. Private and protected
     /// properties use Zend's NUL-delimited visibility encoding.
     array_cast_names: Vec<String>,
@@ -181,12 +184,23 @@ fn class_layout(class: &ClassEntry, display_name: &str) -> Rc<PropertyLayout> {
             )
         })
         .collect();
+    let public_slot_names = class
+        .properties
+        .iter()
+        .filter(|property| {
+            is_backed_instance_property(property)
+                && !property.flags.is_private
+                && !property.flags.is_protected
+        })
+        .map(|property| property.name.clone())
+        .collect::<std::collections::HashSet<_>>();
     LAYOUT_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let candidates = cache.entry(class.name.to_string()).or_default();
         if let Some(existing) = candidates.iter().find(|layout| {
             layout.slot_names == slot_names
                 && layout.array_cast_names == array_cast_names
+                && layout.public_slot_names == public_slot_names
                 && layout.debug_labels == debug_labels
         }) {
             return Rc::clone(existing);
@@ -211,6 +225,7 @@ fn class_layout(class: &ClassEntry, display_name: &str) -> Rc<PropertyLayout> {
             layout_id,
             slot_names,
             slot_by_name,
+            public_slot_names,
             array_cast_names,
             debug_labels,
         });
@@ -231,6 +246,7 @@ struct ObjectStorage {
     native_magic_isset: Option<bool>,
     native_countable: bool,
     native_traversable: bool,
+    native_allows_dynamic_properties: bool,
     id_guard: Option<ObjectIdGuard>,
     layout: Rc<PropertyLayout>,
     /// Declared property slots; `None` means unset (absent), which is
@@ -559,6 +575,8 @@ impl ObjectRef {
                                 || name.eq_ignore_ascii_case("iterator")
                                 || name.eq_ignore_ascii_case("iteratoraggregate")
                         }),
+                    native_allows_dynamic_properties: class.flags.allows_dynamic_properties
+                        || class.name.eq_ignore_ascii_case("stdClass"),
                     id_guard: Some(ObjectIdGuard::new(id)),
                     layout,
                     declared_slots,
@@ -588,6 +606,7 @@ impl ObjectRef {
             layout_id: 0,
             slot_names: Vec::new(),
             slot_by_name: HashMap::new(),
+            public_slot_names: std::collections::HashSet::new(),
             array_cast_names: Vec::new(),
             debug_labels: HashMap::new(),
         });
@@ -612,6 +631,7 @@ impl ObjectRef {
                     native_magic_isset: None,
                     native_countable: source.is_native_countable(),
                     native_traversable: source.is_native_traversable(),
+                    native_allows_dynamic_properties: source.allows_native_dynamic_properties(),
                     id_guard: None,
                     layout: empty_layout,
                     declared_slots: Vec::new(),
@@ -687,6 +707,13 @@ impl ObjectRef {
         self.cell.storage.borrow().native_traversable
     }
 
+    /// Returns the publication-time permission to create undeclared
+    /// properties without entering magic/deprecation semantics.
+    #[must_use]
+    pub fn allows_native_dynamic_properties(&self) -> bool {
+        self.cell.storage.borrow().native_allows_dynamic_properties
+    }
+
     /// Returns whether this object represents an enum case.
     #[must_use]
     pub fn is_enum(&self) -> bool {
@@ -731,6 +758,7 @@ impl ObjectRef {
                     native_magic_isset: storage.native_magic_isset,
                     native_countable: storage.native_countable,
                     native_traversable: storage.native_traversable,
+                    native_allows_dynamic_properties: storage.native_allows_dynamic_properties,
                     id_guard: Some(ObjectIdGuard::new(id)),
                     layout: Rc::clone(&storage.layout),
                     declared_slots: storage.declared_slots.clone(),
@@ -1090,6 +1118,52 @@ impl ObjectRef {
         }
         let slots = storage.native_declared_slots.as_ref()?;
         Some((slots.as_ptr().cast_mut(), slots.len()))
+    }
+
+    /// Resolves one immutable declared-property name to its stable native
+    /// cell. The returned pointer remains valid until the object is destroyed.
+    #[must_use]
+    pub fn native_declared_property_slot_location(
+        &self,
+        layout_id: u64,
+        name: &str,
+    ) -> Option<*mut NativeDeclaredPropertySlot> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+        {
+            return None;
+        }
+        let index = *storage.layout.slot_by_name.get(name)? as usize;
+        let slots = storage.native_declared_slots.as_ref()?;
+        slots
+            .get(index)
+            .map(|slot| std::ptr::from_ref(slot).cast_mut())
+    }
+
+    /// Resolves a public declared property without consulting request symbol
+    /// tables. Non-public names deliberately return `None` so their scope and
+    /// visibility semantics stay on the baseline-native continuation.
+    #[must_use]
+    pub fn native_public_declared_property_slot_location(
+        &self,
+        layout_id: u64,
+        name: &str,
+    ) -> Option<*mut NativeDeclaredPropertySlot> {
+        let storage = self.cell.storage.borrow();
+        if storage.layout.layout_id != layout_id
+            || !storage.layout.public_slot_names.contains(name)
+            || !storage.declared_slots.is_empty()
+            || !storage.dynamic_properties.is_empty()
+        {
+            return None;
+        }
+        let index = *storage.layout.slot_by_name.get(name)? as usize;
+        let slots = storage.native_declared_slots.as_ref()?;
+        slots
+            .get(index)
+            .map(|slot| std::ptr::from_ref(slot).cast_mut())
     }
 
     /// Reads one authoritative native dynamic-property cell. The outer

@@ -191,7 +191,7 @@ impl Default for NativeFrameArena {
 }
 
 impl NativeFrameArena {
-    pub(super) fn allocate(&mut self, bytes: usize, alignment: usize) -> Result<usize, String> {
+    pub(crate) fn allocate(&mut self, bytes: usize, alignment: usize) -> Result<usize, String> {
         if self.allocations.len() >= FRAME_ARENA_MAX_ACTIVE_ALLOCATIONS {
             return Err(format!(
                 "E_PHP_VM_NATIVE_FRAME_DEPTH: active PHP frame storage exceeds {} allocations",
@@ -266,7 +266,7 @@ impl NativeFrameArena {
         Ok(address)
     }
 
-    pub(super) fn release(&mut self, address: usize) -> Result<(), String> {
+    pub(crate) fn release(&mut self, address: usize) -> Result<(), String> {
         let Some(allocation) = self.allocations.pop() else {
             return Err("E_PHP_VM_NATIVE_FRAME_ORDER: release from empty arena".to_owned());
         };

@@ -29,9 +29,15 @@ impl PhpExecutor {
     }
 
     /// Creates an executor with explicit defaults.
+    ///
+    /// Ordinary execution publishes optimizing code once a function proves
+    /// hot. The compile runs on the shared background scheduler, which starts
+    /// lazily on its first job, so a script that never reaches the tiering
+    /// threshold pays nothing and no request ever waits for a compile.
     #[must_use]
     pub fn with_options(options: PhpExecutorOptions) -> Self {
-        let worker_state = VmWorkerState::new(options.vm_options.tiering.clone());
+        let worker_state =
+            VmWorkerState::new_with_background_tiering(options.vm_options.tiering.clone());
         Self::with_options_and_worker_state(options, worker_state)
     }
 
@@ -589,24 +595,38 @@ echo $classAvailable && (new ReflectionClass($class))->hasProperty($member) ? "p
         assert_eq!(first.status, PhpExecutionStatus::Success, "{first:#?}");
         assert_eq!(first.stdout, b"32\n");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while worker.tiering_stats().native_compiled_functions < 4
+        while worker.tiering_stats().native_compiled_functions < 2
             && std::time::Instant::now() < deadline
         {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(
-            worker.tiering_stats().native_compiled_functions >= 4,
-            "the completed dynamic request did not finish its bounded optimizing batch"
+            worker.tiering_stats().native_compiled_functions >= 2,
+            "the hot include leaf and its unit entry did not finish optimizing"
         );
 
+        // The first post-include request fixes the now-visible cross-unit
+        // signature and schedules that exact optimizer key. Wait for that
+        // publication product before asserting the next request's tier.
+        let cache_before_linked = worker.native_compile_cache_stats();
+        let linked = execute();
+        assert_eq!(linked.status, PhpExecutionStatus::Success, "{linked:#?}");
+        assert_eq!(linked.stdout, b"32\n");
+        let linked_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while worker.native_compile_cache_stats().insertions <= cache_before_linked.insertions
+            && std::time::Instant::now() < linked_deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let warm = execute();
         assert_eq!(warm.status, PhpExecutionStatus::Success, "{warm:#?}");
         assert_eq!(warm.stdout, b"32\n");
         assert!(
-            warm.counters
-                .as_ref()
-                .is_some_and(|counters| counters.native_optimizing_entry_executions >= 32),
-            "warm dynamic calls did not consume the published optimizing entry: {warm:#?}"
+            warm.counters.as_ref().is_some_and(|counters| {
+                counters.native_optimizing_entry_executions >= 1
+                    && counters.native_region_side_exits == 0
+            }),
+            "the linked generated graph did not remain optimizing and guard-free: {warm:#?}"
         );
         std::fs::remove_dir_all(root).expect("remove fixture");
     }
@@ -677,24 +697,37 @@ echo $classAvailable && (new ReflectionClass($class))->hasProperty($member) ? "p
         assert_eq!(first.status, PhpExecutionStatus::Success, "{first:#?}");
         assert_eq!(first.stdout, b"496\n");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while worker.tiering_stats().native_compiled_functions < 7
+        while worker.tiering_stats().native_compiled_functions < 2
             && std::time::Instant::now() < deadline
         {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(
-            worker.tiering_stats().native_compiled_functions >= 7,
-            "the completed request did not finish its optimizing batch"
+            worker.tiering_stats().native_compiled_functions >= 2,
+            "the admitted receiver family did not finish optimizing"
         );
 
+        // The first post-include request fixes the now-visible cross-unit
+        // signatures and schedules their exact optimizer keys.
+        let cache_before_linked = worker.native_compile_cache_stats();
+        let linked = execute();
+        assert_eq!(linked.status, PhpExecutionStatus::Success, "{linked:#?}");
+        assert_eq!(linked.stdout, b"496\n");
+        let linked_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while worker.native_compile_cache_stats().insertions <= cache_before_linked.insertions
+            && std::time::Instant::now() < linked_deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let warm = execute();
         assert_eq!(warm.status, PhpExecutionStatus::Success, "{warm:#?}");
         assert_eq!(warm.stdout, b"496\n");
         assert!(
-            warm.counters
-                .as_ref()
-                .is_some_and(|counters| counters.native_optimizing_entry_executions >= 32),
-            "the global receiver fixture did not execute optimizing entries: {warm:#?}"
+            warm.counters.as_ref().is_some_and(|counters| {
+                counters.native_optimizing_entry_executions >= 1
+                    && counters.native_region_side_exits == 0
+            }),
+            "the admitted unit entry did not remain optimizing and guard-free: {warm:#?}"
         );
         std::fs::remove_dir_all(root).expect("remove fixture");
     }

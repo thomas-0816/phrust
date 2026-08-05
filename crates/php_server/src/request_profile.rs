@@ -119,8 +119,8 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
             Value::from(counters.native_execution_entries),
         );
         native.insert(
-            "baseline_entry_executions".to_owned(),
-            Value::from(counters.native_baseline_entry_executions),
+            "generic_entry_executions".to_owned(),
+            Value::from(counters.native_generic_entry_executions),
         );
         native.insert(
             "optimizing_entry_executions".to_owned(),
@@ -136,7 +136,7 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
             .filter(|(reason, _)| reason.starts_with("optimizer_"))
             .map(|(_, nanos)| *nanos)
             .sum::<u64>();
-        let baseline_hot_time_share_pct = if counters.native_execution_time_nanos == 0 {
+        let generic_hot_time_share_pct = if counters.native_execution_time_nanos == 0 {
             0.0
         } else if counters.native_optimizing_entry_executions == 0 {
             100.0
@@ -145,8 +145,8 @@ fn request_profile_json(trace: &PerfTraceEvent, counters: Option<&VmCounters>) -
                 / counters.native_execution_time_nanos as f64
         };
         native.insert(
-            "baseline_hot_time_share_pct".to_owned(),
-            Value::from(baseline_hot_time_share_pct),
+            "generic_hot_time_share_pct".to_owned(),
+            Value::from(generic_hot_time_share_pct),
         );
         native.insert(
             "region_side_exits".to_owned(),

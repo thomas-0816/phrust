@@ -65,7 +65,7 @@ impl Default for VmOptions {
             trace_includes: trace_includes_from_env(),
             collect_counters: false,
             inline_caches: InlineCacheMode::Off,
-            native_optimization: NativeOptimizationPolicy::Baseline,
+            native_optimization: NativeOptimizationPolicy::Generic,
             native_threshold: tiering.function_entry_threshold,
             native_blacklist: NativeBlacklistMode::On,
             native_dump_clif: None,
@@ -81,10 +81,7 @@ impl Default for VmOptions {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NativeOptimizationPolicy {
     #[default]
-    Baseline,
-    /// Semantically complete optimizing lowering with lower compiler effort,
-    /// used while a hotter version is built in the background.
-    TieredBaseline,
+    Generic,
     Optimizing,
 }
 
@@ -92,8 +89,7 @@ impl NativeOptimizationPolicy {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Baseline => "baseline",
-            Self::TieredBaseline => "tiered-baseline",
+            Self::Generic => "generic",
             Self::Optimizing => "optimizing",
         }
     }
@@ -106,8 +102,7 @@ impl NativeOptimizationPolicy {
     #[must_use]
     pub const fn opt_level(self) -> u8 {
         match self {
-            Self::Baseline => 0,
-            Self::TieredBaseline => 1,
+            Self::Generic => 0,
             Self::Optimizing => 2,
         }
     }

@@ -618,7 +618,8 @@ pub fn native_strtr_into(subject: &[u8], from: &[u8], to: &[u8], output: &mut [u
 
 fn baseline_strtr(subject: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     let mut output = vec![0; subject.len()];
-    debug_assert!(native_strtr_into(subject, from, to, &mut output));
+    let transformed = native_strtr_into(subject, from, to, &mut output);
+    debug_assert!(transformed);
     output
 }
 
@@ -2012,6 +2013,16 @@ pub(in crate::builtins::modules) fn builtin_htmlspecialchars(
 }
 
 pub const NATIVE_HTML_ESCAPE_DEFAULT_FLAGS: i64 = HTML_ESCAPE_DEFAULT_FLAGS;
+
+/// Returns the current deterministic PHP translation table as native byte
+/// pairs. No `Value` or `PhpArray` is constructed at this boundary.
+pub fn native_html_translation_entries(
+    table: i64,
+    flags: i64,
+    encoding: Option<&[u8]>,
+) -> Vec<(&'static [u8], &'static [u8])> {
+    direct_html_translation_table_entries(table, flags, encoding)
+}
 
 /// Escapes one authoritative native byte string with PHP's HTML-special-char
 /// flag semantics.

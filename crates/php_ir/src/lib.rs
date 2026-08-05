@@ -9,7 +9,7 @@
 /// Bump this whenever lowering starts emitting different (still-compatible)
 /// IR for the same source, so content-addressed native caches recompile
 /// instead of serving the older lowering forever.
-pub const IR_LOWERING_REVISION: u32 = 6;
+pub const IR_LOWERING_REVISION: u32 = 7;
 
 pub mod block;
 pub mod builder;

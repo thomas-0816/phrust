@@ -6,7 +6,7 @@ pub use php_runtime::api::JitHelperId;
 
 /// Stable ABI fingerprint for the helper-symbol registry. Bumped whenever the
 /// registry's symbol set or any helper ABI changes.
-pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x08c1_4820_0000_0077;
+pub const JIT_HELPER_REGISTRY_ABI_HASH: u64 = 0x08c1_4820_0000_0098;
 
 /// Helper argument kind.
 #[repr(u32)]
@@ -65,7 +65,6 @@ pub struct JitHelperSymbol {
     pub description: &'static str,
 }
 
-const CONTEXT_VALUE_ARGS: &[JitHelperArgKind] = &[JitHelperArgKind::Value];
 const NATIVE_CONTEXT_POINTERS_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::VmContext,
     JitHelperArgKind::U64,
@@ -83,7 +82,6 @@ const NATIVE_FRAME_ALLOC_ARGS: &[JitHelperArgKind] = &[
 ];
 const NATIVE_FRAME_RELEASE_ARGS: &[JitHelperArgKind] =
     &[JitHelperArgKind::VmContext, JitHelperArgKind::U64];
-const NATIVE_OP_0_ARGS: &[JitHelperArgKind] = &[JitHelperArgKind::I64];
 const NATIVE_OP_1_ARGS: &[JitHelperArgKind] = &[JitHelperArgKind::I64, JitHelperArgKind::Value];
 const NATIVE_OP_2_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::I64,
@@ -103,46 +101,15 @@ const NATIVE_OP_4_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::Value,
     JitHelperArgKind::Value,
 ];
-const NATIVE_OP_5_ARGS: &[JitHelperArgKind] = &[
+const NATIVE_DECLARED_RETURN_ARGS: &[JitHelperArgKind] =
+    &[JitHelperArgKind::Value, JitHelperArgKind::I64];
+const NATIVE_DECLARED_ARGUMENT_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::Value,
     JitHelperArgKind::I64,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-    JitHelperArgKind::Value,
-];
-const NATIVE_CONTEXT_VALUE_OUT_ARGS: &[JitHelperArgKind] =
-    &[JitHelperArgKind::Value, JitHelperArgKind::U64];
-const NATIVE_CONTEXT_VALUE_OUT_4_ARGS: &[JitHelperArgKind] = &[
-    JitHelperArgKind::Value,
-    JitHelperArgKind::U64,
-    JitHelperArgKind::U64,
-    JitHelperArgKind::U64,
-    JitHelperArgKind::U64,
+    JitHelperArgKind::I64,
 ];
 const NATIVE_STRING_BYTES_ARGS: &[JitHelperArgKind] =
     &[JitHelperArgKind::U64, JitHelperArgKind::I64];
-const NATIVE_BUILTIN_DISPATCH_ARGS: &[JitHelperArgKind] = &[
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::U64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::U64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::U64,
-];
-const NATIVE_SEMANTIC_DISPATCH_ARGS: &[JitHelperArgKind] = &[
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::U64,
-    JitHelperArgKind::I64,
-    JitHelperArgKind::U64,
-];
 const NATIVE_EXACT_BUILTIN_6_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::I64,
     JitHelperArgKind::I64,
@@ -157,6 +124,12 @@ const NATIVE_EXACT_BUILTIN_6_ARGS: &[JitHelperArgKind] = &[
 ];
 const NATIVE_EXACT_ARGUMENT_SLICE_ARGS: &[JitHelperArgKind] =
     &[JitHelperArgKind::I64, JitHelperArgKind::U64];
+const NATIVE_EXACT_COMPACT_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::I64,
+];
 const NATIVE_UNARY_F64_ARGS: &[JitHelperArgKind] = &[JitHelperArgKind::F64];
 const NATIVE_BINARY_F64_ARGS: &[JitHelperArgKind] = &[JitHelperArgKind::F64, JitHelperArgKind::F64];
 const NATIVE_ROUND_F64_ARGS: &[JitHelperArgKind] = &[
@@ -169,10 +142,73 @@ const NATIVE_ECHO_BYTES_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::U64,
     JitHelperArgKind::U64,
 ];
+const NATIVE_UNDEFINED_VARIABLE_WARNING_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::VmContext,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::I64,
+    JitHelperArgKind::I64,
+];
+const NATIVE_UNDEFINED_ARRAY_KEY_WARNING_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::VmContext,
+    JitHelperArgKind::Value,
+    JitHelperArgKind::I64,
+    JitHelperArgKind::I64,
+];
+const NATIVE_GLOBAL_BINDING_UNSET_ARGS: &[JitHelperArgKind] =
+    &[JitHelperArgKind::VmContext, JitHelperArgKind::Value];
+const NATIVE_GLOBAL_BINDING_REBIND_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::VmContext,
+    JitHelperArgKind::Value,
+    JitHelperArgKind::Value,
+];
+const NATIVE_STATIC_PROPERTY_CONTRACT_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::VmContext,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::Value,
+];
+const NATIVE_TYPED_STATIC_REFERENCE_BIND_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::VmContext,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::Value,
+];
+const NATIVE_TYPED_REFERENCE_STORE_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::VmContext,
+    JitHelperArgKind::Value,
+    JitHelperArgKind::Value,
+];
+const NATIVE_TYPED_REFERENCE_ARRAY_INIT_ARGS: &[JitHelperArgKind] =
+    &[JitHelperArgKind::VmContext, JitHelperArgKind::Value];
+const NATIVE_UNDEFINED_CONSTANT_ARGS: &[JitHelperArgKind] =
+    &[JitHelperArgKind::VmContext, JitHelperArgKind::U64];
 const NATIVE_PREPARED_EXCEPTION_ARGS: &[JitHelperArgKind] = &[
     JitHelperArgKind::VmContext,
     JitHelperArgKind::U64,
     JitHelperArgKind::Value,
+    JitHelperArgKind::Value,
+    JitHelperArgKind::Value,
+];
+const NATIVE_EXACT_ARITHMETIC_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::VmContext,
+    JitHelperArgKind::Value,
+    JitHelperArgKind::Value,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::I64,
+    JitHelperArgKind::I64,
+];
+const NATIVE_THROWABLE_ACCESSOR_ARGS: &[JitHelperArgKind] =
+    &[JitHelperArgKind::VmContext, JitHelperArgKind::Value];
+const NATIVE_RESOLVE_CALLABLE_ARGS: &[JitHelperArgKind] = &[
+    JitHelperArgKind::VmContext,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
+    JitHelperArgKind::U64,
 ];
 
 macro_rules! exact_control_helper {
@@ -248,265 +284,22 @@ macro_rules! exact_void_helper {
 /// Stable helper registry.
 pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     JitHelperSymbol {
-        id: JitHelperId(14),
-        name: "phrust_baseline_native_call_dispatch",
-        args: NATIVE_CONTEXT_POINTERS_ARGS,
-        returns: JitHelperReturnKind::Status,
-        can_throw: true,
-        has_side_effects: true,
-        description: "typed native userland and builtin call dispatcher",
-    },
-    JitHelperSymbol {
         id: JitHelperId(15),
-        name: "phrust_jit_native_dynamic_code",
+        name: "phrust_cold_dynamic_unit_resolve",
         args: NATIVE_CONTEXT_POINTERS_ARGS,
         returns: JitHelperReturnKind::Status,
         can_throw: true,
         has_side_effects: true,
-        description: "native include, eval, and declaration compiler boundary",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(16),
-        name: "phrust_baseline_native_unary",
-        args: NATIVE_OP_1_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "baseline-only typed PHP unary compatibility operation",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(17),
-        name: "phrust_baseline_native_binary",
-        args: NATIVE_OP_4_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "baseline-only typed PHP binary compatibility operation",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(18),
-        name: "phrust_baseline_native_compare",
-        args: NATIVE_OP_2_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: false,
-        description: "baseline-only typed PHP comparison compatibility operation",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(19),
-        name: "phrust_baseline_native_cast",
-        args: NATIVE_OP_1_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "baseline-only typed PHP cast compatibility operation",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(20),
-        name: "phrust_native_echo",
-        args: CONTEXT_VALUE_ARGS,
-        returns: JitHelperReturnKind::Status,
-        can_throw: false,
-        has_side_effects: true,
-        description: "PHP output operation",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(21),
-        name: "phrust_native_local_fetch",
-        args: NATIVE_OP_5_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "local and superglobal load",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(22),
-        name: "phrust_native_local_store",
-        args: NATIVE_OP_4_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "local or reference-cell store",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(23),
-        name: "phrust_native_value_release",
-        args: CONTEXT_VALUE_ARGS,
-        returns: JitHelperReturnKind::Status,
-        can_throw: false,
-        has_side_effects: true,
-        description: "cold final release of one request-owned value",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(24),
-        name: "phrust_native_reference_bind",
-        args: NATIVE_OP_3_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP reference binding",
+        description: "cold include/eval compiler and native-entry publication resolver",
     },
     JitHelperSymbol {
         id: JitHelperId(25),
-        name: "phrust_native_return_check",
-        args: NATIVE_OP_2_ARGS,
+        name: "phrust_native_declared_return_contract",
+        args: NATIVE_DECLARED_RETURN_ARGS,
         returns: JitHelperReturnKind::ValueStatus,
         can_throw: true,
         has_side_effects: true,
         description: "declared return-type enforcement",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(26),
-        name: "phrust_native_exception_new",
-        args: NATIVE_OP_3_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "throwable materialization",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(27),
-        name: "phrust_native_array_new",
-        args: NATIVE_OP_0_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP array allocation",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(28),
-        name: "phrust_native_object_new",
-        args: NATIVE_OP_0_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP object allocation",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(29),
-        name: "phrust_native_property_fetch",
-        args: NATIVE_OP_3_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "object property read",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(30),
-        name: "phrust_native_property_assign",
-        args: NATIVE_OP_4_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "object property write",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(31),
-        name: "phrust_native_object_clone",
-        args: NATIVE_OP_1_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP object clone",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(32),
-        name: "phrust_native_object_clone_with",
-        args: NATIVE_OP_2_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP object clone with replacement properties",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(33),
-        name: "phrust_native_array_insert",
-        args: NATIVE_OP_3_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP array insert or append",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(34),
-        name: "phrust_native_array_fetch",
-        args: NATIVE_OP_2_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP array dimension fetch",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(35),
-        name: "phrust_native_array_unset",
-        args: NATIVE_OP_2_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP array dimension unset",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(36),
-        name: "phrust_native_array_spread",
-        args: NATIVE_OP_2_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP array spread",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(37),
-        name: "phrust_native_foreach_init",
-        args: NATIVE_OP_3_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "foreach iterator initialization",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(38),
-        name: "phrust_native_foreach_next",
-        args: NATIVE_CONTEXT_VALUE_OUT_4_ARGS,
-        returns: JitHelperReturnKind::Status,
-        can_throw: true,
-        has_side_effects: true,
-        description: "foreach iterator advance",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(39),
-        name: "phrust_native_foreach_cleanup",
-        args: CONTEXT_VALUE_ARGS,
-        returns: JitHelperReturnKind::Status,
-        can_throw: false,
-        has_side_effects: true,
-        description: "foreach iterator release",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(40),
-        name: "phrust_native_constant_fetch",
-        args: NATIVE_OP_2_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "runtime constant lookup",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(41),
-        name: "phrust_native_truthy",
-        args: NATIVE_CONTEXT_VALUE_OUT_ARGS,
-        returns: JitHelperReturnKind::Status,
-        can_throw: true,
-        has_side_effects: false,
-        description: "PHP truthiness conversion",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(42),
-        name: "phrust_native_runtime_fatal",
-        args: &[JitHelperArgKind::I64, JitHelperArgKind::I64],
-        returns: JitHelperReturnKind::Status,
-        can_throw: false,
-        has_side_effects: true,
-        description: "deterministic PHP runtime fatal publication",
     },
     JitHelperSymbol {
         id: JitHelperId(43),
@@ -537,8 +330,8 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     },
     JitHelperSymbol {
         id: JitHelperId(46),
-        name: "phrust_native_argument_check",
-        args: NATIVE_OP_5_ARGS,
+        name: "phrust_native_declared_argument_contract",
+        args: NATIVE_DECLARED_ARGUMENT_ARGS,
         returns: JitHelperReturnKind::ValueStatus,
         can_throw: true,
         has_side_effects: true,
@@ -552,60 +345,6 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
         can_throw: true,
         has_side_effects: true,
         description: "compile-on-demand resolver for one statically known PHP callee",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(48),
-        name: "phrust_native_type_predicate",
-        args: NATIVE_OP_1_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: false,
-        has_side_effects: false,
-        description: "direct PHP type predicate",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(49),
-        name: "phrust_native_stable_length",
-        args: NATIVE_OP_3_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: false,
-        description: "typed strlen/count fallback for stable value views",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(50),
-        name: "phrust_native_array_insert_local",
-        args: NATIVE_OP_3_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: true,
-        has_side_effects: true,
-        description: "PHP array insert consuming and replacing one local owner",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(51),
-        name: "phrust_native_string_predicate",
-        args: NATIVE_OP_2_ARGS,
-        returns: JitHelperReturnKind::ValueStatus,
-        can_throw: false,
-        has_side_effects: false,
-        description: "direct PHP string contains/starts-with/ends-with predicate",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(52),
-        name: "phrust_baseline_native_builtin_dispatch",
-        args: NATIVE_BUILTIN_DISPATCH_ARGS,
-        returns: JitHelperReturnKind::Status,
-        can_throw: true,
-        has_side_effects: true,
-        description: "direct stable-ID builtin dispatch without a generic call frame",
-    },
-    JitHelperSymbol {
-        id: JitHelperId(53),
-        name: "phrust_baseline_native_semantic_dispatch",
-        args: NATIVE_SEMANTIC_DISPATCH_ARGS,
-        returns: JitHelperReturnKind::Status,
-        can_throw: true,
-        has_side_effects: true,
-        description: "direct typed semantic dispatch without a generic call frame",
     },
     JitHelperSymbol {
         id: JitHelperId(55),
@@ -1951,7 +1690,7 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     JitHelperSymbol {
         id: JitHelperId(212),
         name: "phrust_native_count",
-        args: NATIVE_OP_2_ARGS,
+        args: NATIVE_OP_3_ARGS,
         returns: JitHelperReturnKind::ControlResult,
         can_throw: true,
         has_side_effects: false,
@@ -1960,7 +1699,7 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     JitHelperSymbol {
         id: JitHelperId(213),
         name: "phrust_native_sizeof",
-        args: NATIVE_OP_2_ARGS,
+        args: NATIVE_OP_3_ARGS,
         returns: JitHelperReturnKind::ControlResult,
         can_throw: true,
         has_side_effects: false,
@@ -2357,7 +2096,15 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     exact_control_helper!(281, "phrust_native_bindec"),
     exact_control_helper!(282, "phrust_native_checkdate"),
     exact_control_helper!(283, "phrust_native_class_implements"),
-    exact_control_helper!(284, "phrust_native_compact"),
+    JitHelperSymbol {
+        id: JitHelperId(284),
+        name: "phrust_native_compact",
+        args: NATIVE_EXACT_COMPACT_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact native frame projection from published function metadata",
+    },
     exact_unary_f64_helper!(285, "phrust_native_cos_f64"),
     exact_unary_f64_helper!(286, "phrust_native_cosh_f64"),
     exact_control_helper!(287, "phrust_native_date"),
@@ -2450,7 +2197,15 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     exact_control_helper!(375, "phrust_native_prepared_closure_new"),
     exact_control_helper!(376, "phrust_native_prepared_object_new"),
     exact_unary_f64_helper!(377, "phrust_native_rad2deg_f64"),
-    exact_control_helper!(378, "phrust_native_resolve_callable"),
+    JitHelperSymbol {
+        id: JitHelperId(378),
+        name: "phrust_native_resolve_callable",
+        args: NATIVE_RESOLVE_CALLABLE_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "fixed callable publication with complete reference-parameter bitmap",
+    },
     exact_round_f64_helper!(379, "phrust_native_round_f64"),
     exact_control_helper!(380, "phrust_native_session_abort"),
     exact_control_helper!(381, "phrust_native_session_cache_expire"),
@@ -2545,6 +2300,363 @@ pub const JIT_HELPER_SYMBOLS: &[JitHelperSymbol] = &[
     exact_control_helper!(470, "phrust_native_is_uploaded_file"),
     exact_control_helper!(471, "phrust_native_tempnam"),
     exact_control_helper!(472, "phrust_native_tmpfile"),
+    JitHelperSymbol {
+        id: JitHelperId(473),
+        name: "phrust_native_undefined_variable_warning",
+        args: NATIVE_UNDEFINED_VARIABLE_WARNING_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact undefined-variable diagnostic",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(474),
+        name: "phrust_native_acquire_method_callable",
+        args: &[
+            JitHelperArgKind::VmContext,
+            JitHelperArgKind::Value,
+            JitHelperArgKind::U64,
+            JitHelperArgKind::U64,
+            JitHelperArgKind::U64,
+            JitHelperArgKind::I64,
+        ],
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact scoped statically named method-callable resolution",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(475),
+        name: "phrust_native_acquire_class_plan",
+        args: &[
+            JitHelperArgKind::VmContext,
+            JitHelperArgKind::Value,
+            JitHelperArgKind::I64,
+        ],
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact published class-allocation-plan resolution",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(476),
+        name: "phrust_native_undefined_array_key_warning",
+        args: NATIVE_UNDEFINED_ARRAY_KEY_WARNING_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact undefined-array-key diagnostic",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(477),
+        name: "phrust_native_var_dump",
+        args: NATIVE_EXACT_ARGUMENT_SLICE_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact variadic var_dump over authoritative native values",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(478),
+        name: "phrust_native_throwable_get_message",
+        args: NATIVE_THROWABLE_ACCESSOR_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: false,
+        description: "exact internal Throwable message accessor",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(479),
+        name: "phrust_native_throwable_get_code",
+        args: NATIVE_THROWABLE_ACCESSOR_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: false,
+        description: "exact internal Throwable code accessor",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(480),
+        name: "phrust_native_throwable_get_file",
+        args: NATIVE_THROWABLE_ACCESSOR_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: false,
+        description: "exact internal Throwable file accessor",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(481),
+        name: "phrust_native_throwable_get_line",
+        args: NATIVE_THROWABLE_ACCESSOR_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: false,
+        description: "exact internal Throwable line accessor",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(482),
+        name: "phrust_native_throwable_get_previous",
+        args: NATIVE_THROWABLE_ACCESSOR_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: false,
+        description: "exact internal Throwable previous accessor",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(483),
+        name: "phrust_native_throwable_get_trace",
+        args: NATIVE_THROWABLE_ACCESSOR_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: false,
+        description: "exact internal Throwable trace accessor",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(484),
+        name: "phrust_native_named_dynamic_property_slot",
+        args: NATIVE_OP_3_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: true,
+        description: "stable fixed-name dynamic-property native slot resolver",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(485),
+        name: "phrust_native_type_name",
+        args: NATIVE_OP_2_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact dynamic PHP type-name query",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(486),
+        name: "phrust_native_add",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP addition",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(487),
+        name: "phrust_native_subtract",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP subtraction",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(488),
+        name: "phrust_native_multiply",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP multiplication",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(489),
+        name: "phrust_native_divide",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP division",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(490),
+        name: "phrust_native_modulo",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP modulo",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(491),
+        name: "phrust_native_power",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP power",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(492),
+        name: "phrust_native_exact_bit_and",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP bitwise and",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(493),
+        name: "phrust_native_exact_bit_or",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP bitwise or",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(494),
+        name: "phrust_native_exact_bit_xor",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP bitwise xor",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(495),
+        name: "phrust_native_shift_left",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP left shift",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(496),
+        name: "phrust_native_shift_right",
+        args: NATIVE_EXACT_ARITHMETIC_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact operation-specific PHP right shift",
+    },
+    exact_control_helper!(497, "phrust_native_move_uploaded_file"),
+    exact_control_helper!(498, "phrust_native_usleep"),
+    exact_control_helper!(499, "phrust_native_set_time_limit"),
+    JitHelperSymbol {
+        id: JitHelperId(500),
+        name: "phrust_native_array_offset_warning",
+        args: NATIVE_UNDEFINED_ARRAY_KEY_WARNING_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact non-array offset diagnostic over an authoritative native value",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(501),
+        name: "phrust_native_global_binding_unset",
+        args: NATIVE_GLOBAL_BINDING_UNSET_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact cold invalidation of one published top-level global reference",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(502),
+        name: "phrust_native_static_property_contract",
+        args: NATIVE_STATIC_PROPERTY_CONTRACT_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact typed or missing static-property contract over native values",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(503),
+        name: "phrust_native_typed_static_reference_bind",
+        args: NATIVE_TYPED_STATIC_REFERENCE_BIND_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "attach one immutable typed-static contract to a native reference",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(504),
+        name: "phrust_native_typed_reference_store",
+        args: NATIVE_TYPED_REFERENCE_STORE_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact constrained store through an authoritative native reference",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(505),
+        name: "phrust_native_typed_reference_array_init",
+        args: NATIVE_TYPED_REFERENCE_ARRAY_INIT_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact array auto-initialization through a constrained native reference",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(506),
+        name: "phrust_native_undefined_constant",
+        args: NATIVE_UNDEFINED_CONSTANT_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "raise one source-prepared unresolved fixed-constant Error",
+    },
+    exact_control_helper!(507, "phrust_native_iconv"),
+    exact_control_helper!(508, "phrust_native_normalizer_normalize"),
+    exact_control_helper!(509, "phrust_native_normalizer_is_normalized"),
+    exact_control_helper!(510, "phrust_native_date_create"),
+    exact_control_helper!(511, "phrust_native_get_html_translation_table"),
+    exact_control_helper!(512, "phrust_native_trigger_error"),
+    exact_control_helper!(513, "phrust_native_uniqid"),
+    exact_control_helper!(514, "phrust_native_finfo_open"),
+    exact_control_helper!(515, "phrust_native_finfo_close"),
+    exact_control_helper!(516, "phrust_native_finfo_buffer"),
+    exact_control_helper!(517, "phrust_native_finfo_file"),
+    exact_control_helper!(518, "phrust_native_finfo_set_flags"),
+    exact_control_helper!(519, "phrust_native_exif_imagetype"),
+    exact_control_helper!(520, "phrust_native_image_type_to_mime_type"),
+    exact_control_helper!(521, "phrust_native_getimagesize"),
+    exact_control_helper!(522, "phrust_native_phpinfo"),
+    exact_control_helper!(523, "phrust_native_timezone_open"),
+    exact_control_helper!(524, "phrust_native_sodium_crypto_generichash"),
+    exact_control_helper!(525, "phrust_native_sodium_bin2base64"),
+    JitHelperSymbol {
+        id: JitHelperId(526),
+        name: "phrust_native_global_binding_rebind",
+        args: NATIVE_GLOBAL_BINDING_REBIND_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact cold rebind of one published top-level global reference",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(527),
+        name: "phrust_native_debug_backtrace",
+        args: NATIVE_EXACT_BUILTIN_6_ARGS,
+        returns: JitHelperReturnKind::ControlResult,
+        can_throw: true,
+        has_side_effects: true,
+        description: "exact generated-shadow-stack backtrace materialization",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(528),
+        name: "phrust_native_object_release_prepare",
+        args: NATIVE_OP_2_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact generated destructor target preparation",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(529),
+        name: "phrust_native_object_release_finalize",
+        args: NATIVE_OP_2_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact post-destructor object owner finalization",
+    },
+    JitHelperSymbol {
+        id: JitHelperId(530),
+        name: "phrust_native_object_release_children_drop",
+        args: NATIVE_OP_1_ARGS,
+        returns: JitHelperReturnKind::Status,
+        can_throw: false,
+        has_side_effects: true,
+        description: "exact generated object release-plan retirement",
+    },
 ];
 
 /// Looks up a helper by stable id.
@@ -2571,8 +2683,6 @@ pub fn resolve_helper_address(
 ) -> Option<usize> {
     let helper = lookup_helper_by_id(id)?;
     match helper.name {
-        "phrust_baseline_native_call_dispatch" => Some(runtime.baseline_call_dispatch),
-        "phrust_baseline_native_builtin_dispatch" => Some(runtime.baseline_builtin_dispatch),
         "phrust_native_define" => Some(runtime.native_define),
         "phrust_native_defined" => Some(runtime.native_defined),
         "phrust_native_constant" => Some(runtime.native_constant),
@@ -2610,6 +2720,8 @@ pub fn resolve_helper_address(
         "phrust_native_hash" => Some(runtime.native_hash),
         "phrust_native_hash_hmac" => Some(runtime.native_hash_hmac),
         "phrust_native_hash_equals" => Some(runtime.native_hash_equals),
+        "phrust_native_sodium_crypto_generichash" => Some(runtime.native_sodium_crypto_generichash),
+        "phrust_native_sodium_bin2base64" => Some(runtime.native_sodium_bin2base64),
         "phrust_native_base64_encode" => Some(runtime.native_base64_encode),
         "phrust_native_base64_decode" => Some(runtime.native_base64_decode),
         "phrust_native_bin2hex" => Some(runtime.native_bin2hex),
@@ -2645,6 +2757,7 @@ pub fn resolve_helper_address(
         "phrust_native_htmlentities" => Some(runtime.native_html_codec[1]),
         "phrust_native_html_entity_decode" => Some(runtime.native_html_codec[2]),
         "phrust_native_htmlspecialchars_decode" => Some(runtime.native_html_codec[3]),
+        "phrust_native_get_html_translation_table" => Some(runtime.native_html_codec[4]),
         "phrust_native_parse_url" => Some(runtime.native_url_query[0]),
         "phrust_native_parse_str" => Some(runtime.native_url_query[1]),
         "phrust_native_http_build_query" => Some(runtime.native_url_query[2]),
@@ -2693,6 +2806,9 @@ pub fn resolve_helper_address(
         "phrust_native_mb_ord" => Some(runtime.native_mbstring[22]),
         "phrust_native_mb_chr" => Some(runtime.native_mbstring[23]),
         "phrust_native_mb_parse_str" => Some(runtime.native_mbstring[24]),
+        "phrust_native_iconv" => Some(runtime.native_mbstring[25]),
+        "phrust_native_normalizer_normalize" => Some(runtime.native_mbstring[26]),
+        "phrust_native_normalizer_is_normalized" => Some(runtime.native_mbstring[27]),
         "phrust_native_bcadd" => Some(runtime.native_bcmath[0]),
         "phrust_native_bccomp" => Some(runtime.native_bcmath[1]),
         "phrust_native_bcdiv" => Some(runtime.native_bcmath[2]),
@@ -2752,6 +2868,14 @@ pub fn resolve_helper_address(
         "phrust_native_get_resource_id" => Some(runtime.native_resource_query[0]),
         "phrust_native_get_resource_type" => Some(runtime.native_resource_query[1]),
         "phrust_native_get_resources" => Some(runtime.native_resource_query[2]),
+        "phrust_native_finfo_open" => Some(runtime.native_fileinfo[0]),
+        "phrust_native_finfo_close" => Some(runtime.native_fileinfo[1]),
+        "phrust_native_finfo_buffer" => Some(runtime.native_fileinfo[2]),
+        "phrust_native_finfo_file" => Some(runtime.native_fileinfo[3]),
+        "phrust_native_finfo_set_flags" => Some(runtime.native_fileinfo[4]),
+        "phrust_native_exif_imagetype" => Some(runtime.native_fileinfo[5]),
+        "phrust_native_image_type_to_mime_type" => Some(runtime.native_fileinfo[6]),
+        "phrust_native_getimagesize" => Some(runtime.native_fileinfo[7]),
         "phrust_native_settype" => Some(runtime.native_settype),
         "phrust_native_error_get_last" => Some(runtime.native_error_state[0]),
         "phrust_native_error_clear_last" => Some(runtime.native_error_state[1]),
@@ -2775,6 +2899,9 @@ pub fn resolve_helper_address(
         "phrust_native_time" => Some(runtime.native_clock[0]),
         "phrust_native_microtime" => Some(runtime.native_clock[1]),
         "phrust_native_hrtime" => Some(runtime.native_clock[2]),
+        "phrust_native_usleep" => Some(runtime.native_clock[3]),
+        "phrust_native_set_time_limit" => Some(runtime.native_clock[4]),
+        "phrust_native_uniqid" => Some(runtime.native_clock[5]),
         "phrust_native_checkdate" => Some(runtime.native_date[0]),
         "phrust_native_date" => Some(runtime.native_date[1]),
         "phrust_native_gmdate" => Some(runtime.native_date[2]),
@@ -2782,6 +2909,8 @@ pub fn resolve_helper_address(
         "phrust_native_mktime" => Some(runtime.native_date[4]),
         "phrust_native_gmmktime" => Some(runtime.native_date[5]),
         "phrust_native_timezone_identifiers_list" => Some(runtime.native_date[6]),
+        "phrust_native_date_create" => Some(runtime.native_date[7]),
+        "phrust_native_timezone_open" => Some(runtime.native_date[8]),
         "phrust_native_random_bytes" => Some(runtime.native_random[0]),
         "phrust_native_random_int" => Some(runtime.native_random[1]),
         "phrust_native_rand" => Some(runtime.native_random[2]),
@@ -2809,6 +2938,10 @@ pub fn resolve_helper_address(
         "phrust_native_func_num_args" => Some(runtime.native_frame_introspection[0]),
         "phrust_native_func_get_arg" => Some(runtime.native_frame_introspection[1]),
         "phrust_native_func_get_args" => Some(runtime.native_frame_introspection[2]),
+        "phrust_native_debug_backtrace" => Some(runtime.native_frame_introspection[3]),
+        "phrust_native_object_release_prepare" => Some(runtime.native_object_release[0]),
+        "phrust_native_object_release_finalize" => Some(runtime.native_object_release[1]),
+        "phrust_native_object_release_children_drop" => Some(runtime.native_object_release[2]),
         "phrust_native_basename" => Some(runtime.native_basename),
         "phrust_native_dirname" => Some(runtime.native_dirname),
         "phrust_native_realpath" => Some(runtime.native_realpath),
@@ -2863,6 +2996,7 @@ pub fn resolve_helper_address(
         "phrust_native_symlink" => Some(runtime.native_symlink),
         "phrust_native_readfile" => Some(runtime.native_readfile),
         "phrust_native_is_uploaded_file" => Some(runtime.native_is_uploaded_file),
+        "phrust_native_move_uploaded_file" => Some(runtime.native_move_uploaded_file),
         "phrust_native_tempnam" => Some(runtime.native_tempnam),
         "phrust_native_tmpfile" => Some(runtime.native_tmpfile),
         "phrust_native_filesize" => Some(runtime.native_filesize),
@@ -2896,17 +3030,24 @@ pub fn resolve_helper_address(
         "phrust_native_ob_get_level" => Some(runtime.native_output_buffer[5]),
         "phrust_native_ob_end_flush" => Some(runtime.native_output_buffer[6]),
         "phrust_native_ob_end_clean" => Some(runtime.native_output_buffer[7]),
+        "phrust_native_phpinfo" => Some(runtime.native_output_buffer[8]),
         "phrust_native_prepared_exception_new" => Some(runtime.native_prepared_exception_new),
-        "phrust_baseline_native_semantic_dispatch" => Some(runtime.baseline_semantic_dispatch),
+        "phrust_native_static_property_contract" => Some(runtime.native_static_property_contract),
+        "phrust_native_typed_static_reference_bind" => {
+            Some(runtime.native_typed_static_reference_bind)
+        }
+        "phrust_native_typed_reference_store" => Some(runtime.native_typed_reference_store),
+        "phrust_native_typed_reference_array_init" => {
+            Some(runtime.native_typed_reference_array_init)
+        }
+        "phrust_native_undefined_constant" => Some(runtime.native_undefined_constant),
         "phrust_jit_native_function_resolve" => Some(runtime.native_function_resolve),
         "phrust_native_frame_alloc" => Some(runtime.native_frame_alloc),
         "phrust_native_frame_release" => Some(runtime.native_frame_release),
-        "phrust_jit_native_dynamic_code" => Some(runtime.native_dynamic_code),
-        "phrust_baseline_native_unary" => Some(runtime.baseline_unary),
+        "phrust_cold_dynamic_unit_resolve" => Some(runtime.cold_dynamic_unit_resolve),
         "phrust_native_unary_plus" => Some(runtime.native_exact_unary[0]),
         "phrust_native_unary_minus" => Some(runtime.native_exact_unary[1]),
         "phrust_native_bit_not" => Some(runtime.native_exact_unary[2]),
-        "phrust_baseline_native_binary" => Some(runtime.baseline_binary),
         "phrust_native_array_union" => Some(runtime.native_array_union),
         "phrust_native_concat" => Some(runtime.native_concat),
         "phrust_native_bit_and" => Some(runtime.native_string_bitwise[0]),
@@ -2921,9 +3062,6 @@ pub fn resolve_helper_address(
         "phrust_native_greater" => Some(runtime.native_exact_compare[6]),
         "phrust_native_greater_equal" => Some(runtime.native_exact_compare[7]),
         "phrust_native_spaceship" => Some(runtime.native_exact_compare[8]),
-        "phrust_baseline_native_compare" => Some(runtime.baseline_compare),
-        "phrust_baseline_native_cast" => Some(runtime.baseline_cast),
-        "phrust_native_echo" => Some(runtime.native_echo),
         "phrust_native_echo_bytes" => Some(runtime.native_echo_bytes),
         "phrust_native_float_to_string" => Some(runtime.native_float_to_string),
         "phrust_native_fmod_f64" => Some(runtime.native_fmod_f64),
@@ -2971,13 +3109,28 @@ pub fn resolve_helper_address(
         "phrust_native_zlib_decode" => Some(runtime.native_compression_codec[6]),
         "phrust_native_zlib_encode" => Some(runtime.native_compression_codec[7]),
         "phrust_native_object_class_name" => Some(runtime.native_object_class_name),
+        "phrust_native_type_name" => Some(runtime.native_type_name),
+        "phrust_native_add" => Some(runtime.native_exact_arithmetic[0]),
+        "phrust_native_subtract" => Some(runtime.native_exact_arithmetic[1]),
+        "phrust_native_multiply" => Some(runtime.native_exact_arithmetic[2]),
+        "phrust_native_divide" => Some(runtime.native_exact_arithmetic[3]),
+        "phrust_native_modulo" => Some(runtime.native_exact_arithmetic[4]),
+        "phrust_native_power" => Some(runtime.native_exact_arithmetic[5]),
+        "phrust_native_exact_bit_and" => Some(runtime.native_exact_arithmetic[6]),
+        "phrust_native_exact_bit_or" => Some(runtime.native_exact_arithmetic[7]),
+        "phrust_native_exact_bit_xor" => Some(runtime.native_exact_arithmetic[8]),
+        "phrust_native_shift_left" => Some(runtime.native_exact_arithmetic[9]),
+        "phrust_native_shift_right" => Some(runtime.native_exact_arithmetic[10]),
         "phrust_native_acquire_callable" => Some(runtime.native_acquire_callable),
+        "phrust_native_acquire_method_callable" => Some(runtime.native_acquire_method_callable),
+        "phrust_native_acquire_class_plan" => Some(runtime.native_acquire_class_plan),
         "phrust_native_is_callable" => Some(runtime.native_is_callable),
         "phrust_native_set_error_handler" => Some(runtime.native_callback_handler[0]),
         "phrust_native_restore_error_handler" => Some(runtime.native_callback_handler[1]),
         "phrust_native_set_exception_handler" => Some(runtime.native_callback_handler[2]),
         "phrust_native_restore_exception_handler" => Some(runtime.native_callback_handler[3]),
         "phrust_native_get_exception_handler" => Some(runtime.native_callback_handler[4]),
+        "phrust_native_trigger_error" => Some(runtime.native_callback_handler[5]),
         "phrust_native_spl_autoload_register" => Some(runtime.native_autoload_callback[0]),
         "phrust_native_spl_autoload_unregister" => Some(runtime.native_autoload_callback[1]),
         "phrust_native_spl_autoload_functions" => Some(runtime.native_autoload_callback[2]),
@@ -2988,20 +3141,14 @@ pub fn resolve_helper_address(
         "phrust_native_prepared_object_new" => Some(runtime.native_prepared_object_new),
         "phrust_native_prepared_closure_new" => Some(runtime.native_prepared_closure_new),
         "phrust_native_plain_object_clone" => Some(runtime.native_plain_object_clone),
-        "phrust_native_local_fetch" => Some(runtime.native_local_fetch),
-        "phrust_native_local_store" => Some(runtime.native_local_store),
-        "phrust_native_value_release" => Some(runtime.native_value_release),
-        "phrust_native_reference_bind" => Some(runtime.native_reference_bind),
-        "phrust_native_argument_check" => Some(runtime.native_argument_check),
-        "phrust_native_return_check" => Some(runtime.native_return_check),
-        "phrust_native_exception_new" => Some(runtime.native_exception_new),
-        "phrust_native_array_new" => Some(runtime.native_array_new),
-        "phrust_native_object_new" => Some(runtime.native_object_new),
-        "phrust_native_property_fetch" => Some(runtime.native_property_fetch),
-        "phrust_native_property_assign" => Some(runtime.native_property_assign),
-        "phrust_native_object_clone" => Some(runtime.native_object_clone),
-        "phrust_native_object_clone_with" => Some(runtime.native_object_clone_with),
+        "phrust_native_declared_argument_contract" => {
+            Some(runtime.native_declared_argument_contract)
+        }
+        "phrust_native_declared_return_contract" => Some(runtime.native_declared_return_contract),
         "phrust_native_dynamic_property_slot" => Some(runtime.native_dynamic_property_slot),
+        "phrust_native_named_dynamic_property_slot" => {
+            Some(runtime.native_named_dynamic_property_slot)
+        }
         "phrust_native_dynamic_property_test_slot" => {
             Some(runtime.native_dynamic_property_test_slot)
         }
@@ -3012,21 +3159,23 @@ pub fn resolve_helper_address(
         "phrust_native_string_cast" => Some(runtime.native_string_cast),
         "phrust_native_callback_return_string" => Some(runtime.native_callback_return_string),
         "phrust_native_numeric_string" => Some(runtime.native_numeric_string),
-        "phrust_native_array_insert" => Some(runtime.native_array_insert),
-        "phrust_native_array_insert_local" => Some(runtime.native_array_insert_local),
-        "phrust_native_array_fetch" => Some(runtime.native_array_fetch),
-        "phrust_native_array_unset" => Some(runtime.native_array_unset),
-        "phrust_native_array_spread" => Some(runtime.native_array_spread),
-        "phrust_native_foreach_init" => Some(runtime.native_foreach_init),
-        "phrust_native_foreach_next" => Some(runtime.native_foreach_next),
-        "phrust_native_foreach_cleanup" => Some(runtime.native_foreach_cleanup),
-        "phrust_native_constant_fetch" => Some(runtime.native_constant_fetch),
-        "phrust_native_truthy" => Some(runtime.native_truthy),
-        "phrust_native_type_predicate" => Some(runtime.native_type_predicate),
-        "phrust_native_stable_length" => Some(runtime.native_stable_length),
-        "phrust_native_string_predicate" => Some(runtime.native_string_predicate),
-        "phrust_native_runtime_fatal" => Some(runtime.native_runtime_fatal),
         "phrust_native_execution_poll" => Some(runtime.native_execution_poll),
+        "phrust_native_undefined_variable_warning" => {
+            Some(runtime.native_undefined_variable_warning)
+        }
+        "phrust_native_undefined_array_key_warning" => {
+            Some(runtime.native_undefined_array_key_warning)
+        }
+        "phrust_native_array_offset_warning" => Some(runtime.native_array_offset_warning),
+        "phrust_native_var_dump" => Some(runtime.native_var_dump),
+        "phrust_native_global_binding_unset" => Some(runtime.native_global_binding_unset),
+        "phrust_native_global_binding_rebind" => Some(runtime.native_global_binding_rebind),
+        "phrust_native_throwable_get_message" => Some(runtime.native_throwable_method[0]),
+        "phrust_native_throwable_get_code" => Some(runtime.native_throwable_method[1]),
+        "phrust_native_throwable_get_file" => Some(runtime.native_throwable_method[2]),
+        "phrust_native_throwable_get_line" => Some(runtime.native_throwable_method[3]),
+        "phrust_native_throwable_get_previous" => Some(runtime.native_throwable_method[4]),
+        "phrust_native_throwable_get_trace" => Some(runtime.native_throwable_method[5]),
         _ => None,
     }
     .filter(|address| *address != 0)
@@ -3072,23 +3221,37 @@ mod tests {
     #[test]
     fn helper_registry_ids_names_and_layout_are_stable() {
         assert_ne!(JIT_HELPER_REGISTRY_ABI_HASH, 0);
-        assert!(helper_registry_is_stable());
+        assert!(
+            helper_registry_is_stable(),
+            "unstable helper pair: {:?}",
+            JIT_HELPER_SYMBOLS
+                .iter()
+                .enumerate()
+                .find_map(|(index, helper)| {
+                    (helper.name.is_empty()
+                        || index > 0 && JIT_HELPER_SYMBOLS[index - 1].id >= helper.id
+                        || JIT_HELPER_SYMBOLS[index + 1..]
+                            .iter()
+                            .any(|other| helper.id == other.id || helper.name == other.name))
+                    .then(|| (index, helper))
+                })
+        );
         assert_eq!(helper_registry_layout_summary(), (4, 4, 4));
         assert_eq!(
             JIT_HELPER_SYMBOLS.first().expect("first").id,
-            JitHelperId(14)
+            JitHelperId(15)
         );
         assert_eq!(
             JIT_HELPER_SYMBOLS.last().expect("last").id,
-            JitHelperId(472)
+            JitHelperId(530)
         );
     }
 
     #[test]
     fn helper_registry_lookups_return_signatures() {
-        let call =
-            lookup_helper_by_name("phrust_baseline_native_call_dispatch").expect("call helper");
-        assert_eq!(call.id, JitHelperId(14));
+        let call = lookup_helper_by_name("phrust_cold_dynamic_unit_resolve")
+            .expect("cold dynamic-unit resolver");
+        assert_eq!(call.id, JitHelperId(15));
         assert_eq!(
             call.args,
             &[
@@ -3101,9 +3264,9 @@ mod tests {
         assert!(call.can_throw);
         assert!(call.has_side_effects);
 
-        let truthy = lookup_helper_by_id(JitHelperId(41)).expect("truthy helper");
-        assert_eq!(truthy.name, "phrust_native_truthy");
-        assert!(!truthy.has_side_effects);
+        let execution_poll = lookup_helper_by_id(JitHelperId(43)).expect("execution-poll helper");
+        assert_eq!(execution_poll.name, "phrust_native_execution_poll");
+        assert!(execution_poll.has_side_effects);
 
         let numeric_string =
             lookup_helper_by_name("phrust_native_numeric_string").expect("numeric-string helper");
@@ -3120,6 +3283,9 @@ mod tests {
     #[test]
     fn fixed_optimizer_imports_resolve_through_the_persistent_registry() {
         let runtime = crate::JitRuntimeHelperAddresses {
+            native_undefined_array_key_warning: 509,
+            native_var_dump: 510,
+            native_throwable_method: std::array::from_fn(|index| 520 + index),
             native_echo_bytes: 1,
             native_float_to_string: 2,
             native_fmod_f64: 3,
@@ -3130,7 +3296,10 @@ mod tests {
             native_network_address: std::array::from_fn(|index| 300 + index),
             native_compression_codec: std::array::from_fn(|index| 400 + index),
             native_object_class_name: 500,
+            native_type_name: 511,
             native_acquire_callable: 501,
+            native_acquire_method_callable: 503,
+            native_acquire_class_plan: 508,
             native_resolve_callable: 502,
             native_prepared_object_new: 504,
             native_prepared_closure_new: 505,
@@ -3144,6 +3313,10 @@ mod tests {
         };
 
         assert_eq!(resolved("phrust_native_echo_bytes"), 1);
+        assert_eq!(resolved("phrust_native_undefined_array_key_warning"), 509);
+        assert_eq!(resolved("phrust_native_var_dump"), 510);
+        assert_eq!(resolved("phrust_native_throwable_get_message"), 520);
+        assert_eq!(resolved("phrust_native_throwable_get_trace"), 525);
         assert_eq!(resolved("phrust_native_float_to_string"), 2);
         assert_eq!(resolved("phrust_native_fmod_f64"), 3);
         assert_eq!(resolved("phrust_native_round_f64"), 4);
@@ -3159,6 +3332,8 @@ mod tests {
         assert_eq!(resolved("phrust_native_zlib_encode"), 407);
         assert_eq!(resolved("phrust_native_object_class_name"), 500);
         assert_eq!(resolved("phrust_native_acquire_callable"), 501);
+        assert_eq!(resolved("phrust_native_acquire_method_callable"), 503);
+        assert_eq!(resolved("phrust_native_acquire_class_plan"), 508);
         assert_eq!(resolved("phrust_native_is_callable"), 507);
         assert_eq!(resolved("phrust_native_resolve_callable"), 502);
         assert_eq!(resolved("phrust_native_prepared_object_new"), 504);

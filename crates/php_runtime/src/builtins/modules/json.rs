@@ -240,6 +240,7 @@ struct NativeJsonSeed<'a, P> {
     publisher: &'a mut P,
     depth: usize,
     maximum_depth: usize,
+    flags: i64,
     depth_exceeded: &'a mut bool,
     publisher_failed: &'a mut bool,
 }
@@ -248,6 +249,7 @@ struct NativeJsonVisitor<'a, P> {
     publisher: &'a mut P,
     depth: usize,
     maximum_depth: usize,
+    flags: i64,
     depth_exceeded: &'a mut bool,
     publisher_failed: &'a mut bool,
 }
@@ -385,6 +387,7 @@ impl<'de, P: NativeStructuredValuePublisher> DeserializeSeed<'de> for NativeJson
             publisher: self.publisher,
             depth: self.depth,
             maximum_depth: self.maximum_depth,
+            flags: self.flags,
             depth_exceeded: self.depth_exceeded,
             publisher_failed: self.publisher_failed,
         })
@@ -436,6 +439,9 @@ impl<'de, P: NativeStructuredValuePublisher> Visitor<'de> for NativeJsonVisitor<
     fn visit_u64<E: serde::de::Error>(mut self, value: u64) -> Result<Self::Value, E> {
         let published = match i64::try_from(value) {
             Ok(value) => self.publisher.publish_int(value),
+            Err(_) if self.flags & JSON_BIGINT_AS_STRING != 0 => {
+                self.publisher.publish_string(value.to_string().as_bytes())
+            }
             Err(_) => self.publisher.publish_float(value as f64),
         };
         self.published(published)
@@ -444,6 +450,9 @@ impl<'de, P: NativeStructuredValuePublisher> Visitor<'de> for NativeJsonVisitor<
     fn visit_i128<E: serde::de::Error>(mut self, value: i128) -> Result<Self::Value, E> {
         let published = match i64::try_from(value) {
             Ok(value) => self.publisher.publish_int(value),
+            Err(_) if self.flags & JSON_BIGINT_AS_STRING != 0 => {
+                self.publisher.publish_string(value.to_string().as_bytes())
+            }
             Err(_) => self.publisher.publish_float(value as f64),
         };
         self.published(published)
@@ -452,6 +461,9 @@ impl<'de, P: NativeStructuredValuePublisher> Visitor<'de> for NativeJsonVisitor<
     fn visit_u128<E: serde::de::Error>(mut self, value: u128) -> Result<Self::Value, E> {
         let published = match i64::try_from(value) {
             Ok(value) => self.publisher.publish_int(value),
+            Err(_) if self.flags & JSON_BIGINT_AS_STRING != 0 => {
+                self.publisher.publish_string(value.to_string().as_bytes())
+            }
             Err(_) => self.publisher.publish_float(value as f64),
         };
         self.published(published)
@@ -492,6 +504,7 @@ impl<'de, P: NativeStructuredValuePublisher> Visitor<'de> for NativeJsonVisitor<
                     publisher,
                     depth: depth + 1,
                     maximum_depth,
+                    flags: self.flags,
                     depth_exceeded,
                     publisher_failed,
                 })?
@@ -518,6 +531,14 @@ impl<'de, P: NativeStructuredValuePublisher> Visitor<'de> for NativeJsonVisitor<
         let first_key = map.next_key::<String>()?;
         if first_key.as_deref() == Some("$serde_json::private::Number") {
             let number = map.next_value::<String>()?;
+            if self.flags & JSON_BIGINT_AS_STRING != 0
+                && number
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'-')
+            {
+                let published = self.publisher.publish_string(number.as_bytes());
+                return self.published(published);
+            }
             let value = number
                 .parse::<f64>()
                 .map_err(|_| A::Error::custom("invalid arbitrary-precision JSON number"))?;
@@ -535,6 +556,7 @@ impl<'de, P: NativeStructuredValuePublisher> Visitor<'de> for NativeJsonVisitor<
                     publisher,
                     depth: depth + 1,
                     maximum_depth,
+                    flags: self.flags,
                     depth_exceeded,
                     publisher_failed,
                 })?;
@@ -551,6 +573,7 @@ impl<'de, P: NativeStructuredValuePublisher> Visitor<'de> for NativeJsonVisitor<
                     publisher,
                     depth: depth + 1,
                     maximum_depth,
+                    flags: self.flags,
                     depth_exceeded,
                     publisher_failed,
                 })?;
@@ -581,6 +604,19 @@ pub fn decode_native_json_associative_into<P: NativeStructuredValuePublisher>(
     depth: i64,
     publisher: &mut P,
 ) -> Result<Option<P::Output>, BuiltinError> {
+    decode_native_json_into(state, input, depth, 0, publisher)
+}
+
+/// Parses JSON directly into the supplied native value publisher while
+/// honoring decode flags that do not require a second PHP value graph.
+#[doc(hidden)]
+pub fn decode_native_json_into<P: NativeStructuredValuePublisher>(
+    state: &mut crate::builtins::JsonRequestState,
+    input: &[u8],
+    depth: i64,
+    flags: i64,
+    publisher: &mut P,
+) -> Result<Option<P::Output>, BuiltinError> {
     if depth <= 0 {
         return Err(argument_value_error(
             "json_decode",
@@ -595,7 +631,7 @@ pub fn decode_native_json_associative_into<P: NativeStructuredValuePublisher>(
             &format!("must be less than {}", i32::MAX),
         ));
     }
-    let input = match json_decode_input(input, 0) {
+    let input = match json_decode_input(input, flags) {
         Ok(input) => input,
         Err(code) => {
             state.set(code);
@@ -609,6 +645,7 @@ pub fn decode_native_json_associative_into<P: NativeStructuredValuePublisher>(
         publisher,
         depth: 0,
         maximum_depth: depth as usize,
+        flags,
         depth_exceeded: &mut depth_exceeded,
         publisher_failed: &mut publisher_failed,
     }

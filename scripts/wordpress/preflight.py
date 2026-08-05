@@ -104,8 +104,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     wordpress_dir = repo_path(args.wordpress_dir)
     docroot = repo_path(args.docroot) or wordpress_dir
     reference_php = repo_path(args.reference_php)
+    if reference_php is None:
+        local_reference = REPO_ROOT / "third_party" / "php-src" / "sapi" / "cli" / "php"
+        if executable(local_reference):
+            reference_php = local_reference
     phrust_binary = repo_path(args.phrust_binary)
     phrust_server = repo_path(args.phrust_server)
+    reference_extensions: list[str] = []
 
     blockers.extend(wordpress_shape_blockers(wordpress_dir))
     wordpress_missing = "missing_wordpress_checkout" in blockers
@@ -123,7 +128,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     ):
         blockers.append("document_root_invalid")
 
-    if args.require_reference or args.reference_php:
+    if args.require_reference or reference_php is not None:
         if reference_php is None or not reference_php.exists():
             blockers.append("missing_reference_php")
         elif not executable(reference_php):
@@ -132,6 +137,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             version = reference_version(reference_php)
             if version is None:
                 blockers.append("invalid_reference_php")
+            extensions = reference_loaded_extensions(reference_php)
+            if extensions is None:
+                blockers.append("invalid_reference_php")
+            else:
+                reference_extensions = sorted(extensions)
+                if "mysqli" not in extensions:
+                    blockers.append("reference_php_missing_mysqli")
 
     if not executable(phrust_binary) or binary_is_stale(phrust_binary, PHP_VM_BINARY_SOURCE_ROOTS):
         blockers.append("missing_php_vm_binary_or_stale_binary")
@@ -169,7 +181,12 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     status = "ok"
     if blockers:
         status = "skip"
-        hard_failures = {"invalid_reference_php", "document_root_invalid", "mariadb_credentials_invalid"}
+        hard_failures = {
+            "invalid_reference_php",
+            "reference_php_missing_mysqli",
+            "document_root_invalid",
+            "mariadb_credentials_invalid",
+        }
         if "missing_wordpress_checkout" not in blockers and any(
             blocker in hard_failures for blocker in blockers
         ):
@@ -182,6 +199,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "inputs": {
             "wordpress_dir": str(wordpress_canonical or wordpress_dir or ""),
             "reference_php": str(reference_php or ""),
+            "reference_php_extensions": reference_extensions,
             "phrust_binary": str(phrust_binary or ""),
             "phrust_server": str(phrust_server or ""),
             "docroot": str(docroot_canonical or docroot or ""),
@@ -207,6 +225,25 @@ def reference_version(reference_php: Path) -> str | None:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
     return result.stdout.strip() or None
+
+
+def reference_loaded_extensions(reference_php: Path) -> set[str] | None:
+    try:
+        result = subprocess.run(
+            [
+                str(reference_php),
+                "-r",
+                'foreach (get_loaded_extensions() as $extension) { echo strtolower($extension), "\\n"; }',
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
 def parse_listen(value: str) -> tuple[str, int | None]:

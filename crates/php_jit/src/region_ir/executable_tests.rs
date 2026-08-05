@@ -1,7 +1,7 @@
 use super::*;
 use crate::region_ir::{
-    SsaCertainty, SsaOwnership, SsaValueClass, SsaValueFact, analyze_baseline_value_ownership,
-    analyze_executable_value_flow,
+    SsaCertainty, SsaOwnership, SsaValueClass, SsaValueFact, analyze_executable_value_flow,
+    analyze_generic_value_ownership,
 };
 use php_ir::instruction::{ClosureCaptureArg, IrCallDimTarget, IrCallPropertyTarget};
 use php_ir::{
@@ -44,6 +44,7 @@ fn builtin_call_with_local_arguments(name: &str, argument_count: usize) -> Regio
         target: RegionCallTarget::Function {
             name: name.to_owned(),
             function: None,
+            linked_function: None,
         },
         args,
         argument_operand_offset: 0,
@@ -196,6 +197,88 @@ fn namespaced_builtin_reference_argument_load_is_quiet() {
 }
 
 #[test]
+fn property_reference_call_elides_the_superseded_fetch_in_both_tiers() {
+    let mut builder = IrBuilder::new(UnitId::new(9_700));
+    let file = builder.add_file("property-reference-fetch.php");
+    let span = IrSpan::new(file, 0, 40);
+    let function = builder.start_function("sort_property", FunctionFlags::default(), span);
+    let block = builder.append_block(function);
+    let null = builder.intern_constant(IrConstant::Null);
+    let object = builder.alloc_register(function);
+    builder.emit_load_const(function, block, object, null, span);
+    let value = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::FetchProperty {
+            dst: value,
+            object: Operand::Register(object),
+            property: "callbacks".to_owned(),
+        },
+        span,
+    );
+    let result = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::CallFunction {
+            dst: result,
+            name: "ksort".to_owned(),
+            args: vec![IrCallArg {
+                name: None,
+                value: Operand::Register(value),
+                unpack: false,
+                value_kind: IrCallArgValueKind::Direct,
+                by_ref_local: None,
+                by_ref_dim: None,
+                by_ref_property: Some(IrCallPropertyTarget {
+                    object: Operand::Register(object),
+                    property: "callbacks".to_owned(),
+                }),
+                by_ref_property_dim: None,
+            }],
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(result)), span);
+    let unit = builder.finish();
+
+    for tier in [NativeCompilerTier::Generic, NativeCompilerTier::Optimizing] {
+        let region = GenericRegionBuilder::build(
+            &unit,
+            function,
+            &CompileMetadata {
+                tier,
+                ..CompileMetadata::default()
+            },
+        )
+        .expect("property reference region");
+        assert!(region.blocks[0].instructions.iter().any(|instruction| {
+            matches!(
+                instruction.source_kind,
+                InstructionKind::FetchProperty { dst, .. } if dst == value
+            ) && matches!(instruction.kind, RegionInstructionKind::Nop)
+        }));
+        assert!(region.blocks[0].instructions.iter().any(|instruction| {
+            matches!(
+                instruction.kind,
+                RegionInstructionKind::BindReferenceFromProperty { .. }
+            )
+        }));
+        let call = region.blocks[0]
+            .instructions
+            .iter()
+            .find_map(|instruction| match &instruction.kind {
+                RegionInstructionKind::NativeCall(call) => Some(call),
+                _ => None,
+            })
+            .expect("prepared ksort call");
+        assert!(call.args[0].by_ref_local.is_some());
+        assert!(call.args[0].by_ref_property.is_none());
+    }
+}
+
+#[test]
 fn known_by_reference_dimension_binds_the_existing_slot_identity() {
     let mut builder = IrBuilder::new(UnitId::new(9_701));
     let file = builder.add_file("by-reference-dimension.php");
@@ -300,7 +383,7 @@ fn known_by_reference_dimension_binds_the_existing_slot_identity() {
     assert!(call.args[0].by_ref_property.is_none());
     assert!(call.args[0].by_ref_property_dim.is_none());
 
-    let optimizing_region = BaselineRegionBuilder::build(
+    let optimizing_region = GenericRegionBuilder::build(
         &unit,
         caller,
         &CompileMetadata {
@@ -712,7 +795,7 @@ fn preserves_method_declaration_and_strict_types_metadata() {
         span,
     });
     let unit = builder.finish();
-    let region = BaselineRegionBuilder::build(&unit, function, &CompileMetadata::default())
+    let region = GenericRegionBuilder::build(&unit, function, &CompileMetadata::default())
         .expect("method graph");
 
     assert!(region.flags.is_method);
@@ -817,6 +900,230 @@ fn exact_receiver_links_public_non_final_method() {
 }
 
 #[test]
+fn declared_property_class_fact_survives_basic_block_boundary() {
+    let mut builder = IrBuilder::new(UnitId::new(9_603));
+    let file = builder.add_file("property-after-jump.php");
+    let span = IrSpan::new(file, 0, 40);
+    let function = builder.start_function("main", FunctionFlags::default(), span);
+    let object_local = builder.intern_local(function, "object");
+    let entry = builder.append_block(function);
+    let read = builder.append_block(function);
+
+    let object = builder.alloc_register(function);
+    builder.emit(
+        function,
+        entry,
+        InstructionKind::NewObject {
+            dst: object,
+            display_class_name: "Post".to_owned(),
+            class_name: "post".to_owned(),
+            args: Vec::new(),
+        },
+        span,
+    );
+    builder.emit(
+        function,
+        entry,
+        InstructionKind::StoreLocal {
+            local: object_local,
+            src: Operand::Register(object),
+        },
+        span,
+    );
+    builder.terminate_jump(function, entry, read, span);
+
+    let loaded = builder.alloc_register(function);
+    builder.emit(
+        function,
+        read,
+        InstructionKind::LoadLocal {
+            dst: loaded,
+            local: object_local,
+        },
+        span,
+    );
+    let value = builder.alloc_register(function);
+    builder.emit(
+        function,
+        read,
+        InstructionKind::FetchProperty {
+            dst: value,
+            object: Operand::Register(loaded),
+            property: "id".to_owned(),
+        },
+        span,
+    );
+    builder.terminate_return(function, read, Some(Operand::Register(value)), span);
+    builder.push_class(ClassEntry {
+        id: ClassId::new(0),
+        name: "post".to_owned(),
+        display_name: "Post".to_owned(),
+        parent: None,
+        parent_display_name: None,
+        interfaces: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor: None,
+        flags: ClassFlags::default(),
+        span,
+    });
+    builder.set_entry(function);
+
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, function).expect("property region");
+    let property = region.blocks[1]
+        .instructions
+        .iter()
+        .find_map(|instruction| match &instruction.kind {
+            RegionInstructionKind::FetchProperty {
+                prepared_class,
+                dynamic_stdclass,
+                ..
+            } => Some((*prepared_class, *dynamic_stdclass)),
+            _ => None,
+        })
+        .expect("fixed property fetch");
+    assert_eq!(property, (Some(0), false));
+}
+
+#[test]
+fn implicit_method_receiver_class_survives_register_use_after_branch() {
+    let mut builder = IrBuilder::new(UnitId::new(9_604));
+    let file = builder.add_file("method-property-after-branch.php");
+    let span = IrSpan::new(file, 0, 40);
+    let method = builder.start_function(
+        "Widget::__construct",
+        FunctionFlags {
+            is_method: true,
+            ..FunctionFlags::default()
+        },
+        span,
+    );
+    let this = builder.intern_local(method, "this");
+    let entry = builder.append_block(method);
+    let assign = builder.append_block(method);
+    let receiver = builder.alloc_register(method);
+    builder.emit(
+        method,
+        entry,
+        InstructionKind::LoadLocal {
+            dst: receiver,
+            local: this,
+        },
+        span,
+    );
+    builder.terminate_jump(method, entry, assign, span);
+    let false_ = builder.intern_constant(IrConstant::Bool(false));
+    let result = builder.alloc_register(method);
+    builder.emit(
+        method,
+        assign,
+        InstructionKind::AssignProperty {
+            dst: result,
+            object: Operand::Register(receiver),
+            property: "enabled".to_owned(),
+            value: Operand::Constant(false_),
+        },
+        span,
+    );
+    builder.terminate_return(method, assign, None, span);
+    builder.push_class(ClassEntry {
+        id: ClassId::new(0),
+        name: "widget".to_owned(),
+        display_name: "Widget".to_owned(),
+        parent: None,
+        parent_display_name: None,
+        interfaces: Vec::new(),
+        methods: vec![ClassMethodEntry {
+            name: "__construct".to_owned(),
+            origin_class: "widget".to_owned(),
+            function: method,
+            flags: ClassMethodFlags {
+                has_body: true,
+                ..ClassMethodFlags::default()
+            },
+            attributes: Vec::new(),
+        }],
+        properties: Vec::new(),
+        constants: Vec::new(),
+        enum_cases: Vec::new(),
+        attributes: Vec::new(),
+        enum_backing_type: None,
+        constructor: Some(method),
+        flags: ClassFlags::default(),
+        span,
+    });
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, method).expect("constructor region");
+    let property = region.blocks[1]
+        .instructions
+        .iter()
+        .find_map(|instruction| match instruction.kind {
+            RegionInstructionKind::AssignProperty {
+                prepared_class,
+                dynamic_stdclass,
+                ..
+            } => Some((prepared_class, dynamic_stdclass)),
+            _ => None,
+        })
+        .expect("declared property assignment");
+    assert_eq!(property, (Some(0), false));
+}
+
+#[test]
+fn unknown_external_property_receiver_uses_fixed_name_native_slot_resolution() {
+    let mut builder = IrBuilder::new(UnitId::new(9_605));
+    let file = builder.add_file("unknown-external-property.php");
+    let span = IrSpan::new(file, 0, 40);
+    let function = builder.start_function("read", FunctionFlags::default(), span);
+    let object_local = builder.intern_local(function, "object");
+    let block = builder.append_block(function);
+    let object = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::LoadLocal {
+            dst: object,
+            local: object_local,
+        },
+        span,
+    );
+    let value = builder.alloc_register(function);
+    builder.emit(
+        function,
+        block,
+        InstructionKind::FetchProperty {
+            dst: value,
+            object: Operand::Register(object),
+            property: "connect_errno".to_owned(),
+        },
+        span,
+    );
+    builder.terminate_return(function, block, Some(Operand::Register(value)), span);
+    builder.set_entry(function);
+
+    let unit = builder.finish();
+    let region = build_baseline_region(&unit, function).expect("property region");
+    let property = region.blocks[0]
+        .instructions
+        .iter()
+        .find_map(|instruction| match instruction.kind {
+            RegionInstructionKind::FetchProperty {
+                prepared_class,
+                dynamic_stdclass,
+                ..
+            } => Some((prepared_class, dynamic_stdclass)),
+            _ => None,
+        })
+        .expect("fixed property fetch");
+    assert_eq!(property, (None, true));
+}
+
+#[test]
 fn published_external_parent_prepares_local_object_family() {
     let mut builder = IrBuilder::new(UnitId::new(9_602));
     let file = builder.add_file("published-external-parent.php");
@@ -875,13 +1182,14 @@ fn published_external_parent_prepares_local_object_family() {
         native_arity: 0,
         requires_non_reference_trampoline: false,
         returns_by_reference: false,
+        return_type: None,
         exception_routes: None,
     };
     let metadata = CompileMetadata {
         tier: NativeCompilerTier::Optimizing,
         ..CompileMetadata::default()
     };
-    let published = BaselineRegionBuilder::build_with_external_function_signatures(
+    let published = GenericRegionBuilder::build_with_external_function_signatures(
         &unit,
         caller,
         &metadata,
@@ -890,14 +1198,14 @@ fn published_external_parent_prepares_local_object_family() {
     .expect("published external parent region");
     let mut inherited_constructor = signature;
     inherited_constructor.native_arity = 1;
-    let constructor = BaselineRegionBuilder::build_with_external_function_signatures(
+    let constructor = GenericRegionBuilder::build_with_external_function_signatures(
         &unit,
         caller,
         &metadata,
         &[inherited_constructor],
     )
     .expect("external parent constructor region");
-    let default_constructor = BaselineRegionBuilder::build_with_external_function_signatures(
+    let default_constructor = GenericRegionBuilder::build_with_external_function_signatures(
         &unit,
         caller,
         &metadata,
@@ -924,18 +1232,18 @@ fn published_external_parent_prepares_local_object_family() {
             native_arity: 2,
             requires_non_reference_trampoline: false,
             returns_by_reference: false,
+            return_type: None,
             exception_routes: None,
         }],
     )
     .expect("external parent default constructor region");
-    let unresolved = BaselineRegionBuilder::build(&unit, caller, &metadata)
+    let unresolved = GenericRegionBuilder::build(&unit, caller, &metadata)
         .expect("unresolved external parent region");
 
     assert!(published.blocks[0].instructions.iter().any(|instruction| {
         matches!(
             instruction.kind,
             RegionInstructionKind::NewObject {
-                prepared: true,
                 linked_class: None,
                 ..
             }
@@ -971,12 +1279,7 @@ fn published_external_parent_prepares_local_object_family() {
         constructor.blocks[0]
             .instructions
             .iter()
-            .any(|instruction| {
-                matches!(
-                    instruction.kind,
-                    RegionInstructionKind::NewObject { prepared: true, .. }
-                )
-            })
+            .any(|instruction| matches!(instruction.kind, RegionInstructionKind::NewObject { .. }))
     );
     assert!(
         default_constructor.blocks[0]
@@ -1124,7 +1427,7 @@ fn property_assignment_borrows_implicit_method_receiver() {
     flow.verify_ownership(&region)
         .expect("property receiver borrow should verify");
 
-    let baseline = analyze_baseline_value_ownership(&region);
+    let baseline = analyze_generic_value_ownership(&region);
     assert!(baseline.can_borrow_local_load(region.blocks[0].instructions[0].continuation_id));
     assert_eq!(
         baseline.register_fact(receiver).ownership,
@@ -1247,7 +1550,7 @@ fn this_receiver_keeps_virtual_method_dispatch_in_non_final_class() {
     ));
     assert_eq!(call.direct_compiled_target(), None);
 
-    let specialized = BaselineRegionBuilder::build_with_runtime_specializations(
+    let specialized = GenericRegionBuilder::build_with_runtime_specializations(
         &unit,
         run,
         &CompileMetadata {
@@ -1532,10 +1835,12 @@ fn native_argument_trace_plan_preserves_php_visible_shapes() {
     assert_eq!(plan.extra_sources, vec![1, 2]);
 
     let unknown_named = [argument(0, Some("unknown"))];
-    assert!(
-        prepared_call_argument_plan(&unknown_named, &variadic).is_none(),
-        "keyed unknown named variadics keep one baseline continuation"
-    );
+    let plan = prepared_call_argument_plan(&unknown_named, &variadic)
+        .expect("unknown named argument belongs to the native variadic array");
+    assert_eq!(plan.parameter_sources, vec![None, None, Some(0)]);
+    assert_eq!(plan.visible_fixed_count, 2);
+    assert_eq!(plan.visible_variadic_sources, vec![0]);
+    assert!(plan.extra_sources.is_empty());
 }
 
 #[test]
@@ -1603,7 +1908,7 @@ fn optimizing_caller_keeps_frame_introspection_target_as_a_direct_callee() {
     );
     builder.terminate_return(caller, caller_block, Some(Operand::Register(result)), span);
     let unit = builder.finish();
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         caller,
         &CompileMetadata {
@@ -2112,7 +2417,7 @@ fn closure_and_constant_fetch_remain_in_the_semantic_graph() {
     );
     builder.terminate_return(function, block, Some(Operand::Register(dst)), span);
     let unit = builder.finish();
-    let region = BaselineRegionBuilder::build(&unit, function, &CompileMetadata::default())
+    let region = GenericRegionBuilder::build(&unit, function, &CompileMetadata::default())
         .expect("closure graph");
 
     assert!(region.flags.is_closure);
@@ -2294,7 +2599,7 @@ fn direct_closure_call_reads_the_authoritative_prepared_capture() {
 }
 
 #[test]
-fn named_closure_call_keeps_one_callable_baseline_boundary() {
+fn named_closure_call_uses_one_generated_callable_boundary() {
     let mut builder = IrBuilder::new(UnitId::new(103));
     let file = builder.add_file("named-closure-call.php");
     let span = IrSpan::new(file, 0, 20);
@@ -2381,23 +2686,29 @@ fn named_closure_call_keeps_one_callable_baseline_boundary() {
             RegionInstructionKind::NativeCall(call)
                 if matches!(
                     call.target,
-                    RegionCallTarget::Closure { function: None, .. }
+                    RegionCallTarget::Closure {
+                        function: Some(candidate),
+                        ..
+                    } if candidate == closure
                 ) =>
             {
                 Some(call)
             }
             _ => None,
         })
-        .expect("named closure baseline boundary");
-    assert_eq!(call.argument_operand_offset, 1);
-    assert_eq!(
-        call.operands.first(),
-        Some(&Some(RegionOperand::Register(callable)))
+        .expect("named closure generated boundary");
+    assert_eq!(call.argument_operand_offset, 0);
+    assert_eq!(call.direct_compiled_target(), Some(closure));
+    assert!(
+        !call
+            .operands
+            .contains(&Some(RegionOperand::Register(callable))),
+        "a statically prepared closure target must not dispatch through its runtime callable"
     );
 }
 
 #[test]
-fn optimizing_call_user_func_array_uses_prepared_closure_and_keeps_baseline_original() {
+fn both_tiers_prepare_call_user_func_array_closure_directly() {
     let mut builder = IrBuilder::new(UnitId::new(102));
     let file = builder.add_file("closure-call-user-func-array.php");
     let span = IrSpan::new(file, 0, 20);
@@ -2508,7 +2819,7 @@ fn optimizing_call_user_func_array_uses_prepared_closure_and_keeps_baseline_orig
     builder.terminate_return(main, block, Some(Operand::Register(result)), span);
 
     let unit = builder.finish();
-    let optimizing = BaselineRegionBuilder::build(
+    let optimizing = GenericRegionBuilder::build(
         &unit,
         main,
         &CompileMetadata {
@@ -2540,17 +2851,33 @@ fn optimizing_call_user_func_array_uses_prepared_closure_and_keeps_baseline_orig
     assert_eq!(direct.trailing_unpack_argument(), Some(0));
     assert_eq!(direct.direct_compiled_unpack_target(), Some(closure));
 
-    let baseline = BaselineRegionBuilder::build(&unit, main, &CompileMetadata::default())
+    let baseline = GenericRegionBuilder::build(&unit, main, &CompileMetadata::default())
         .expect("baseline closure call_user_func_array region");
-    assert!(baseline.blocks[0].instructions.iter().any(|instruction| {
-        matches!(
-            &instruction.kind,
-            RegionInstructionKind::NativeCall(RegionNativeCall {
-                target: RegionCallTarget::Function { name, function: None },
-                ..
-            }) if name.eq_ignore_ascii_case("call_user_func_array")
-        )
-    }));
+    let baseline_direct = baseline.blocks[0]
+        .instructions
+        .iter()
+        .find_map(|instruction| match &instruction.kind {
+            RegionInstructionKind::NativeCall(call)
+                if matches!(
+                    call.target,
+                    RegionCallTarget::Closure {
+                        function: Some(candidate),
+                        capture_count: 1,
+                        ..
+                    } if candidate == closure
+                ) =>
+            {
+                Some(call)
+            }
+            _ => None,
+        })
+        .expect("Generic tier prepared closure unpack call");
+    assert_eq!(baseline_direct.argument_operand_offset, 1);
+    assert_eq!(baseline_direct.trailing_unpack_argument(), Some(0));
+    assert_eq!(
+        baseline_direct.direct_compiled_unpack_target(),
+        Some(closure)
+    );
 }
 
 #[test]
@@ -2615,7 +2942,7 @@ fn optimizing_runtime_callable_array_preserves_one_native_unpack_boundary() {
     builder.terminate_return(function, block, Some(Operand::Register(result)), span);
     let unit = builder.finish();
 
-    let optimizing = BaselineRegionBuilder::build(
+    let optimizing = GenericRegionBuilder::build(
         &unit,
         function,
         &CompileMetadata {
@@ -2640,17 +2967,21 @@ fn optimizing_runtime_callable_array_preserves_one_native_unpack_boundary() {
     assert_eq!(unpack.operands.len(), 2);
     assert_eq!(unpack.trailing_unpack_argument(), Some(0));
 
-    let baseline = BaselineRegionBuilder::build(&unit, function, &CompileMetadata::default())
+    let baseline = GenericRegionBuilder::build(&unit, function, &CompileMetadata::default())
         .expect("baseline runtime callable array region");
-    assert!(baseline.blocks[0].instructions.iter().any(|instruction| {
-        matches!(
-            &instruction.kind,
-            RegionInstructionKind::NativeCall(RegionNativeCall {
-                target: RegionCallTarget::Function { name, function: None },
-                ..
-            }) if name.eq_ignore_ascii_case("call_user_func_array")
-        )
-    }));
+    let baseline_unpack = baseline.blocks[0]
+        .instructions
+        .iter()
+        .find_map(|instruction| match &instruction.kind {
+            RegionInstructionKind::NativeCall(call)
+                if matches!(call.target, RegionCallTarget::Callable { .. }) =>
+            {
+                Some(call)
+            }
+            _ => None,
+        })
+        .expect("Generic runtime callable must use the generated callable target");
+    assert_eq!(baseline_unpack.trailing_unpack_argument(), Some(0));
 }
 
 #[test]
@@ -2715,7 +3046,7 @@ fn optimizing_array_map_preserves_runtime_callable_for_one_native_loop() {
     builder.terminate_return(function, block, Some(Operand::Register(result)), span);
     let unit = builder.finish();
 
-    let optimizing = BaselineRegionBuilder::build(
+    let optimizing = GenericRegionBuilder::build(
         &unit,
         function,
         &CompileMetadata {
@@ -2830,7 +3161,7 @@ fn optimizing_preg_replace_callback_uses_native_match_plan_for_string_callback()
     builder.terminate_return(function, block, Some(Operand::Register(result)), span);
     let unit = builder.finish();
 
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         function,
         &CompileMetadata {
@@ -2924,7 +3255,7 @@ fn optimizing_preg_replace_callback_preserves_one_runtime_callable_boundary() {
     builder.terminate_return(function, block, Some(Operand::Register(result)), span);
     let unit = builder.finish();
 
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         function,
         &CompileMetadata {
@@ -3101,7 +3432,7 @@ fn optimizing_preg_replace_callback_array_preserves_ordered_native_entries() {
     builder.terminate_return(function, block, Some(Operand::Register(result)), span);
     let unit = builder.finish();
 
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         function,
         &CompileMetadata {
@@ -3246,7 +3577,7 @@ fn optimizing_preg_replace_callback_array_reads_runtime_callable_from_map() {
     builder.terminate_return(function, block, Some(Operand::Register(result)), span);
     let unit = builder.finish();
 
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         function,
         &CompileMetadata {
@@ -3484,7 +3815,7 @@ fn optimizing_array_callback_carries_exact_prepared_closure_plan() {
     );
     builder.terminate_return(function, block, Some(Operand::Register(mapped)), span);
     let unit = builder.finish();
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         function,
         &CompileMetadata {
@@ -3646,7 +3977,7 @@ fn optimizing_array_callback_uses_closure_returned_by_native_factory() {
     builder.terminate_return(function, block, Some(Operand::Register(mapped)), span);
 
     let unit = builder.finish();
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         function,
         &CompileMetadata {
@@ -3898,9 +4229,10 @@ fn published_external_static_method_stays_linked_across_callback_families() {
         native_arity: 1,
         requires_non_reference_trampoline: false,
         returns_by_reference: false,
+        return_type: None,
         exception_routes: None,
     };
-    let region = BaselineRegionBuilder::build_with_external_function_signatures(
+    let region = GenericRegionBuilder::build_with_external_function_signatures(
         &unit,
         function,
         &CompileMetadata {
@@ -3934,7 +4266,8 @@ fn published_external_static_method_stays_linked_across_callback_families() {
                     &call.target,
                     RegionCallTarget::Function {
                         name,
-                        function: None
+                        function: None,
+                        ..
                     } if name == "ExternalCallbacks::map"
                 ) =>
             {
@@ -4163,6 +4496,7 @@ fn exact_external_instance_callback_carries_receiver_without_callable_array() {
             native_arity: 0,
             requires_non_reference_trampoline: false,
             returns_by_reference: false,
+            return_type: None,
             exception_routes: None,
         },
         crate::JitExternalFunctionSignature {
@@ -4188,10 +4522,11 @@ fn exact_external_instance_callback_carries_receiver_without_callable_array() {
             native_arity: 2,
             requires_non_reference_trampoline: false,
             returns_by_reference: false,
+            return_type: None,
             exception_routes: None,
         },
     ];
-    let region = BaselineRegionBuilder::build_with_external_function_signatures(
+    let region = GenericRegionBuilder::build_with_external_function_signatures(
         &unit,
         function,
         &CompileMetadata {
@@ -4233,7 +4568,8 @@ fn exact_external_instance_callback_carries_receiver_without_callable_array() {
                     &call.target,
                     RegionCallTarget::Function {
                         name,
-                        function: None
+                        function: None,
+                        ..
                     } if name == "ExternalCallbacks::map"
                 ) =>
             {
@@ -4303,7 +4639,7 @@ fn optimizing_linked_reference_return_uses_published_native_signature() {
     );
     builder.terminate_return(function, block, Some(Operand::Local(reference)), span);
     let unit = builder.finish();
-    let region = BaselineRegionBuilder::build_with_external_function_signatures(
+    let region = GenericRegionBuilder::build_with_external_function_signatures(
         &unit,
         function,
         &CompileMetadata {
@@ -4333,6 +4669,7 @@ fn optimizing_linked_reference_return_uses_published_native_signature() {
             native_arity: 1,
             requires_non_reference_trampoline: false,
             returns_by_reference: true,
+            return_type: None,
             exception_routes: None,
         }],
     )
@@ -4358,6 +4695,7 @@ fn optimizing_linked_reference_return_uses_published_native_signature() {
         RegionCallTarget::Function {
             name: "linked_reference_target".to_owned(),
             function: None,
+            linked_function: Some(3),
         }
     );
     assert_eq!(call.direct_arity, Some(1));
@@ -4491,7 +4829,7 @@ fn optimizing_same_unit_reference_method_uses_one_native_lvalue_plan() {
     });
 
     let unit = builder.finish();
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         caller,
         &CompileMetadata {
@@ -4534,6 +4872,7 @@ fn optimizing_same_unit_reference_method_uses_one_native_lvalue_plan() {
         RegionCallTarget::Function {
             name: "ReferenceBox::slot".to_owned(),
             function: Some(method),
+            linked_function: None,
         }
     );
     assert_eq!(call.argument_operand_offset, 1);
@@ -4624,7 +4963,7 @@ fn static_method_closure_does_not_publish_a_null_implicit_receiver() {
         native_closure_bound_this_local(&unit, caller, closure),
         None
     );
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         caller,
         &CompileMetadata {
@@ -4705,7 +5044,7 @@ fn nested_closure_binds_the_resolved_receiver_local_after_captures() {
         native_closure_bound_this_local(&unit, parent, child),
         Some(parent_this)
     );
-    let region = BaselineRegionBuilder::build(
+    let region = GenericRegionBuilder::build(
         &unit,
         parent,
         &CompileMetadata {

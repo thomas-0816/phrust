@@ -4,6 +4,87 @@
 //! before generated code executes. Per-invocation validation is forbidden.
 
 use super::*;
+
+pub(super) fn publish_native_symbol_query(
+    context: &NativeRequestColdState<'_>,
+) -> NativeSymbolQueryCapability {
+    NativeSymbolQueryCapability {
+        active_compiled: std::ptr::from_ref(&context.compiled),
+        current_dynamic_unit: std::ptr::from_ref(&context.current_dynamic_unit),
+        dynamic_units: std::ptr::from_ref(&context.dynamic_units),
+        dynamic_functions: std::ptr::from_ref(&context.dynamic_functions),
+        external_functions: std::ptr::from_ref(&context.external_functions),
+        external_class_units: std::ptr::from_ref(&context.external_class_units),
+        deployment_functions: std::ptr::from_ref(&context.deployment_functions),
+        deployment_classes: std::ptr::from_ref(&context.deployment_classes),
+        visible_function_names: std::ptr::from_ref(&context.visible_function_names),
+        native_dynamic_constants: std::ptr::from_ref(&context.native_dynamic_constants)
+            as *mut std::collections::BTreeMap<String, i64>,
+        trusted_dynamic_constant_sites: std::ptr::from_ref(&context.trusted_dynamic_constant_sites),
+        dynamic_classes: std::ptr::from_ref(&context.dynamic_classes),
+        class_aliases: std::ptr::from_ref(&context.class_aliases),
+    }
+}
+
+pub(super) fn publish_native_request_query(
+    context: &NativeRequestColdState<'_>,
+) -> NativeRequestQueryCapability {
+    NativeRequestQueryCapability {
+        environment: std::ptr::from_ref(&context.environment),
+        included_files: std::ptr::from_ref(&context.included_files),
+        sapi_name: std::ptr::from_ref(&context.options.runtime_context.sapi_name),
+    }
+}
+
+pub(super) fn publish_native_configuration(
+    context: &NativeRequestColdState<'_>,
+) -> NativeConfigurationCapability {
+    NativeConfigurationCapability {
+        ini_registry: std::ptr::from_ref(&context.ini_registry)
+            as *mut php_runtime::api::IniRegistry,
+        include_path: std::ptr::from_ref(&context.include_path)
+            as *mut Arc<Vec<std::path::PathBuf>>,
+        display_errors: std::ptr::from_ref(&context.display_errors) as *mut bool,
+        error_reporting: std::ptr::from_ref(&context.error_reporting) as *mut i64,
+        default_timezone: std::ptr::from_ref(&context.default_timezone) as *mut String,
+    }
+}
+
+pub(super) fn publish_native_http_response(
+    context: &NativeRequestColdState<'_>,
+) -> NativeHttpResponseCapability {
+    NativeHttpResponseCapability {
+        response: std::ptr::from_ref(&context.http_response)
+            as *mut php_runtime::api::RuntimeHttpResponseState,
+    }
+}
+
+pub(super) fn publish_native_execution_deadline(
+    context: &mut NativeRequestColdState<'_>,
+) -> NativeExecutionDeadlineCapability {
+    NativeExecutionDeadlineCapability {
+        deadline: std::ptr::from_mut(&mut context.execution_deadline_at),
+        mutable: u8::from(context.execution_deadline_mutable),
+        diagnostic: std::ptr::from_mut(&mut context.diagnostic),
+    }
+}
+
+pub(super) fn publish_native_runtime_diagnostic(
+    context: &mut NativeRequestColdState<'_>,
+) -> NativeRuntimeDiagnosticCapability {
+    NativeRuntimeDiagnosticCapability {
+        diagnostic: std::ptr::from_mut(&mut context.diagnostic),
+    }
+}
+
+pub(super) fn publish_native_frame_arena(
+    context: &mut NativeRequestColdState<'_>,
+) -> NativeFrameArenaCapability {
+    NativeFrameArenaCapability {
+        arena: std::ptr::from_mut(&mut context.native_frame_arena),
+        diagnostic: std::ptr::from_mut(&mut context.diagnostic),
+    }
+}
 use php_runtime::api::PhpString;
 use php_runtime::api::Value;
 
@@ -115,7 +196,17 @@ impl<'a> NativeRequestColdState<'a> {
                 display_name_bytes: prepared.display_name.as_ptr() as usize as u64,
                 display_name_length: prepared.display_name.len() as u64,
                 state: php_jit::JIT_NATIVE_PREPARED_CLASS_ALLOCATABLE,
-                reserved: 0,
+                flags: if prepared.entry.constructor_id.is_some()
+                    || prepared
+                        .entry
+                        .methods
+                        .iter()
+                        .any(|method| method.name.eq_ignore_ascii_case("__construct"))
+                {
+                    php_jit::JIT_NATIVE_PREPARED_CLASS_HAS_CONSTRUCTOR
+                } else {
+                    0
+                },
             };
         }
     }
@@ -179,22 +270,176 @@ impl<'a> NativeRequestColdState<'a> {
             }
         }
         for (name, sites) in sites {
-            let Ok(encoded) = self.encode_named_runtime_constant_owned(&name, 0) else {
-                continue;
-            };
-            for (function, continuation) in sites {
-                let _ = self.publish_trusted_constant_fetch(function, continuation, encoded);
+            match self.encode_named_runtime_constant_owned(&name, 0) {
+                Ok(encoded) => {
+                    for (function, continuation) in sites {
+                        let _ =
+                            self.publish_trusted_constant_fetch(function, continuation, encoded);
+                    }
+                    let _ = self.release(encoded);
+                }
+                Err(_) => {
+                    for (function, continuation) in sites {
+                        let Some(base) = self
+                            .trusted_property_function_offsets
+                            .get(function as usize)
+                            .copied()
+                            .and_then(|base| usize::try_from(base).ok())
+                        else {
+                            continue;
+                        };
+                        let index = base.saturating_add(continuation as usize);
+                        let function_id = php_ir::FunctionId::new(function);
+                        let Some(span) = self
+                            .prepared_continuation_instructions(function_id)
+                            .and_then(|instructions| {
+                                instructions
+                                    .get(continuation as usize)
+                                    .and_then(Option::as_ref)
+                                    .map(|instruction| instruction.span)
+                            })
+                        else {
+                            continue;
+                        };
+                        let (function_name, include_function_frame) =
+                            self.unit.functions.get(function as usize).map_or_else(
+                                || ("{main}".to_owned(), false),
+                                |function| (function.name.clone(), !function.flags.is_top_level),
+                            );
+                        let owner = PreparedNativeThrowableOwner::UndefinedConstant(Box::new(
+                            PreparedNativeUndefinedConstantContract {
+                                throwable: prepare_native_throwable_site(
+                                    self,
+                                    "Error",
+                                    &function_name,
+                                    include_function_frame,
+                                    span,
+                                ),
+                                message: format!("Undefined constant \"{name}\""),
+                            },
+                        ));
+                        let pointer = owner.undefined_constant_pointer().unwrap_or(0);
+                        self.trusted_exception_plan_owners.insert(index, owner);
+                        if let Some(plan) = self.trusted_constant_slots.get_mut(index) {
+                            *plan = php_jit::JitNativeTrustedConstantSlot {
+                                value: pointer as i64,
+                                state: php_jit::JIT_NATIVE_TRUSTED_CONSTANT_ERROR,
+                                reserved: 0,
+                            };
+                        }
+                    }
+                }
             }
-            let _ = self.release(encoded);
         }
         for (function, continuation, class_name, constant) in class_sites {
             let Some(encoded) =
                 self.prepare_effect_free_class_constant_owned(function, &class_name, &constant)
             else {
+                if self.class_constant_is_proven_missing(function, &class_name, &constant) {
+                    let Some(base) = self
+                        .trusted_property_function_offsets
+                        .get(function as usize)
+                        .copied()
+                        .and_then(|base| usize::try_from(base).ok())
+                    else {
+                        continue;
+                    };
+                    let index = base.saturating_add(continuation as usize);
+                    let function_id = php_ir::FunctionId::new(function);
+                    let Some(span) = self
+                        .prepared_continuation_instructions(function_id)
+                        .and_then(|instructions| {
+                            instructions
+                                .get(continuation as usize)
+                                .and_then(Option::as_ref)
+                                .map(|instruction| instruction.span)
+                        })
+                    else {
+                        continue;
+                    };
+                    let (function_name, include_function_frame) =
+                        self.unit.functions.get(function as usize).map_or_else(
+                            || ("{main}".to_owned(), false),
+                            |function| (function.name.clone(), !function.flags.is_top_level),
+                        );
+                    let owner = PreparedNativeThrowableOwner::UndefinedConstant(Box::new(
+                        PreparedNativeUndefinedConstantContract {
+                            throwable: prepare_native_throwable_site(
+                                self,
+                                "Error",
+                                &function_name,
+                                include_function_frame,
+                                span,
+                            ),
+                            message: format!("Undefined constant {class_name}::{constant}"),
+                        },
+                    ));
+                    let pointer = owner.undefined_constant_pointer().unwrap_or(0);
+                    self.trusted_exception_plan_owners.insert(index, owner);
+                    if let Some(plan) = self.trusted_constant_slots.get_mut(index) {
+                        *plan = php_jit::JitNativeTrustedConstantSlot {
+                            value: pointer as i64,
+                            state: php_jit::JIT_NATIVE_TRUSTED_CONSTANT_ERROR,
+                            reserved: 0,
+                        };
+                    }
+                }
                 continue;
             };
             let _ = self.publish_trusted_constant_fetch(function, continuation, encoded);
             let _ = self.release(encoded);
+        }
+    }
+
+    fn class_constant_is_proven_missing(
+        &self,
+        caller_function: u32,
+        class_name: &str,
+        constant_name: &str,
+    ) -> bool {
+        if constant_name.eq_ignore_ascii_case("class") {
+            return false;
+        }
+        let mut candidate = match class_name.to_ascii_lowercase().as_str() {
+            "static" => return false,
+            "self" => match native_effective_calling_class(self, caller_function) {
+                Some(class) => class.name.clone(),
+                None => return false,
+            },
+            "parent" => match native_effective_calling_class(self, caller_function)
+                .and_then(|class| class.parent.clone())
+            {
+                Some(parent) => parent,
+                None => return false,
+            },
+            _ => normalize_class_name(class_name),
+        };
+        if let Some(original) = self.class_aliases.get(&normalize_class_name(&candidate)) {
+            candidate = original.clone();
+        }
+        loop {
+            let class = if let Some(class) = native_active_class_handle(self, &candidate) {
+                class
+            } else if let Some((_, class)) = native_external_class_handle(self, &candidate) {
+                class
+            } else {
+                return false;
+            };
+            if class
+                .constants
+                .iter()
+                .any(|entry| entry.name.eq_ignore_ascii_case(constant_name))
+                || class
+                    .enum_cases
+                    .iter()
+                    .any(|case| case.name.eq_ignore_ascii_case(constant_name))
+            {
+                return false;
+            }
+            let Some(parent) = class.parent.as_deref() else {
+                return true;
+            };
+            candidate = normalize_class_name(parent);
         }
     }
 
@@ -395,17 +640,27 @@ pub(super) fn native_class_is_publication_allocatable(
     let owner_ir_unit = |owner: Option<usize>| -> Option<&php_ir::IrUnit> {
         match owner {
             None => Some(&*context.unit),
+            Some(unit) if context.current_dynamic_unit == Some(unit) => Some(&*context.unit),
             Some(unit) => context
                 .dynamic_units
                 .get(unit)
                 .map(|package| package.compiled.unit()),
         }
     };
+    if class.flags.is_abstract
+        || class.flags.is_interface
+        || class.flags.is_trait
+        || class.flags.is_enum
+    {
+        return false;
+    }
     let mut current = Some((owner_unit, class));
     let mut visited = std::collections::BTreeSet::new();
     while let Some((owner, candidate)) = current {
-        if candidate.flags.is_abstract
-            || candidate.flags.is_interface
+        // An abstract ancestor is a valid layout contributor for a concrete
+        // child. Only the class being allocated is forbidden from being
+        // abstract; non-class ancestors remain invalid throughout lineage.
+        if candidate.flags.is_interface
             || candidate.flags.is_trait
             || candidate.flags.is_enum
             || !visited.insert((owner, candidate.name.as_str()))
@@ -548,13 +803,16 @@ pub(super) fn native_instance_property_writable(
     declaration: &NativeInstancePropertyDeclaration,
     caller_function: u32,
 ) -> bool {
-    if !declaration.entry.flags.set_is_private && !declaration.entry.flags.set_is_protected {
+    let private = declaration.entry.flags.is_private || declaration.entry.flags.set_is_private;
+    let protected =
+        declaration.entry.flags.is_protected || declaration.entry.flags.set_is_protected;
+    if !private && !protected {
         return true;
     }
     let Some(caller) = native_effective_calling_class(context, caller_function) else {
         return false;
     };
-    if declaration.entry.flags.set_is_private {
+    if private {
         caller.name == declaration.owner.name
     } else {
         native_class_is_a(context, &caller.name, &declaration.owner.name)
@@ -654,42 +912,6 @@ pub(super) fn native_external_method(
     }
 }
 
-pub(super) fn create_native_external_object(
-    context: &mut NativeRequestColdState<'_>,
-    class_name: &str,
-    arguments: &[i64],
-    source: &php_ir::Instruction,
-) -> Result<i64, String> {
-    let (unit, class) = native_external_class_handle(context, class_name)
-        .ok_or_else(|| format!("E_PHP_VM_UNKNOWN_CLASS: Class {class_name} not found"))?;
-    if class.flags.is_abstract
-        || class.flags.is_interface
-        || class.flags.is_trait
-        || class.flags.is_enum
-    {
-        return Err(format!(
-            "Cannot instantiate {} {}",
-            class_name, class.display_name
-        ));
-    }
-    native_prepare_runtime_class_constants(context, Some(unit), &class, source)?;
-    let object = new_native_object(context, Some(unit), &class)?;
-    let receiver = context.encode_native_object_owner(object)?;
-    if let Some((constructor, _)) = native_external_method(context, class_name, "__construct") {
-        let mut constructor_arguments = Vec::with_capacity(arguments.len() + 1);
-        constructor_arguments.push(receiver);
-        constructor_arguments.extend_from_slice(arguments);
-        let _ = invoke_native_resolved_external_function(
-            context,
-            constructor,
-            &constructor_arguments,
-            Some(class.name.clone()),
-            context.unit.strict_types,
-        )?;
-    }
-    Ok(receiver)
-}
-
 pub(super) fn native_function_has_implicit_closure_this(function: &php_ir::IrFunction) -> bool {
     function.implicit_closure_this_local().is_some()
 }
@@ -732,192 +954,6 @@ pub(super) fn native_backtrace_frame_from_metadata(
         object,
         arguments,
         fixed_argument_count,
-    }
-}
-
-pub(super) fn invoke_native_external_function(
-    context: &mut NativeRequestColdState<'_>,
-    target: NativeDynamicFunction,
-    arguments: &[i64],
-    called_class: Option<String>,
-    strict: bool,
-) -> NativeCallResult {
-    invoke_native_external_function_with_metadata(
-        context,
-        target,
-        arguments,
-        None,
-        called_class,
-        strict,
-    )
-}
-
-pub(super) fn invoke_native_resolved_external_function(
-    context: &mut NativeRequestColdState<'_>,
-    target: NativeDynamicFunction,
-    arguments: &[i64],
-    called_class: Option<String>,
-    strict: bool,
-) -> NativeCallResult {
-    invoke_native_resolved_external_function_with_metadata(
-        context,
-        target,
-        arguments,
-        None,
-        called_class,
-        strict,
-    )
-}
-
-pub(super) fn invoke_native_external_function_with_metadata(
-    context: &mut NativeRequestColdState<'_>,
-    target: NativeDynamicFunction,
-    arguments: &[i64],
-    metadata: Option<&[php_ir::instruction::IrCallArg]>,
-    called_class: Option<String>,
-    strict: bool,
-) -> NativeCallResult {
-    invoke_native_external_function_with_metadata_at_tier(
-        context,
-        target,
-        arguments,
-        metadata,
-        called_class,
-        strict,
-        false,
-    )
-}
-
-pub(super) fn invoke_native_resolved_external_function_with_metadata(
-    context: &mut NativeRequestColdState<'_>,
-    target: NativeDynamicFunction,
-    arguments: &[i64],
-    metadata: Option<&[php_ir::instruction::IrCallArg]>,
-    called_class: Option<String>,
-    strict: bool,
-) -> NativeCallResult {
-    invoke_native_external_function_with_metadata_at_tier(
-        context,
-        target,
-        arguments,
-        metadata,
-        called_class,
-        strict,
-        true,
-    )
-}
-
-pub(super) fn invoke_native_external_function_with_metadata_at_tier(
-    context: &mut NativeRequestColdState<'_>,
-    target: NativeDynamicFunction,
-    arguments: &[i64],
-    metadata: Option<&[php_ir::instruction::IrCallArg]>,
-    called_class: Option<String>,
-    strict: bool,
-    baseline_continuation: bool,
-) -> NativeCallResult {
-    prepare_dynamic_native_entry(context, target.unit, target.function)?;
-    let mut transferred_arguments = transfer_native_external_arguments(context, arguments)?;
-    let execution_target = NativeExecutionTarget {
-        unit: Some(target.unit),
-        function: target.function,
-        called_class: called_class
-            .as_deref()
-            .map(Arc::from)
-            .or_else(|| context.called_classes.last().cloned()),
-        scope_class: context
-            .lexical_scope_classes
-            .last()
-            .map(|scope| Arc::from(scope.as_str())),
-    };
-    let result = context.run_in_native_execution_target(&execution_target, |context| {
-        let result = if baseline_continuation {
-            invoke_native_resolved_function_with_metadata_strict(
-                context,
-                target.function,
-                &transferred_arguments,
-                metadata,
-                strict,
-            )
-        } else {
-            invoke_baseline_bound_function_with_metadata_strict(
-                context,
-                target.function,
-                &transferred_arguments,
-                metadata,
-                strict,
-                false,
-            )
-        };
-        // External callees may mutate a receiver, reference, or array argument
-        // and publish literals from their own IrUnit into that authoritative
-        // ownership graph. Rehome those newly written constants while the
-        // callee unit is still active, before restoring the caller's runtime
-        // view. This is the symmetric return half of argument transfer.
-        context.stabilize_owned_native_values_for_cross_unit(&mut transferred_arguments)?;
-        match result {
-            Ok(encoded) => Ok(context.transfer_external_return(encoded, target.unit)?),
-            Err(NativeCallControl::Exit(encoded)) => {
-                let encoded = context.transfer_external_return(encoded, target.unit)?;
-                Err(NativeCallControl::Exit(encoded))
-            }
-            Err(control) => Err(control),
-        }
-    });
-    let mut release_error = None;
-    for argument in transferred_arguments {
-        if let Err(error) = context.release(argument) {
-            release_error.get_or_insert(error);
-        }
-    }
-    match (result, release_error) {
-        (Err(control), _) => Err(control),
-        (Ok(_), Some(error)) => Err(error.into()),
-        (Ok(value), None) => Ok(value),
-    }
-}
-
-pub(super) fn create_native_external_generator_with_metadata(
-    context: &mut NativeRequestColdState<'_>,
-    target: NativeDynamicFunction,
-    arguments: &[i64],
-    metadata: Option<&[php_ir::instruction::IrCallArg]>,
-    called_class: Option<String>,
-    strict: bool,
-) -> NativeCallResult {
-    prepare_dynamic_native_entry(context, target.unit, target.function)?;
-    let transferred = transfer_native_external_arguments(context, arguments)?;
-    let execution_target = NativeExecutionTarget {
-        unit: Some(target.unit),
-        function: target.function,
-        called_class: called_class
-            .as_deref()
-            .map(Arc::from)
-            .or_else(|| context.called_classes.last().cloned()),
-        scope_class: context
-            .lexical_scope_classes
-            .last()
-            .map(|scope| Arc::from(scope.as_str())),
-    };
-    let result = context.run_in_native_execution_target(&execution_target, |context| {
-        create_baseline_bound_generator_with_metadata_strict(
-            context,
-            target.function,
-            &transferred,
-            metadata,
-            strict,
-        )
-    });
-    let mut release_error = None;
-    for argument in transferred {
-        if let Err(error) = context.release(argument) {
-            release_error.get_or_insert(error);
-        }
-    }
-    match (result, release_error) {
-        (Err(control), _) => Err(control),
-        (Ok(_), Some(error)) => Err(error.into()),
-        (Ok(generator), None) => Ok(generator),
     }
 }
 
@@ -1287,7 +1323,7 @@ pub(super) fn resume_native_optimizing_exit_with_artifact(
                     cold_diagnostics::record_native_helper_failure(context, error.clone());
                     return Err(error);
                 }
-                let baseline = ensure_native_baseline_entry(context, function)?;
+                let baseline = ensure_native_generic_entry(context, function)?;
                 if let Err(error) =
                     reconcile_native_transition_owners(context, &source, &baseline, &state)
                 {
@@ -1365,19 +1401,8 @@ pub(super) fn native_transition_direct_value_kind(
         return match slot.kind {
             php_jit::JIT_NATIVE_VALUE_VIEW_PREPARED_CALLABLE => "prepared_callable",
             php_jit::JIT_NATIVE_VALUE_VIEW_COLD_GENERATOR => "materialized_generator",
-            php_jit::JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT => "array_iterator",
-            php_jit::JIT_NATIVE_VALUE_VIEW_COLD_ITERATOR => {
-                context
-                    .cold_iterator(index)
-                    .map_or("missing", |iterator| match iterator {
-                        NativeColdIterator::Array(_) => "array_iterator",
-                        NativeColdIterator::Object(_) => "object_iterator",
-                        NativeColdIterator::Snapshot(_) => "snapshot_iterator",
-                        NativeColdIterator::LiveArray(_) => "live_array_iterator",
-                        NativeColdIterator::User(_) => "iterator",
-                        NativeColdIterator::Generator(_) => "baseline_generator_iterator",
-                    })
-            }
+            php_jit::JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT
+            | php_jit::JIT_NATIVE_VALUE_VIEW_COLD_ITERATOR => "retired_cold_iterator",
             _ => native_transition_value_kind(encoded),
         };
     }
@@ -1485,12 +1510,17 @@ pub(super) fn native_class_is_a(
     if class_name == "arrayiterator" && matches!(target.as_str(), "iterator" | "traversable") {
         return true;
     }
+    let cache_key = (context.external_signature_epoch, class_name.clone());
+    if let Some(ancestry) = context
+        .runtime_class_ancestry_cache
+        .borrow()
+        .get(&cache_key)
+    {
+        return ancestry.contains(&target);
+    }
     let mut pending = vec![class_name];
     let mut visited = std::collections::BTreeSet::new();
     while let Some(candidate) = pending.pop() {
-        if candidate == target {
-            return true;
-        }
         if !visited.insert(candidate.clone()) {
             continue;
         }
@@ -1534,7 +1564,12 @@ pub(super) fn native_class_is_a(
             );
         }
     }
-    false
+    let result = visited.contains(&target);
+    context
+        .runtime_class_ancestry_cache
+        .borrow_mut()
+        .insert(cache_key, visited);
+    result
 }
 
 pub(super) fn native_method_in_hierarchy(
@@ -1593,10 +1628,6 @@ pub(super) fn native_function_requires_non_reference_trampoline(
             matches!(
                 instruction.kind,
                 php_ir::InstructionKind::Yield { .. } | php_ir::InstructionKind::YieldFrom { .. }
-            ) || matches!(
-                &instruction.kind,
-                php_ir::InstructionKind::CallFunction { name, .. }
-                    if name.trim_start_matches('\\').eq_ignore_ascii_case("debug_backtrace")
             ) || method_scope_sensitive
                 && matches!(
                     &instruction.kind,

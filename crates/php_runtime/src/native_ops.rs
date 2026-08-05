@@ -166,12 +166,13 @@ const CONTEXT_FRAME_ARGS_OUT: &[NativeAbiType] = &[
     NativeAbiType::ValueOut,
 ];
 const NATIVE_CALLERS: &[&str] = &["baseline", "optimizing"];
+const BASELINE_NATIVE_CALLERS: &[&str] = &["baseline"];
 const RUNTIME_AND_NATIVE: &[&str] = &["php_runtime", "php_vm"];
 
 macro_rules! operation_impl {
     ($id:literal, $name:literal, $family:ident, $args:expr, $result:ident, $ownership:ident,
      $user:literal, $allocate:literal, $throw:literal, $diagnose:literal, $suspend:literal, $gc:literal,
-     $implementation:expr, $native_callable:literal) => {
+     $implementation:expr, $native_callable:literal, $native_callers:expr) => {
         NativeOperationDescriptor {
             id: JitHelperId($id),
             name: $name,
@@ -181,7 +182,7 @@ macro_rules! operation_impl {
             result: NativeAbiType::$result,
             ownership: NativeOwnership::$ownership,
             direct_callers: RUNTIME_AND_NATIVE,
-            native_callers: NATIVE_CALLERS,
+            native_callers: $native_callers,
             may_call_user_code: $user,
             may_allocate: $allocate,
             may_throw: $throw,
@@ -211,7 +212,8 @@ macro_rules! operation {
             $suspend,
             $gc,
             concat!("php_runtime::native_ops::contract::", $name),
-            false
+            false,
+            NATIVE_CALLERS
         )
     };
 }
@@ -234,7 +236,32 @@ macro_rules! native_helper {
             $suspend,
             $gc,
             $implementation,
-            true
+            true,
+            NATIVE_CALLERS
+        )
+    };
+}
+
+macro_rules! baseline_helper {
+    ($id:literal, $name:literal, $family:ident, $args:expr, $result:ident, $ownership:ident,
+     $user:literal, $allocate:literal, $throw:literal, $diagnose:literal, $suspend:literal, $gc:literal,
+     $implementation:expr) => {
+        operation_impl!(
+            $id,
+            $name,
+            $family,
+            $args,
+            $result,
+            $ownership,
+            $user,
+            $allocate,
+            $throw,
+            $diagnose,
+            $suspend,
+            $gc,
+            $implementation,
+            true,
+            BASELINE_NATIVE_CALLERS
         )
     };
 }
@@ -297,7 +324,7 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
         false,
         true
     ),
-    native_helper!(
+    baseline_helper!(
         1010,
         "baseline_scalar_unary",
         ScalarOperators,
@@ -312,7 +339,7 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
         true,
         "php_runtime::api::baseline_unary"
     ),
-    native_helper!(
+    baseline_helper!(
         1011,
         "baseline_scalar_binary",
         ScalarOperators,
@@ -327,7 +354,7 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
         true,
         "php_runtime::api::baseline_binary"
     ),
-    native_helper!(
+    baseline_helper!(
         1012,
         "baseline_scalar_compare",
         ScalarOperators,
@@ -342,7 +369,7 @@ pub const NATIVE_OPERATION_REGISTRY: &[NativeOperationDescriptor] = &[
         true,
         "php_runtime::api::baseline_compare"
     ),
-    native_helper!(
+    baseline_helper!(
         1013,
         "baseline_scalar_cast",
         ScalarOperators,

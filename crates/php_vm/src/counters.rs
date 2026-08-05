@@ -5,9 +5,19 @@ use std::collections::BTreeMap;
 /// One native compilation record suitable for diagnostics and profiles.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NativeCompileDescriptor {
+    pub source_identity: String,
     pub function_id: u32,
     pub function_name: String,
     pub ir_fingerprint: String,
+    pub tier: String,
+    pub generic_key: String,
+    pub specialization: String,
+    pub external_signatures_hash: u64,
+    pub receiver_layout_hash: u64,
+    pub trigger: String,
+    pub cache_disposition: String,
+    pub replan_index: u32,
+    pub publication_result: String,
     pub code_bytes: u64,
     pub compile_time_nanos: u64,
     pub target_isa: String,
@@ -38,7 +48,7 @@ pub struct VmCounters {
 
     pub native_execution_entries: u64,
     pub native_execution_time_nanos: u64,
-    pub native_baseline_entry_executions: u64,
+    pub native_generic_entry_executions: u64,
     pub native_optimizing_entry_executions: u64,
     pub native_region_entries: u64,
     pub native_region_side_exits: u64,
@@ -138,12 +148,13 @@ impl VmCounters {
         format!(
             concat!(
                 "{{\n",
-                "  \"schema_version\": 15,\n",
+                "  \"schema_version\": 16,\n",
                 "  \"native_compile_attempts\": {},\n",
                 "  \"native_compile_successes\": {},\n",
                 "  \"native_compile_failures\": {},\n",
                 "  \"native_compile_time_nanos\": {},\n",
                 "  \"native_compile_code_bytes\": {},\n",
+                "  \"native_compile_descriptors\": {},\n",
                 "  \"native_cache_hits\": {},\n",
                 "  \"native_cache_misses\": {},\n",
                 "  \"native_cache_writes\": {},\n",
@@ -155,7 +166,7 @@ impl VmCounters {
                 "  \"native_cache_bytes_written\": {},\n",
                 "  \"native_execution_entries\": {},\n",
                 "  \"native_execution_time_nanos\": {},\n",
-                "  \"native_baseline_entry_executions\": {},\n",
+                "  \"native_generic_entry_executions\": {},\n",
                 "  \"native_optimizing_entry_executions\": {},\n",
                 "  \"native_region_entries\": {},\n",
                 "  \"native_region_side_exits\": {},\n",
@@ -254,6 +265,7 @@ impl VmCounters {
             self.native_compile_failures,
             self.native_compile_time_nanos,
             self.native_compile_code_bytes,
+            compile_descriptors_json(&self.native_compile_descriptors),
             self.native_cache_hits,
             self.native_cache_misses,
             self.native_cache_writes,
@@ -265,7 +277,7 @@ impl VmCounters {
             self.native_cache_bytes_written,
             self.native_execution_entries,
             self.native_execution_time_nanos,
-            self.native_baseline_entry_executions,
+            self.native_generic_entry_executions,
             self.native_optimizing_entry_executions,
             self.native_region_entries,
             self.native_region_side_exits,
@@ -361,6 +373,50 @@ impl VmCounters {
     }
 }
 
+fn compile_descriptors_json(descriptors: &[NativeCompileDescriptor]) -> String {
+    let rows = descriptors
+        .iter()
+        .map(|descriptor| {
+            format!(
+                concat!(
+                    "{{\"source_identity\":{},\"function_id\":{},\"function_name\":{},",
+                    "\"ir_fingerprint\":{},\"tier\":{},\"generic_key\":{},",
+                    "\"specialization\":{},\"external_signatures_hash\":{},",
+                    "\"receiver_layout_hash\":{},\"trigger\":{},",
+                    "\"cache_disposition\":{},\"replan_index\":{},",
+                    "\"publication_result\":{},\"code_bytes\":{},",
+                    "\"compile_time_nanos\":{},\"target_isa\":{},",
+                    "\"runtime_abi_hash\":{},\"helper_abi_hash\":{},\"config_hash\":{}}}"
+                ),
+                json_string(&descriptor.source_identity),
+                descriptor.function_id,
+                json_string(&descriptor.function_name),
+                json_string(&descriptor.ir_fingerprint),
+                json_string(&descriptor.tier),
+                json_string(&descriptor.generic_key),
+                json_string(&descriptor.specialization),
+                descriptor.external_signatures_hash,
+                descriptor.receiver_layout_hash,
+                json_string(&descriptor.trigger),
+                json_string(&descriptor.cache_disposition),
+                descriptor.replan_index,
+                json_string(&descriptor.publication_result),
+                descriptor.code_bytes,
+                descriptor.compile_time_nanos,
+                json_string(&descriptor.target_isa),
+                descriptor.runtime_abi_hash,
+                descriptor.helper_abi_hash,
+                descriptor.config_hash,
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("[{}]", rows.join(","))
+}
+
+fn json_string(value: &str) -> String {
+    format!("{value:?}")
+}
+
 fn counter_map_json(values: &BTreeMap<String, u64>) -> String {
     let entries = values
         .iter()
@@ -426,7 +482,7 @@ mod tests {
             .insert("native_\"binary\"".to_owned(), 17);
 
         let parsed: serde_json::Value = serde_json::from_str(&counters.to_json()).unwrap();
-        assert_eq!(parsed["schema_version"], 15);
+        assert_eq!(parsed["schema_version"], 16);
         assert_eq!(parsed["runtime_helper_calls_by_id"]["native_\"binary\""], 2);
         assert_eq!(
             parsed["runtime_helper_time_nanos_by_id"]["native_\"binary\""],

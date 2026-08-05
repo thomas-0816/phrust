@@ -33,8 +33,8 @@ impl NativeCompileError {
 pub enum NativeCompilerTier {
     /// Exhaustive, non-speculative lowering without profile feedback.
     #[default]
-    Baseline,
-    /// Guarded transformations layered on top of the baseline graph.
+    Generic,
+    /// Guarded transformations layered on top of the Generic graph.
     Optimizing,
 }
 
@@ -168,6 +168,10 @@ pub enum RegionCallTarget {
     Function {
         name: String,
         function: Option<FunctionId>,
+        /// Dense late-link slot for a statically named cross-unit target.
+        /// Generic code records this identity even before the declaration is
+        /// published; live entry and binding pointers remain request-owned.
+        linked_function: Option<u32>,
     },
     Method {
         receiver: Operand,
@@ -484,6 +488,7 @@ impl RegionNativeCall {
             RegionCallTarget::Function {
                 name,
                 function: None,
+                ..
             } => {
                 let normalized = name.trim_start_matches('\\');
                 php_std::arginfo::function_metadata_indexed(normalized)
@@ -941,7 +946,6 @@ pub enum RegionInstructionKind {
     NewObject {
         dst: RegId,
         class: u32,
-        prepared: bool,
         /// External constructor link whose target-unit class plan owns the
         /// allocation layout. Local classes leave this empty.
         linked_class: Option<u32>,
@@ -951,6 +955,7 @@ pub enum RegionInstructionKind {
         object: RegionOperand,
         property: String,
         prepared_class: Option<u32>,
+        dynamic_stdclass: bool,
     },
     FetchDynamicStaticProperty {
         dst: RegId,
@@ -967,6 +972,7 @@ pub enum RegionInstructionKind {
         value: RegionOperand,
         property: String,
         prepared_class: Option<u32>,
+        dynamic_stdclass: bool,
     },
     CloneObject {
         dst: RegId,
@@ -1381,8 +1387,8 @@ impl RegionTerminator {
     }
 }
 
-/// Builds exhaustive baseline Region IR from authoritative PHP IR.
-pub struct BaselineRegionBuilder;
+/// Builds exhaustive Generic Region IR from authoritative PHP IR.
+pub struct GenericRegionBuilder;
 
 #[derive(Clone)]
 struct KnownClosure {
@@ -1424,6 +1430,11 @@ struct KnownPregCallbackArray {
     entries: Vec<(Operand, Operand)>,
     root_register: Option<RegId>,
     construction_ids: BTreeSet<InstrId>,
+}
+
+#[derive(Clone, Default)]
+struct KnownCallArgumentArray {
+    entries: Vec<(Option<Operand>, Operand)>,
 }
 
 fn closure_requires_implicit_this(unit: &IrUnit, closure_function: FunctionId) -> bool {
@@ -1553,7 +1564,7 @@ pub fn native_continuation_capacity_upper_bound(
     Some(capacity)
 }
 
-impl BaselineRegionBuilder {
+impl GenericRegionBuilder {
     pub fn build(
         unit: &IrUnit,
         function: FunctionId,
@@ -1626,13 +1637,24 @@ impl BaselineRegionBuilder {
         let exception_regions = collect_exception_regions(ir_function);
         let method_class = native_method_class(unit, function);
         let stable_callable_entries = stable_callable_local_entries(unit, ir_function);
+        let stable_object_entries = stable_object_local_entries(unit, ir_function);
         let mut source_register_use_counts = vec![0_usize; ir_function.register_count as usize];
+        let mut source_register_definition_counts =
+            vec![0_usize; ir_function.register_count as usize];
         for block in &ir_function.blocks {
             for instruction in &block.instructions {
                 let mut uses = Vec::new();
                 php_ir::instruction_register_uses(&instruction.kind, &mut uses);
                 for register in uses {
                     if let Some(count) = source_register_use_counts.get_mut(register.index()) {
+                        *count = count.saturating_add(1);
+                    }
+                }
+                let mut definitions = Vec::new();
+                php_ir::instruction_register_defs(&instruction.kind, &mut definitions);
+                for register in definitions {
+                    if let Some(count) = source_register_definition_counts.get_mut(register.index())
+                    {
                         *count = count.saturating_add(1);
                     }
                 }
@@ -1647,6 +1669,33 @@ impl BaselineRegionBuilder {
                 }
             }
         }
+        // `$this` is immutable. A receiver loaded before a branch therefore
+        // retains its declaring-class family when the same SSA register is
+        // consumed in a successor block. Per-block fact maps used to drop
+        // that class and misclassify a declared property as dynamic. Restrict
+        // the cross-block seed to uniquely defined direct receiver loads so a
+        // multi-definition phi can never inherit an unsound class fact.
+        let stable_method_receiver_registers = method_class
+            .filter(|(_, is_static)| !is_static)
+            .map(|(class, _)| {
+                ir_function
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.instructions)
+                    .filter_map(|instruction| match instruction.kind {
+                        InstructionKind::LoadLocal { dst, local }
+                        | InstructionKind::LoadLocalQuiet { dst, local }
+                            if local == LocalId::new(0)
+                                && source_register_definition_counts.get(dst.index()).copied()
+                                    == Some(1) =>
+                        {
+                            Some((dst, class))
+                        }
+                        _ => None,
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
         for (block_index, block) in ir_function.blocks.iter().enumerate() {
             let entry_continuation_id = next_continuation;
             let mut instructions = Vec::with_capacity(block.instructions.len());
@@ -1660,19 +1709,31 @@ impl BaselineRegionBuilder {
             let mut known_null_registers = BTreeSet::<RegId>::new();
             let mut known_closure_registers = BTreeMap::<RegId, KnownClosure>::new();
             let mut known_closure_locals = BTreeMap::<LocalId, KnownClosure>::new();
-            let mut known_object_registers = BTreeMap::<RegId, u32>::new();
-            let mut known_object_locals = BTreeMap::<LocalId, u32>::new();
+            let mut known_object_registers = stable_method_receiver_registers.clone();
+            let mut known_object_locals = stable_object_entries
+                .get(block.id.index())
+                .map(|entry| entry.local_classes.clone())
+                .unwrap_or_default();
             let mut known_external_object_registers = BTreeMap::<RegId, String>::new();
-            let mut known_external_object_locals = BTreeMap::<LocalId, String>::new();
+            let mut known_external_object_locals = stable_object_entries
+                .get(block.id.index())
+                .map(|entry| entry.external_classes.clone())
+                .unwrap_or_default();
             let mut known_method_callable_registers =
                 BTreeMap::<RegId, KnownMethodCallableArray>::new();
             let mut known_method_callable_locals =
                 BTreeMap::<LocalId, KnownMethodCallableArray>::new();
             let mut known_preg_callback_arrays = BTreeMap::<RegId, KnownPregCallbackArray>::new();
+            let mut known_call_argument_arrays = BTreeMap::<RegId, KnownCallArgumentArray>::new();
+            let mut known_call_argument_array_locals =
+                BTreeMap::<LocalId, KnownCallArgumentArray>::new();
             let mut consumed_method_callable_receivers =
                 BTreeMap::<RegId, ConsumedMethodCallableArray>::new();
             let mut exact_object_registers = BTreeSet::<RegId>::new();
-            let mut exact_object_locals = BTreeSet::<LocalId>::new();
+            let mut exact_object_locals = stable_object_entries
+                .get(block.id.index())
+                .map(|entry| entry.exact.clone())
+                .unwrap_or_default();
             let mut native_globals_registers = BTreeSet::<RegId>::new();
             if let Some((class, false)) = method_class {
                 // Every instance entry receives a receiver from its declaring
@@ -1739,6 +1800,11 @@ impl BaselineRegionBuilder {
                             known_method_callable_registers.insert(*dst, callable.clone());
                         }
                         if let Operand::Register(register) = src
+                            && let Some(array) = known_call_argument_arrays.get(register)
+                        {
+                            known_call_argument_arrays.insert(*dst, array.clone());
+                        }
+                        if let Operand::Register(register) = src
                             && exact_object_registers.contains(register)
                         {
                             exact_object_registers.insert(*dst);
@@ -1768,6 +1834,9 @@ impl BaselineRegionBuilder {
                         }
                         if let Some(callable) = known_method_callable_locals.get(local) {
                             known_method_callable_registers.insert(*dst, callable.clone());
+                        }
+                        if let Some(array) = known_call_argument_array_locals.get(local) {
+                            known_call_argument_arrays.insert(*dst, array.clone());
                         }
                         if exact_object_locals.contains(local) {
                             exact_object_registers.insert(*dst);
@@ -1824,6 +1893,13 @@ impl BaselineRegionBuilder {
                             known_method_callable_locals.remove(local);
                         }
                         if let Operand::Register(register) = src
+                            && let Some(array) = known_call_argument_arrays.get(register)
+                        {
+                            known_call_argument_array_locals.insert(*local, array.clone());
+                        } else {
+                            known_call_argument_array_locals.remove(local);
+                        }
+                        if let Operand::Register(register) = src
                             && exact_object_registers.contains(register)
                         {
                             exact_object_locals.insert(*local);
@@ -1844,6 +1920,7 @@ impl BaselineRegionBuilder {
                         };
                         callbacks.construction_ids.insert(instruction.id);
                         known_preg_callback_arrays.insert(*dst, callbacks);
+                        known_call_argument_arrays.insert(*dst, KnownCallArgumentArray::default());
                     }
                     InstructionKind::ArrayInsert {
                         array,
@@ -1971,10 +2048,34 @@ impl BaselineRegionBuilder {
                         } else {
                             known_preg_callback_arrays.remove(array);
                         }
+                        if by_ref_local.is_none() {
+                            if let Some(arguments) = known_call_argument_arrays.get_mut(array) {
+                                arguments.entries.push((*key, *value));
+                            }
+                        } else {
+                            known_call_argument_arrays.remove(array);
+                        }
                     }
                     InstructionKind::ArraySpread { array, .. } => {
                         known_method_callable_registers.remove(array);
                         known_preg_callback_arrays.remove(array);
+                        known_call_argument_arrays.remove(array);
+                    }
+                    InstructionKind::AcquireCallable { dst, value } => {
+                        let callable = match value {
+                            Operand::Register(register) => {
+                                known_method_callable_registers.get(register).cloned()
+                            }
+                            Operand::Local(local) => {
+                                known_method_callable_locals.get(local).cloned()
+                            }
+                            Operand::Constant(_) => None,
+                        };
+                        if let Some(mut callable) = callable {
+                            callable.root_register = Some(*dst);
+                            callable.receiver_owner_captured = true;
+                            known_method_callable_registers.insert(*dst, callable);
+                        }
                     }
                     InstructionKind::Discard { src } => {
                         for callable in known_method_callable_registers.values_mut() {
@@ -2036,7 +2137,6 @@ impl BaselineRegionBuilder {
                                     instruction,
                                     args,
                                     parameters,
-                                    runtime_metadata.tier == NativeCompilerTier::Optimizing,
                                     &mut region_local_count,
                                     &mut region_locals,
                                     &known_object_registers,
@@ -2187,7 +2287,6 @@ impl BaselineRegionBuilder {
                                 instruction,
                                 args,
                                 parameters,
-                                runtime_metadata.tier == NativeCompilerTier::Optimizing,
                                 &mut region_local_count,
                                 &mut region_locals,
                                 &known_object_registers,
@@ -2247,7 +2346,6 @@ impl BaselineRegionBuilder {
                                 instruction,
                                 args,
                                 parameters,
-                                runtime_metadata.tier == NativeCompilerTier::Optimizing,
                                 &mut region_local_count,
                                 &mut region_locals,
                                 &known_object_registers,
@@ -2339,7 +2437,12 @@ impl BaselineRegionBuilder {
                         ..
                     } => {
                         if let Some((class_index, class)) = find_class(unit, class_name) {
-                            if class.constructor.is_some() {
+                            let stable_layout = class_has_publication_stable_layout(
+                                unit,
+                                class_index,
+                                published_external_signatures,
+                            );
+                            if class.constructor.is_some() && stable_layout {
                                 instructions.push(RegionInstruction {
                                     id: instruction.id,
                                     span: instruction.span,
@@ -2352,21 +2455,19 @@ impl BaselineRegionBuilder {
                                     kind: RegionInstructionKind::NewObject {
                                         dst: *dst,
                                         class: class_index,
-                                        prepared: class_has_publication_stable_layout(
-                                            unit,
-                                            class_index,
-                                            published_external_signatures,
-                                        ),
                                         linked_class: None,
                                     },
                                 });
                                 next_continuation = next_continuation.saturating_add(1);
-                            } else if local_class_external_parent(unit, class_index).is_some() {
+                            } else if class.constructor.is_none()
+                                && local_class_external_parent(unit, class_index).is_some()
+                            {
                                 let signature = published_external_parent_constructor_signature(
                                     unit,
                                     class_index,
                                     external_function_signatures,
                                 )
+                                .filter(|_| stable_layout)
                                 .and_then(|signature| {
                                     direct_external_constructor_signature(unit, signature, args)
                                 });
@@ -2387,11 +2488,6 @@ impl BaselineRegionBuilder {
                                         RegionInstructionKind::NewObject {
                                             dst: *dst,
                                             class: class_index,
-                                            prepared: class_has_publication_stable_layout(
-                                                unit,
-                                                class_index,
-                                                published_external_signatures,
-                                            ),
                                             linked_class: None,
                                         }
                                     } else {
@@ -2420,7 +2516,6 @@ impl BaselineRegionBuilder {
                                             instruction,
                                             args,
                                             &signature.native_params,
-                                            runtime_metadata.tier == NativeCompilerTier::Optimizing,
                                             &mut region_local_count,
                                             &mut region_locals,
                                             &known_object_registers,
@@ -2475,7 +2570,6 @@ impl BaselineRegionBuilder {
                                     RegionInstructionKind::NewObject {
                                         dst: *dst,
                                         class: 0,
-                                        prepared: true,
                                         linked_class: Some(signature.link_index),
                                     }
                                 } else {
@@ -2511,7 +2605,6 @@ impl BaselineRegionBuilder {
                                         instruction,
                                         args,
                                         &signature.native_params,
-                                        runtime_metadata.tier == NativeCompilerTier::Optimizing,
                                         &mut region_local_count,
                                         &mut region_locals,
                                         &known_object_registers,
@@ -2562,6 +2655,14 @@ impl BaselineRegionBuilder {
                             known_external_object_registers.insert(*dst, class);
                             exact_object_registers.insert(*dst);
                         }
+                    }
+                    InstructionKind::Cast {
+                        dst,
+                        kind: php_ir::CastKind::Object,
+                        src: Operand::Register(source),
+                    } if known_call_argument_arrays.contains_key(source) => {
+                        known_external_object_registers.insert(*dst, "stdClass".to_owned());
+                        exact_object_registers.insert(*dst);
                     }
                     _ => {}
                 }
@@ -2780,29 +2881,27 @@ impl BaselineRegionBuilder {
                         }
                     }
                     InstructionKind::CallFunction { dst, name, args }
-                        if runtime_metadata.tier == NativeCompilerTier::Optimizing
-                            && {
-                                let normalized = name.trim_start_matches('\\');
-                                normalized.eq_ignore_ascii_case("array_map")
-                                    || normalized.eq_ignore_ascii_case("array_filter")
-                                    || normalized.eq_ignore_ascii_case("array_reduce")
-                                    || normalized.eq_ignore_ascii_case("array_all")
-                                    || normalized.eq_ignore_ascii_case("array_any")
-                                    || normalized.eq_ignore_ascii_case("array_find")
-                                    || normalized.eq_ignore_ascii_case("array_find_key")
-                                    || normalized.eq_ignore_ascii_case("usort")
-                                    || normalized.eq_ignore_ascii_case("uasort")
-                                    || normalized.eq_ignore_ascii_case("uksort")
-                                    || normalized.eq_ignore_ascii_case("array_walk")
-                                    || normalized.eq_ignore_ascii_case("array_walk_recursive")
-                                    || normalized.eq_ignore_ascii_case("preg_replace_callback")
-                                    || normalized
-                                        .eq_ignore_ascii_case("preg_replace_callback_array")
-                            }
-                            && args
-                                .iter()
-                                .all(|argument| argument.name.is_none() && !argument.unpack) =>
+                        if {
+                            let normalized = name.trim_start_matches('\\');
+                            normalized.eq_ignore_ascii_case("array_map")
+                                || normalized.eq_ignore_ascii_case("array_filter")
+                                || normalized.eq_ignore_ascii_case("array_reduce")
+                                || normalized.eq_ignore_ascii_case("array_all")
+                                || normalized.eq_ignore_ascii_case("array_any")
+                                || normalized.eq_ignore_ascii_case("array_find")
+                                || normalized.eq_ignore_ascii_case("array_find_key")
+                                || normalized.eq_ignore_ascii_case("usort")
+                                || normalized.eq_ignore_ascii_case("uasort")
+                                || normalized.eq_ignore_ascii_case("uksort")
+                                || normalized.eq_ignore_ascii_case("array_walk")
+                                || normalized.eq_ignore_ascii_case("array_walk_recursive")
+                                || normalized.eq_ignore_ascii_case("preg_replace_callback")
+                                || normalized.eq_ignore_ascii_case("preg_replace_callback_array")
+                        } && args
+                            .iter()
+                            .all(|argument| argument.name.is_none() && !argument.unpack) =>
                     {
+                        let args = prepared_call_args.as_deref().unwrap_or(args);
                         let normalized = name.trim_start_matches('\\');
                         let planned_preg_callback_array =
                             if normalized.eq_ignore_ascii_case("preg_replace_callback_array")
@@ -3157,8 +3256,8 @@ impl BaselineRegionBuilder {
                         } else {
                             None
                         };
-                        let planned = planned.or_else(|| {
-                            let runtime_callback =
+                        let planned =
+                            planned.or_else(|| {
                                 if normalized.eq_ignore_ascii_case("preg_replace_callback")
                                     && (3..=6).contains(&args.len())
                                     && args
@@ -3326,9 +3425,8 @@ impl BaselineRegionBuilder {
                                     })
                                 } else {
                                     None
-                                };
-                            runtime_callback
-                        });
+                                }
+                            });
                         if let Some((
                             callback_map_register,
                             construction_ids,
@@ -3387,6 +3485,10 @@ impl BaselineRegionBuilder {
                                 target: RegionCallTarget::Function {
                                     name: name.clone(),
                                     function: None,
+                                    linked_function: external_function_link_index(
+                                        external_function_signatures,
+                                        name,
+                                    ),
                                 },
                                 args: args.to_vec(),
                                 argument_operand_offset: 0,
@@ -3464,8 +3566,8 @@ impl BaselineRegionBuilder {
                             fast_path_operations =
                                 fast_path_operations.saturating_add(u64::from(direct));
                             call
-                        } else if runtime_metadata.tier == NativeCompilerTier::Optimizing
-                            && let Some((call, receiver, callable)) = known_method_callable_operand(
+                        } else if let Some((call, receiver, callable)) =
+                            known_method_callable_operand(
                                 callee,
                                 &known_method_callable_registers,
                                 &known_method_callable_locals,
@@ -3502,6 +3604,10 @@ impl BaselineRegionBuilder {
                                 target: RegionCallTarget::Function {
                                     name: name.clone(),
                                     function: None,
+                                    linked_function: external_function_link_index(
+                                        external_function_signatures,
+                                        name,
+                                    ),
                                 },
                                 args: args.to_vec(),
                                 argument_operand_offset: 0,
@@ -3525,33 +3631,38 @@ impl BaselineRegionBuilder {
                         let callee = args[0].value;
                         let mut unpacked = args[1].clone();
                         unpacked.unpack = true;
-                        let callback_args = vec![unpacked];
-                        let dynamic_native_unpack =
-                            runtime_metadata.tier == NativeCompilerTier::Optimizing;
-                        let closure = (runtime_metadata.tier == NativeCompilerTier::Optimizing)
-                            .then(|| {
-                                known_closure_operand(
-                                    callee,
-                                    &known_closure_registers,
-                                    &known_closure_locals,
+                        let packed_callback_args = vec![unpacked];
+                        let expanded_callback_args = expand_known_call_argument_arrays(
+                            unit,
+                            &packed_callback_args,
+                            &known_call_argument_arrays,
+                            &known_call_argument_array_locals,
+                            &known_register_strings,
+                            &known_local_strings,
+                        );
+                        let callback_args = expanded_callback_args
+                            .as_deref()
+                            .unwrap_or(&packed_callback_args);
+                        let dynamic_native_unpack = expanded_callback_args.is_none();
+                        let closure = known_closure_operand(
+                            callee,
+                            &known_closure_registers,
+                            &known_closure_locals,
+                        )
+                        .cloned()
+                        .filter(|closure| {
+                            direct_closure_runtime_context_is_lowerable(unit, closure)
+                                && unit.functions.get(closure.function.index()).is_some_and(
+                                    |function| {
+                                        !function.flags.is_generator
+                                            && !function.returns_by_ref
+                                            && closure.capture_count == function.captures.len()
+                                            && stable_unpack_callback_parameters_are_direct(
+                                                &function.params,
+                                            )
+                                    },
                                 )
-                                .cloned()
-                                .filter(|closure| {
-                                    direct_closure_runtime_context_is_lowerable(unit, closure)
-                                        && unit.functions.get(closure.function.index()).is_some_and(
-                                            |function| {
-                                                !function.flags.is_generator
-                                                    && !function.returns_by_ref
-                                                    && closure.capture_count
-                                                        == function.captures.len()
-                                                    && stable_unpack_callback_parameters_are_direct(
-                                                        &function.params,
-                                                    )
-                                            },
-                                        )
-                                })
-                            })
-                            .flatten();
+                        });
                         if let Some(closure) = closure {
                             fast_path_operations = fast_path_operations.saturating_add(1);
                             lower_direct_closure_call(
@@ -3559,7 +3670,7 @@ impl BaselineRegionBuilder {
                                 *dst,
                                 callee,
                                 closure,
-                                &callback_args,
+                                callback_args,
                                 semantic_context,
                             )
                         } else if let Some(name) = known_callable_operand_name(
@@ -3582,11 +3693,11 @@ impl BaselineRegionBuilder {
                                 published_external_signatures,
                                 *dst,
                                 name,
-                                &callback_args,
+                                callback_args,
                             )
                             .0
-                        } else if runtime_metadata.tier == NativeCompilerTier::Optimizing
-                            && let Some((call, receiver, callable)) = known_method_callable_operand(
+                        } else if let Some((call, receiver, callable)) =
+                            known_method_callable_operand(
                                 callee,
                                 &known_method_callable_registers,
                                 &known_method_callable_locals,
@@ -3598,7 +3709,7 @@ impl BaselineRegionBuilder {
                                     published_external_signatures,
                                     *dst,
                                     &callable,
-                                    &callback_args,
+                                    callback_args,
                                 )
                                 .map(|(call, receiver)| (call, receiver, callable))
                             })
@@ -3626,7 +3737,7 @@ impl BaselineRegionBuilder {
                             RegionInstructionKind::NativeCall(RegionNativeCall {
                                 result: RegionCallResult::Register(*dst),
                                 target: RegionCallTarget::Callable { callee },
-                                args: callback_args,
+                                args: packed_callback_args,
                                 argument_operand_offset: 1,
                                 operands: vec![
                                     Some(lower_operand(unit, callee)),
@@ -3643,6 +3754,10 @@ impl BaselineRegionBuilder {
                                 target: RegionCallTarget::Function {
                                     name: name.clone(),
                                     function: None,
+                                    linked_function: external_function_link_index(
+                                        external_function_signatures,
+                                        name,
+                                    ),
                                 },
                                 args: args.to_vec(),
                                 argument_operand_offset: 0,
@@ -3655,7 +3770,16 @@ impl BaselineRegionBuilder {
                         }
                     }
                     InstructionKind::CallFunction { dst, name, args } => {
-                        let args = prepared_call_args.as_deref().unwrap_or(args);
+                        let prepared_args = prepared_call_args.as_deref().unwrap_or(args);
+                        let expanded_call_args = expand_known_call_argument_arrays(
+                            unit,
+                            prepared_args,
+                            &known_call_argument_arrays,
+                            &known_call_argument_array_locals,
+                            &known_register_strings,
+                            &known_local_strings,
+                        );
+                        let args = expanded_call_args.as_deref().unwrap_or(prepared_args);
                         let function = find_function(unit, name);
                         let local_target =
                             function.and_then(|function| unit.functions.get(function.index()));
@@ -3782,6 +3906,15 @@ impl BaselineRegionBuilder {
                                 // here made ordinary by-value lvalue arguments
                                 // look like unresolved by-reference sends.
                                 function,
+                                linked_function: function
+                                    .is_none()
+                                    .then(|| {
+                                        external_function_link_index(
+                                            external_function_signatures,
+                                            name,
+                                        )
+                                    })
+                                    .flatten(),
                             },
                             args: native_args,
                             argument_operand_offset: 0,
@@ -4078,7 +4211,16 @@ impl BaselineRegionBuilder {
                         }
                     }
                     InstructionKind::CallCallable { dst, callee, args } => {
-                        let args = prepared_call_args.as_deref().unwrap_or(args);
+                        let prepared_args = prepared_call_args.as_deref().unwrap_or(args);
+                        let expanded_call_args = expand_known_call_argument_arrays(
+                            unit,
+                            prepared_args,
+                            &known_call_argument_arrays,
+                            &known_call_argument_array_locals,
+                            &known_register_strings,
+                            &known_local_strings,
+                        );
+                        let args = expanded_call_args.as_deref().unwrap_or(prepared_args);
                         let closure = match callee {
                             Operand::Register(register) => {
                                 known_closure_registers.get(register).cloned()
@@ -4133,24 +4275,23 @@ impl BaselineRegionBuilder {
                                 fast_path_operations =
                                     fast_path_operations.saturating_add(u64::from(direct));
                                 call
-                            } else if runtime_metadata.tier == NativeCompilerTier::Optimizing
-                                && let Some((call, receiver, callable)) =
-                                    known_method_callable_operand(
-                                        *callee,
-                                        &known_method_callable_registers,
-                                        &known_method_callable_locals,
+                            } else if let Some((call, receiver, callable)) =
+                                known_method_callable_operand(
+                                    *callee,
+                                    &known_method_callable_registers,
+                                    &known_method_callable_locals,
+                                )
+                                .cloned()
+                                .and_then(|callable| {
+                                    lower_stable_method_callable_call(
+                                        unit,
+                                        published_external_signatures,
+                                        *dst,
+                                        &callable,
+                                        args,
                                     )
-                                    .cloned()
-                                    .and_then(|callable| {
-                                        lower_stable_method_callable_call(
-                                            unit,
-                                            published_external_signatures,
-                                            *dst,
-                                            &callable,
-                                            args,
-                                        )
-                                        .map(|(call, receiver)| (call, receiver, callable))
-                                    })
+                                    .map(|(call, receiver)| (call, receiver, callable))
+                                })
                             {
                                 if let Operand::Register(callable_register) = callee
                                     && callable.root_register == Some(*callable_register)
@@ -4235,24 +4376,23 @@ impl BaselineRegionBuilder {
                             fast_path_operations =
                                 fast_path_operations.saturating_add(u64::from(direct));
                             call
-                        } else if runtime_metadata.tier == NativeCompilerTier::Optimizing
-                            && let Some((call, receiver, callable_plan)) =
-                                known_method_callable_operand(
-                                    *callable,
-                                    &known_method_callable_registers,
-                                    &known_method_callable_locals,
+                        } else if let Some((call, receiver, callable_plan)) =
+                            known_method_callable_operand(
+                                *callable,
+                                &known_method_callable_registers,
+                                &known_method_callable_locals,
+                            )
+                            .cloned()
+                            .and_then(|callable_plan| {
+                                lower_stable_method_callable_call(
+                                    unit,
+                                    published_external_signatures,
+                                    *dst,
+                                    &callable_plan,
+                                    std::slice::from_ref(&argument),
                                 )
-                                .cloned()
-                                .and_then(|callable_plan| {
-                                    lower_stable_method_callable_call(
-                                        unit,
-                                        published_external_signatures,
-                                        *dst,
-                                        &callable_plan,
-                                        std::slice::from_ref(&argument),
-                                    )
-                                    .map(|(call, receiver)| (call, receiver, callable_plan))
-                                })
+                                .map(|(call, receiver)| (call, receiver, callable_plan))
+                            })
                         {
                             if let Operand::Register(callable_register) = callable
                                 && callable_plan.root_register == Some(*callable_register)
@@ -4341,6 +4481,15 @@ impl BaselineRegionBuilder {
                             target: RegionCallTarget::Function {
                                 name: name.clone(),
                                 function,
+                                linked_function: function
+                                    .is_none()
+                                    .then(|| {
+                                        external_function_link_index(
+                                            external_function_signatures,
+                                            name,
+                                        )
+                                    })
+                                    .flatten(),
                             },
                             args: native_args,
                             argument_operand_offset: 0,
@@ -4438,7 +4587,13 @@ impl BaselineRegionBuilder {
                         args,
                     } => match find_class(unit, class_name) {
                         Some((class_index, class)) => match class.constructor {
-                            Some(constructor) => {
+                            Some(constructor)
+                                if class_has_publication_stable_layout(
+                                    unit,
+                                    class_index,
+                                    published_external_signatures,
+                                ) =>
+                            {
                                 let ignored = RegId::new(region_register_count);
                                 region_register_count = region_register_count.saturating_add(1);
                                 lower_direct_method_call(
@@ -4449,13 +4604,36 @@ impl BaselineRegionBuilder {
                                     args,
                                 )
                             }
+                            Some(_) => RegionInstructionKind::NativeCall(RegionNativeCall {
+                                result: RegionCallResult::Register(*dst),
+                                target: RegionCallTarget::Constructor {
+                                    display_class_name: display_class_name.clone(),
+                                    class_name: class_name.clone(),
+                                },
+                                args: args.to_vec(),
+                                argument_operand_offset: 0,
+                                operands: lower_call_operands(unit, args),
+                                direct_arity: None,
+                                variadic: false,
+                                returns_by_reference: false,
+                                caller_strict_types: unit.strict_types,
+                            }),
                             None => {
                                 let args = prepared_call_args.as_deref().unwrap_or(args);
-                                let inherited = published_external_parent_constructor_signature(
+                                let stable_layout = class_has_publication_stable_layout(
                                     unit,
                                     class_index,
                                     published_external_signatures,
                                 );
+                                let inherited = stable_layout
+                                    .then(|| {
+                                        published_external_parent_constructor_signature(
+                                            unit,
+                                            class_index,
+                                            published_external_signatures,
+                                        )
+                                    })
+                                    .flatten();
                                 if inherited.is_some_and(|signature| {
                                     signature.native_arity == 0
                                         && signature.native_params.is_empty()
@@ -4479,15 +4657,11 @@ impl BaselineRegionBuilder {
                                     kind
                                 } else if local_class_external_parent(unit, class_index).is_none()
                                     && args.is_empty()
+                                    && stable_layout
                                 {
                                     RegionInstructionKind::NewObject {
                                         dst: *dst,
                                         class: class_index,
-                                        prepared: class_has_publication_stable_layout(
-                                            unit,
-                                            class_index,
-                                            published_external_signatures,
-                                        ),
                                         linked_class: None,
                                     }
                                 } else {
@@ -4927,34 +5101,54 @@ impl BaselineRegionBuilder {
                         dst,
                         object,
                         property,
-                    } => RegionInstructionKind::FetchProperty {
-                        dst: *dst,
-                        object: lower_operand(unit, *object),
-                        property: property.clone(),
-                        prepared_class: prepared_object_property_class(
+                    } => {
+                        let prepared_class = prepared_object_property_class(
                             unit,
                             *object,
                             &known_object_registers,
                             published_external_signatures,
-                        ),
-                    },
+                        );
+                        let dynamic_stdclass =
+                            prepared_property_is_fixed_dynamic(unit, prepared_class, property)
+                                || prepared_object_is_stdclass(
+                                    *object,
+                                    &known_external_object_registers,
+                                );
+                        RegionInstructionKind::FetchProperty {
+                            dst: *dst,
+                            object: lower_operand(unit, *object),
+                            property: property.clone(),
+                            prepared_class,
+                            dynamic_stdclass,
+                        }
+                    }
                     InstructionKind::AssignProperty {
                         dst,
                         object,
                         value,
                         property,
-                    } => RegionInstructionKind::AssignProperty {
-                        dst: *dst,
-                        object: lower_operand(unit, *object),
-                        value: lower_operand(unit, *value),
-                        property: property.clone(),
-                        prepared_class: prepared_object_property_class(
+                    } => {
+                        let prepared_class = prepared_object_property_class(
                             unit,
                             *object,
                             &known_object_registers,
                             published_external_signatures,
-                        ),
-                    },
+                        );
+                        let dynamic_stdclass =
+                            prepared_property_is_fixed_dynamic(unit, prepared_class, property)
+                                || prepared_object_is_stdclass(
+                                    *object,
+                                    &known_external_object_registers,
+                                );
+                        RegionInstructionKind::AssignProperty {
+                            dst: *dst,
+                            object: lower_operand(unit, *object),
+                            value: lower_operand(unit, *value),
+                            property: property.clone(),
+                            prepared_class,
+                            dynamic_stdclass,
+                        }
+                    }
                     InstructionKind::FetchDynamicProperty {
                         dst,
                         object,
@@ -5031,8 +5225,24 @@ impl BaselineRegionBuilder {
                         object,
                         property,
                     } => {
+                        let prepared_class = prepared_object_property_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            published_external_signatures,
+                        );
+                        let dynamic_stdclass =
+                            prepared_property_is_fixed_dynamic(unit, prepared_class, property)
+                                || prepared_object_is_stdclass(
+                                    *object,
+                                    &known_external_object_registers,
+                                );
                         let object = lower_operand(unit, *object);
-                        let property = RegionPropertyName::Static(property.clone());
+                        let property = if dynamic_stdclass {
+                            RegionPropertyName::FixedDynamic(property.clone())
+                        } else {
+                            RegionPropertyName::Static(property.clone())
+                        };
                         let operation =
                             if matches!(instruction.kind, InstructionKind::IssetProperty { .. }) {
                                 RegionSemanticOp::PropertyIsset {
@@ -5071,12 +5281,28 @@ impl BaselineRegionBuilder {
                         property,
                         dims,
                     } => {
+                        let prepared_class = prepared_object_property_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            published_external_signatures,
+                        );
+                        let fixed_dynamic =
+                            prepared_property_is_fixed_dynamic(unit, prepared_class, property)
+                                || prepared_object_is_stdclass(
+                                    *object,
+                                    &known_external_object_registers,
+                                );
                         let object = lower_operand(unit, *object);
                         let dimensions = dims
                             .iter()
                             .map(|dim| lower_operand(unit, *dim))
                             .collect::<Vec<_>>();
-                        let semantic_property = RegionPropertyName::Static(property.clone());
+                        let semantic_property = if fixed_dynamic {
+                            RegionPropertyName::FixedDynamic(property.clone())
+                        } else {
+                            RegionPropertyName::Static(property.clone())
+                        };
                         let operation =
                             if matches!(instruction.kind, InstructionKind::IssetPropertyDim { .. })
                             {
@@ -5232,14 +5458,31 @@ impl BaselineRegionBuilder {
                     InstructionKind::UnsetProperty { object, property } => {
                         let dst = RegId::new(region_register_count);
                         region_register_count = region_register_count.saturating_add(1);
+                        let prepared_class = prepared_object_property_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            published_external_signatures,
+                        );
+                        let dynamic_stdclass =
+                            prepared_property_is_fixed_dynamic(unit, prepared_class, property)
+                                || prepared_object_is_stdclass(
+                                    *object,
+                                    &known_external_object_registers,
+                                );
                         let object = lower_operand(unit, *object);
+                        let property = if dynamic_stdclass {
+                            RegionPropertyName::FixedDynamic(property.clone())
+                        } else {
+                            RegionPropertyName::Static(property.clone())
+                        };
                         RegionInstructionKind::NativeCall(RegionNativeCall {
                             result: RegionCallResult::Register(dst),
                             target: RegionCallTarget::Semantic {
                                 operation: RegionSemanticOp::PropertyUnset {
                                     context: semantic_context,
                                     object,
-                                    property: RegionPropertyName::Static(property.clone()),
+                                    property,
                                 },
                             },
                             args: Vec::new(),
@@ -5315,6 +5558,18 @@ impl BaselineRegionBuilder {
                     } => {
                         let dst = RegId::new(region_register_count);
                         region_register_count = region_register_count.saturating_add(1);
+                        let prepared_class = prepared_object_property_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            published_external_signatures,
+                        );
+                        let fixed_dynamic =
+                            prepared_property_is_fixed_dynamic(unit, prepared_class, property)
+                                || prepared_object_is_stdclass(
+                                    *object,
+                                    &known_external_object_registers,
+                                );
                         let object = lower_operand(unit, *object);
                         let dimensions = dims
                             .iter()
@@ -5328,7 +5583,11 @@ impl BaselineRegionBuilder {
                                 operation: RegionSemanticOp::PropertyDimUnset {
                                     context: semantic_context,
                                     object,
-                                    property: RegionPropertyName::Static(property.clone()),
+                                    property: if fixed_dynamic {
+                                        RegionPropertyName::FixedDynamic(property.clone())
+                                    } else {
+                                        RegionPropertyName::Static(property.clone())
+                                    },
                                     dimensions,
                                 },
                             },
@@ -5349,6 +5608,18 @@ impl BaselineRegionBuilder {
                         value,
                         append,
                     } => {
+                        let prepared_class = prepared_object_property_class(
+                            unit,
+                            *object,
+                            &known_object_registers,
+                            published_external_signatures,
+                        );
+                        let fixed_dynamic =
+                            prepared_property_is_fixed_dynamic(unit, prepared_class, property)
+                                || prepared_object_is_stdclass(
+                                    *object,
+                                    &known_external_object_registers,
+                                );
                         let object = lower_operand(unit, *object);
                         let dimensions = dims
                             .iter()
@@ -5364,7 +5635,11 @@ impl BaselineRegionBuilder {
                                 operation: RegionSemanticOp::PropertyDimAssign {
                                     context: semantic_context,
                                     object,
-                                    property: RegionPropertyName::Static(property.clone()),
+                                    property: if fixed_dynamic {
+                                        RegionPropertyName::FixedDynamic(property.clone())
+                                    } else {
+                                        RegionPropertyName::Static(property.clone())
+                                    },
                                     dimensions,
                                     value,
                                     append: *append,
@@ -5941,7 +6216,7 @@ pub fn build_baseline_region(
     unit: &IrUnit,
     function: FunctionId,
 ) -> Result<RegionGraph, NativeCompileError> {
-    BaselineRegionBuilder::build(unit, function, &CompileMetadata::default())
+    GenericRegionBuilder::build(unit, function, &CompileMetadata::default())
 }
 
 fn declaration_metadata(unit: &IrUnit, function: FunctionId) -> RegionDeclarationMetadata {
@@ -6237,6 +6512,59 @@ fn lower_call_operands(unit: &IrUnit, args: &[IrCallArg]) -> Vec<Option<RegionOp
         .collect()
 }
 
+fn expand_known_call_argument_arrays(
+    unit: &IrUnit,
+    args: &[IrCallArg],
+    register_arrays: &BTreeMap<RegId, KnownCallArgumentArray>,
+    local_arrays: &BTreeMap<LocalId, KnownCallArgumentArray>,
+    known_register_strings: &BTreeMap<RegId, String>,
+    known_local_strings: &BTreeMap<LocalId, String>,
+) -> Option<Vec<IrCallArg>> {
+    let mut expanded = Vec::new();
+    for argument in args {
+        if !argument.unpack {
+            expanded.push(argument.clone());
+            continue;
+        }
+        let array = match argument.value {
+            Operand::Register(register) => register_arrays.get(&register),
+            Operand::Local(local) => local_arrays.get(&local),
+            Operand::Constant(_) => None,
+        }?;
+        for (key, value) in &array.entries {
+            let name = match key {
+                None => None,
+                Some(key) => {
+                    if constant_integer_operand(unit, *key).is_some() {
+                        None
+                    } else {
+                        Some(match key {
+                            Operand::Register(register) => {
+                                known_register_strings.get(register)?.clone()
+                            }
+                            Operand::Local(local) => known_local_strings.get(local)?.clone(),
+                            Operand::Constant(_) => {
+                                known_string_operand(unit, *key, known_register_strings)?
+                            }
+                        })
+                    }
+                }
+            };
+            expanded.push(IrCallArg {
+                name,
+                value: *value,
+                unpack: false,
+                value_kind: IrCallArgValueKind::Direct,
+                by_ref_local: None,
+                by_ref_dim: None,
+                by_ref_property: None,
+                by_ref_property_dim: None,
+            });
+        }
+    }
+    Some(expanded)
+}
+
 /// Builds the immutable source-to-parameter plan for a statically published
 /// userland signature. This is compile-time PHP argument binding: generated
 /// optimizing code receives only the resulting numeric operand order.
@@ -6269,10 +6597,12 @@ fn prepared_call_argument_plan(
                 .iter()
                 .position(|parameter| parameter.name == name);
             let Some(parameter) = parameter else {
-                // Unknown named arguments use PHP-visible string keys in a
-                // variadic array. Keep that uncommon keyed shape at the one
-                // exact baseline continuation; fixed named arguments remain
-                // fully compile-time bound.
+                if variadic_index.is_some() {
+                    // PHP preserves an unknown named argument under its
+                    // string key in the variadic parameter array.
+                    variadic.push(Some(source));
+                    continue;
+                }
                 return None;
             };
             if assigned[parameter].replace(source).is_some() {
@@ -6575,6 +6905,24 @@ fn native_global_site_name(
         {
             first_dimension(dims)
         }
+        InstructionKind::CallFunction { name, args, .. }
+            if {
+                let normalized = name.trim_start_matches('\\');
+                (normalized.eq_ignore_ascii_case("array_key_exists")
+                    || normalized.eq_ignore_ascii_case("key_exists"))
+                    && args.len() == 2
+                    && args
+                        .iter()
+                        .all(|argument| argument.name.is_none() && !argument.unpack)
+                    && match args[1].value {
+                        Operand::Register(register) => globals.contains(&register),
+                        Operand::Local(local) => local_is_globals(local),
+                        Operand::Constant(_) => false,
+                    }
+            } =>
+        {
+            known_string_operand(unit, args[0].value, strings)
+        }
         _ => None,
     }?;
     (name != "GLOBALS").then_some(name)
@@ -6612,6 +6960,23 @@ fn published_external_function_signature<'a>(
                 .trim_start_matches('\\')
                 .eq_ignore_ascii_case(normalized)
     })
+}
+
+fn external_function_link_index(
+    signatures: &[crate::JitExternalFunctionSignature],
+    name: &str,
+) -> Option<u32> {
+    let normalized = name.trim_start_matches('\\');
+    (!normalized.contains("::")).then_some(())?;
+    signatures
+        .iter()
+        .find(|signature| {
+            signature
+                .name
+                .trim_start_matches('\\')
+                .eq_ignore_ascii_case(normalized)
+        })
+        .map(|signature| signature.link_index)
 }
 
 fn published_external_method_signature<'a>(
@@ -6705,7 +7070,6 @@ fn prepare_reference_call_arguments(
     instruction: &php_ir::Instruction,
     args: &[IrCallArg],
     parameters: &[php_ir::IrParam],
-    optimizing: bool,
     region_local_count: &mut u32,
     region_locals: &mut Vec<String>,
     known_object_registers: &BTreeMap<RegId, u32>,
@@ -6716,18 +7080,22 @@ fn prepare_reference_call_arguments(
     let mut prepared = args.to_vec();
     let mut bindings = Vec::new();
     for (index, argument) in prepared.iter_mut().enumerate() {
-        if !prepared_parameter_for_source(parameters, args, index)
-            .is_some_and(|parameter| parameter.by_ref)
-        {
+        let parameter = prepared_parameter_for_source(parameters, args, index);
+        if !parameter.is_some_and(|parameter| parameter.by_ref) {
+            // `IndirectTemporary` matters only when PHP must manufacture a
+            // reference for a by-reference parameter (and emit its notice).
+            // A published by-value parameter consumes the expression result
+            // exactly like every other direct native operand.
+            if argument.value_kind == IrCallArgValueKind::IndirectTemporary {
+                argument.value_kind = IrCallArgValueKind::Direct;
+            }
             continue;
         }
-        if optimizing {
-            elide_superseded_reference_argument_fetch(
-                preceding_instructions,
-                argument,
-                source_register_use_counts,
-            );
-        }
+        elide_superseded_reference_argument_fetch(
+            preceding_instructions,
+            argument,
+            source_register_use_counts,
+        );
         if let Some(local) = argument.by_ref_local
             && !local_is_entry_reference(function, local)
         {
@@ -6773,7 +7141,7 @@ fn prepare_reference_call_arguments(
                     external_function_signatures,
                 ),
             });
-        } else if optimizing && let Some(property) = &argument.by_ref_property_dim {
+        } else if let Some(property) = &argument.by_ref_property_dim {
             let temporary = LocalId::new(*region_local_count);
             *region_local_count = (*region_local_count).saturating_add(1);
             region_locals.push(format!(
@@ -6805,8 +7173,8 @@ fn prepare_reference_call_arguments(
             // native reference local; retaining the original dimension or
             // property shape here creates a second call-time lvalue plane and
             // makes baseline continuations demand already-consumed operands.
-            // Unprepared property dimensions have no local and therefore
-            // remain on their single exact baseline boundary.
+            // Property dimensions are prepared identically in Generic and
+            // Optimizing so neither tier retains a second lvalue boundary.
             argument.by_ref_dim = None;
             argument.by_ref_property = None;
             argument.by_ref_property_dim = None;
@@ -7095,6 +7463,72 @@ fn prepared_object_property_class(
     })
 }
 
+fn prepared_object_is_stdclass(
+    operand: Operand,
+    known_external_registers: &BTreeMap<RegId, String>,
+) -> bool {
+    let Operand::Register(register) = operand else {
+        return false;
+    };
+    known_external_registers
+        .get(&register)
+        .is_some_and(|class| class.eq_ignore_ascii_case("stdClass"))
+}
+
+fn prepared_class_declares_instance_property(unit: &IrUnit, class: u32, property: &str) -> bool {
+    let mut current = unit.classes.get(class as usize);
+    while let Some(class) = current {
+        if class
+            .properties
+            .iter()
+            .any(|candidate| !candidate.flags.is_static && candidate.name == property)
+        {
+            return true;
+        }
+        current = class.parent.as_deref().and_then(|parent| {
+            unit.classes
+                .iter()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(parent))
+        });
+    }
+    false
+}
+
+fn prepared_class_allows_dynamic_properties(unit: &IrUnit, class: u32) -> bool {
+    let mut current = unit.classes.get(class as usize);
+    let mut remaining = unit.classes.len();
+    while let Some(class) = current {
+        if class.attributes.iter().any(|attribute| {
+            attribute
+                .resolved_name
+                .as_deref()
+                .or(attribute.fallback_name.as_deref())
+                .unwrap_or(&attribute.name)
+                .trim_start_matches('\\')
+                .eq_ignore_ascii_case("AllowDynamicProperties")
+        }) {
+            return true;
+        }
+        if remaining == 0 {
+            return false;
+        }
+        remaining -= 1;
+        current = class.parent.as_deref().and_then(|parent| {
+            unit.classes
+                .iter()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(parent))
+        });
+    }
+    false
+}
+
+fn prepared_property_is_fixed_dynamic(unit: &IrUnit, class: Option<u32>, property: &str) -> bool {
+    class.is_none_or(|class| {
+        prepared_class_allows_dynamic_properties(unit, class)
+            && !prepared_class_declares_instance_property(unit, class, property)
+    })
+}
+
 fn returned_closure(unit: &IrUnit, name: &str, args: &[IrCallArg]) -> Option<KnownClosure> {
     let target_id = find_function(unit, name)?;
     let target = unit.functions.get(target_id.index())?;
@@ -7190,6 +7624,7 @@ fn lower_direct_function_call(
         target: RegionCallTarget::Function {
             name,
             function: (!is_generator).then_some(function),
+            linked_function: None,
         },
         args: native_args,
         argument_operand_offset: 0,
@@ -7255,6 +7690,7 @@ fn lower_stable_named_callable(
                 target: RegionCallTarget::Function {
                     name,
                     function: None,
+                    linked_function: Some(signature.link_index),
                 },
                 args: native_args,
                 argument_operand_offset: 0,
@@ -7290,6 +7726,7 @@ fn lower_stable_named_callable(
         RegionInstructionKind::NativeCall(RegionNativeCall {
             result: RegionCallResult::Register(dst),
             target: RegionCallTarget::Function {
+                linked_function: external_function_link_index(external_function_signatures, &name),
                 name,
                 function: None,
             },
@@ -7944,6 +8381,7 @@ fn lower_direct_method_call_result(
         target: RegionCallTarget::Function {
             name: target.name.clone(),
             function: Some(function),
+            linked_function: None,
         },
         args: native_args,
         argument_operand_offset: receiver_count,
@@ -8032,6 +8470,7 @@ fn lower_direct_external_method_call(
         target: RegionCallTarget::Function {
             name: signature.name.clone(),
             function: None,
+            linked_function: Some(signature.link_index),
         },
         args: native_args,
         argument_operand_offset: receiver_count,

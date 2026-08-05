@@ -767,7 +767,7 @@ mod tests {
         let first = cache
             .get_or_compile_script(&executor, fixture.input())
             .expect("first compile");
-        fixture.write("<?php echo \"two\";");
+        fixture.write("<?php echo \"two!\";");
         let second = cache
             .get_or_compile_script(&executor, fixture.input())
             .expect("second compile");
@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(cache.cache_stats().entries, 1);
         assert_eq!(cache.cache_stats().source_reads, 2);
         let output = execute_cached_for_test(&executor, &second.compiled);
-        assert_eq!(output.stdout, b"two");
+        assert_eq!(output.stdout, b"two!");
     }
 
     #[test]

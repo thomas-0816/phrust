@@ -167,7 +167,6 @@ fn helper_index(helper_id: &str) -> usize {
 pub(super) struct NativeRuntimeTelemetry {
     pub(super) counters: crate::counters::VmCounters,
     pub(super) helper_timing_stack: Vec<NativeHelperTimingFrame>,
-    builtin_attribution_stack: Vec<&'static str>,
     helper_calls: [u64; HELPER_NAMES.len()],
     helper_time_nanos: [u64; HELPER_NAMES.len()],
     local_reads: [u64; LOCAL_REASONS.len()],
@@ -188,7 +187,6 @@ impl Default for NativeRuntimeTelemetry {
         Self {
             counters: crate::counters::VmCounters::default(),
             helper_timing_stack: Vec::new(),
-            builtin_attribution_stack: Vec::new(),
             helper_calls: [0; HELPER_NAMES.len()],
             helper_time_nanos: [0; HELPER_NAMES.len()],
             local_reads: [0; LOCAL_REASONS.len()],
@@ -218,7 +216,6 @@ impl NativeRuntimeTelemetry {
     pub(super) fn reset_for_pool(&mut self) {
         self.counters = crate::counters::VmCounters::default();
         self.helper_timing_stack.clear();
-        self.builtin_attribution_stack.clear();
         self.helper_calls.fill(0);
         self.helper_time_nanos.fill(0);
         self.local_reads.fill(0);
@@ -509,10 +506,10 @@ impl NativeRequestColdState<'_> {
         let mut telemetry = self.runtime_telemetry.borrow_mut();
         if let Some(metadata) = handle.region_state_metadata() {
             match metadata.compiler_tier {
-                php_jit::region_ir::NativeCompilerTier::Baseline => {
-                    telemetry.counters.native_baseline_entry_executions = telemetry
+                php_jit::region_ir::NativeCompilerTier::Generic => {
+                    telemetry.counters.native_generic_entry_executions = telemetry
                         .counters
-                        .native_baseline_entry_executions
+                        .native_generic_entry_executions
                         .saturating_add(1);
                 }
                 php_jit::region_ir::NativeCompilerTier::Optimizing => {
@@ -610,331 +607,12 @@ impl NativeRequestColdState<'_> {
         }
     }
 
-    pub(super) fn record_native_method_pic(&self, executed: bool) {
-        if !self.options.collect_counters {
-            return;
-        }
-        let mut telemetry = self.runtime_telemetry.borrow_mut();
-        telemetry.counters.native_method_monomorphic_eligible = telemetry
-            .counters
-            .native_method_monomorphic_eligible
-            .saturating_add(1);
-        if !executed {
-            return;
-        }
-        telemetry.counters.native_method_monomorphic_executed = telemetry
-            .counters
-            .native_method_monomorphic_executed
-            .saturating_add(1);
-        telemetry.counters.native_call_dynamic =
-            telemetry.counters.native_call_dynamic.saturating_sub(1);
-        telemetry.counters.native_call_direct =
-            telemetry.counters.native_call_direct.saturating_add(1);
-        if let Some(count) = telemetry
-            .counters
-            .native_call_dynamic_by_reason
-            .get_mut("method polymorphism")
-        {
-            *count = count.saturating_sub(1);
-        }
-    }
-
-    pub(super) fn merge_nested_runtime_counters(
-        &self,
-        nested: &crate::counters::VmCounters,
-        nested_elapsed: std::time::Duration,
-    ) {
-        let mut telemetry = self.runtime_telemetry.borrow_mut();
-        let counters = &mut telemetry.counters;
-        counters.native_execution_entries = counters
-            .native_execution_entries
-            .saturating_add(nested.native_execution_entries);
-        counters.native_baseline_entry_executions = counters
-            .native_baseline_entry_executions
-            .saturating_add(nested.native_baseline_entry_executions);
-        counters.native_optimizing_entry_executions = counters
-            .native_optimizing_entry_executions
-            .saturating_add(nested.native_optimizing_entry_executions);
-        counters.native_region_entries = counters
-            .native_region_entries
-            .saturating_add(nested.native_region_entries);
-        counters.native_region_side_exits = counters
-            .native_region_side_exits
-            .saturating_add(nested.native_region_side_exits);
-        counters.native_call_direct = counters
-            .native_call_direct
-            .saturating_add(nested.native_call_direct);
-        counters.native_call_dynamic = counters
-            .native_call_dynamic
-            .saturating_add(nested.native_call_dynamic);
-        counters.native_callsite_total = counters
-            .native_callsite_total
-            .saturating_add(nested.native_callsite_total);
-        counters.native_same_unit_direct_eligible = counters
-            .native_same_unit_direct_eligible
-            .saturating_add(nested.native_same_unit_direct_eligible);
-        counters.native_same_unit_direct_executed = counters
-            .native_same_unit_direct_executed
-            .saturating_add(nested.native_same_unit_direct_executed);
-        counters.native_cross_unit_direct_eligible = counters
-            .native_cross_unit_direct_eligible
-            .saturating_add(nested.native_cross_unit_direct_eligible);
-        counters.native_cross_unit_direct_executed = counters
-            .native_cross_unit_direct_executed
-            .saturating_add(nested.native_cross_unit_direct_executed);
-        counters.native_method_monomorphic_eligible = counters
-            .native_method_monomorphic_eligible
-            .saturating_add(nested.native_method_monomorphic_eligible);
-        counters.native_method_monomorphic_executed = counters
-            .native_method_monomorphic_executed
-            .saturating_add(nested.native_method_monomorphic_executed);
-        counters.native_builtin_direct_eligible = counters
-            .native_builtin_direct_eligible
-            .saturating_add(nested.native_builtin_direct_eligible);
-        counters.native_builtin_direct_executed = counters
-            .native_builtin_direct_executed
-            .saturating_add(nested.native_builtin_direct_executed);
-        counters.native_call_argument_allocation_bytes = counters
-            .native_call_argument_allocation_bytes
-            .saturating_add(nested.native_call_argument_allocation_bytes);
-        counters.native_call_frame_bytes = counters
-            .native_call_frame_bytes
-            .saturating_add(nested.native_call_frame_bytes);
-        counters.native_inlined_calls = counters
-            .native_inlined_calls
-            .saturating_add(nested.native_inlined_calls);
-        counters.native_inline_bytes_added = counters
-            .native_inline_bytes_added
-            .saturating_add(nested.native_inline_bytes_added);
-        counters.native_inline_calls_removed = counters
-            .native_inline_calls_removed
-            .saturating_add(nested.native_inline_calls_removed);
-        counters.native_tail_calls = counters
-            .native_tail_calls
-            .saturating_add(nested.native_tail_calls);
-        counters.native_transition_count = counters
-            .native_transition_count
-            .saturating_add(nested.native_transition_count);
-        counters.native_transition_time_nanos = counters
-            .native_transition_time_nanos
-            .saturating_add(nested.native_transition_time_nanos);
-        counters.runtime_helper_calls = counters
-            .runtime_helper_calls
-            .saturating_add(nested.runtime_helper_calls);
-        counters.runtime_helper_time_nanos = counters
-            .runtime_helper_time_nanos
-            .saturating_add(nested.runtime_helper_time_nanos);
-        counters.runtime_helper_object_release_fast_paths = counters
-            .runtime_helper_object_release_fast_paths
-            .saturating_add(nested.runtime_helper_object_release_fast_paths);
-        counters.runtime_helper_object_release_root_scans = counters
-            .runtime_helper_object_release_root_scans
-            .saturating_add(nested.runtime_helper_object_release_root_scans);
-        counters.runtime_helper_release_to_zero = counters
-            .runtime_helper_release_to_zero
-            .saturating_add(nested.runtime_helper_release_to_zero);
-        counters.native_value_table_allocations = counters
-            .native_value_table_allocations
-            .saturating_add(nested.native_value_table_allocations);
-        counters.native_value_table_reuses = counters
-            .native_value_table_reuses
-            .saturating_add(nested.native_value_table_reuses);
-        counters.native_value_table_high_water = counters
-            .native_value_table_high_water
-            .max(nested.native_value_table_high_water);
-        merge_counter_map(
-            &mut counters.native_value_table_materializations_by_kind_and_origin,
-            &nested.native_value_table_materializations_by_kind_and_origin,
-        );
-        counters.native_ssa_promoted_locals = counters
-            .native_ssa_promoted_locals
-            .saturating_add(nested.native_ssa_promoted_locals);
-        counters.native_ssa_promoted_registers = counters
-            .native_ssa_promoted_registers
-            .saturating_add(nested.native_ssa_promoted_registers);
-        counters.native_ownership_moves = counters
-            .native_ownership_moves
-            .saturating_add(nested.native_ownership_moves);
-        counters.native_ownership_clones = counters
-            .native_ownership_clones
-            .saturating_add(nested.native_ownership_clones);
-        counters.native_ownership_escapes = counters
-            .native_ownership_escapes
-            .saturating_add(nested.native_ownership_escapes);
-        counters.gc_safepoint_polls = counters
-            .gc_safepoint_polls
-            .saturating_add(nested.gc_safepoint_polls);
-        counters.gc_safepoint_collections = counters
-            .gc_safepoint_collections
-            .saturating_add(nested.gc_safepoint_collections);
-        merge_counter_map(
-            &mut counters.native_region_side_exits_by_reason,
-            &nested.native_region_side_exits_by_reason,
-        );
-        merge_gauge_map_max(
-            &mut counters.native_production_lowering_by_site,
-            &nested.native_production_lowering_by_site,
-        );
-        merge_counter_map(
-            &mut counters.native_transition_by_reason,
-            &nested.native_transition_by_reason,
-        );
-        merge_counter_map(
-            &mut counters.native_call_dynamic_by_reason,
-            &nested.native_call_dynamic_by_reason,
-        );
-        merge_counter_map(
-            &mut counters.native_call_dynamic_by_target,
-            &nested.native_call_dynamic_by_target,
-        );
-        merge_counter_map(
-            &mut counters.native_builtin_calls_by_name,
-            &nested.native_builtin_calls_by_name,
-        );
-        merge_counter_map(
-            &mut counters.native_builtin_time_nanos_by_name,
-            &nested.native_builtin_time_nanos_by_name,
-        );
-        merge_gauge_map_max(
-            &mut counters.native_code_bytes_by_function,
-            &nested.native_code_bytes_by_function,
-        );
-        merge_gauge_map_max(
-            &mut counters.native_code_bytes_by_unit,
-            &nested.native_code_bytes_by_unit,
-        );
-        merge_gauge_map_max(
-            &mut counters.native_stack_bytes_by_function,
-            &nested.native_stack_bytes_by_function,
-        );
-        merge_counter_map(
-            &mut counters.native_inline_rejected_by_reason,
-            &nested.native_inline_rejected_by_reason,
-        );
-        merge_counter_map(
-            &mut counters.native_callsite_calls_by_id,
-            &nested.native_callsite_calls_by_id,
-        );
-        merge_counter_map(
-            &mut counters.native_callsite_inclusive_time_nanos_by_id,
-            &nested.native_callsite_inclusive_time_nanos_by_id,
-        );
-        merge_counter_map(
-            &mut counters.native_callsite_exclusive_time_nanos_by_id,
-            &nested.native_callsite_exclusive_time_nanos_by_id,
-        );
-        merge_counter_map(
-            &mut counters.native_transition_time_nanos_by_reason,
-            &nested.native_transition_time_nanos_by_reason,
-        );
-        merge_counter_map(
-            &mut counters.runtime_helper_inclusive_time_nanos_by_id,
-            &nested.runtime_helper_inclusive_time_nanos_by_id,
-        );
-        for (name, value) in &nested.runtime_helper_calls_by_id {
-            let index = helper_index(name);
-            telemetry.helper_calls[index] = telemetry.helper_calls[index].saturating_add(*value);
-        }
-        for (name, value) in &nested.runtime_helper_time_nanos_by_id {
-            let index = helper_index(name);
-            telemetry.helper_time_nanos[index] =
-                telemetry.helper_time_nanos[index].saturating_add(*value);
-        }
-        merge_named_scratch(
-            &mut telemetry.operation_calls,
-            &IR_OPERATIONS,
-            &nested.runtime_helper_calls_by_ir_operation,
-        );
-        merge_named_scratch(
-            &mut telemetry.operation_time_nanos,
-            &IR_OPERATIONS,
-            &nested.runtime_helper_time_nanos_by_ir_operation,
-        );
-        merge_function_scratch(
-            &mut telemetry.function_calls,
-            &nested.runtime_helper_calls_by_function,
-        );
-        merge_function_scratch(
-            &mut telemetry.function_time_nanos,
-            &nested.runtime_helper_time_nanos_by_function,
-        );
-        merge_named_scratch(
-            &mut telemetry.local_reads,
-            &LOCAL_REASONS,
-            &nested.runtime_helper_local_read_by_reason,
-        );
-        merge_named_scratch(
-            &mut telemetry.local_stores,
-            &LOCAL_REASONS,
-            &nested.runtime_helper_local_store_by_reason,
-        );
-        merge_named_scratch(
-            &mut telemetry.truthy_classes,
-            &VALUE_CLASSES,
-            &nested.runtime_helper_truthy_by_value_class,
-        );
-        merge_named_scratch(
-            &mut telemetry.retains,
-            &LIFECYCLE_REASONS,
-            &nested.runtime_helper_retain_by_reason,
-        );
-        merge_named_scratch(
-            &mut telemetry.releases,
-            &LIFECYCLE_REASONS,
-            &nested.runtime_helper_release_by_reason,
-        );
-        merge_named_scratch(
-            &mut telemetry.root_rebuilds,
-            &ROOT_REASONS,
-            &nested.runtime_helper_object_release_root_scans_by_reason,
-        );
-        merge_named_scratch(
-            &mut telemetry.slow_paths,
-            &SLOW_PATH_REASONS,
-            &nested.native_slow_path_entries_by_reason,
-        );
-        if let Some(parent) = telemetry.helper_timing_stack.last_mut() {
-            let nested_elapsed = nested_elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
-            parent.child_time_nanos = parent.child_time_nanos.saturating_add(nested_elapsed);
-        }
-    }
-
     pub(super) fn active_helper_child_time_nanos(&self) -> u64 {
         self.runtime_telemetry
             .borrow()
             .helper_timing_stack
             .last()
             .map_or(0, |frame| frame.child_time_nanos)
-    }
-
-    pub(super) fn record_native_callsite_timing(
-        &self,
-        function: u32,
-        block: u32,
-        instruction: u32,
-        inclusive_nanos: u64,
-        child_nanos: u64,
-    ) {
-        let id = format!("{function}:{block}:{instruction}");
-        let mut telemetry = self.runtime_telemetry.borrow_mut();
-        let calls = telemetry
-            .counters
-            .native_callsite_calls_by_id
-            .entry(id.clone())
-            .or_default();
-        *calls = calls.saturating_add(1);
-        let inclusive = telemetry
-            .counters
-            .native_callsite_inclusive_time_nanos_by_id
-            .entry(id.clone())
-            .or_default();
-        *inclusive = inclusive.saturating_add(inclusive_nanos);
-        let exclusive = telemetry
-            .counters
-            .native_callsite_exclusive_time_nanos_by_id
-            .entry(id)
-            .or_default();
-        *exclusive = exclusive.saturating_add(inclusive_nanos.saturating_sub(child_nanos));
     }
 
     pub(super) fn record_object_release_root_check(&self, fast_path: bool) {
@@ -1046,39 +724,6 @@ impl NativeRequestColdState<'_> {
             .native_value_table_materializations_by_kind_and_origin
             .entry(format!("direct_array_entry_site@{site}"))
             .or_default() += u64::try_from(entries).unwrap_or(u64::MAX);
-        if let Some(name) = telemetry.builtin_attribution_stack.last().copied() {
-            *telemetry
-                .counters
-                .native_value_table_materializations_by_kind_and_origin
-                .entry(format!("direct_array_builtin@{name}"))
-                .or_default() += 1;
-            *telemetry
-                .counters
-                .native_value_table_materializations_by_kind_and_origin
-                .entry(format!("direct_array_entry_builtin@{name}"))
-                .or_default() += u64::try_from(entries).unwrap_or(u64::MAX);
-        }
-    }
-
-    pub(super) fn enter_builtin_attribution(&self, name: &'static str) {
-        if self.options.collect_counters {
-            self.runtime_telemetry
-                .borrow_mut()
-                .builtin_attribution_stack
-                .push(name);
-        }
-    }
-
-    pub(super) fn exit_builtin_attribution(&self, name: &'static str) {
-        if !self.options.collect_counters {
-            return;
-        }
-        let popped = self
-            .runtime_telemetry
-            .borrow_mut()
-            .builtin_attribution_stack
-            .pop();
-        debug_assert_eq!(popped, Some(name));
     }
 
     pub(super) fn record_direct_object_promotion(
@@ -1161,38 +806,9 @@ fn named_counters<const N: usize>(
         .collect()
 }
 
-fn merge_function_scratch(target: &mut Vec<u64>, source: &std::collections::BTreeMap<String, u64>) {
-    for (name, value) in source {
-        let Some(index) = name
-            .split_once(':')
-            .map_or(name.as_str(), |(index, _)| index)
-            .parse::<usize>()
-            .ok()
-        else {
-            continue;
-        };
-        if target.len() <= index {
-            target.resize(index + 1, 0);
-        }
-        target[index] = target[index].saturating_add(*value);
-    }
-}
-
 fn record_scratch<const N: usize>(target: &mut [u64; N], names: &[&str; N], name: &str) {
     if let Some(index) = names.iter().position(|candidate| *candidate == name) {
         target[index] = target[index].saturating_add(1);
-    }
-}
-
-fn merge_named_scratch<const N: usize>(
-    target: &mut [u64; N],
-    names: &[&str; N],
-    source: &std::collections::BTreeMap<String, u64>,
-) {
-    for (name, value) in source {
-        if let Some(index) = names.iter().position(|candidate| *candidate == name) {
-            target[index] = target[index].saturating_add(*value);
-        }
     }
 }
 
@@ -1241,15 +857,5 @@ fn merge_counter_map(
     for (name, value) in source {
         let entry = target.entry(name.clone()).or_default();
         *entry = entry.saturating_add(*value);
-    }
-}
-
-fn merge_gauge_map_max(
-    target: &mut std::collections::BTreeMap<String, u64>,
-    source: &std::collections::BTreeMap<String, u64>,
-) {
-    for (name, value) in source {
-        let entry = target.entry(name.clone()).or_default();
-        *entry = (*entry).max(*value);
     }
 }

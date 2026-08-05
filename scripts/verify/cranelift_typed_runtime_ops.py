@@ -89,13 +89,20 @@ def main() -> int:
             if key not in operation:
                 failures.append(f"{name} lacks audit field {key}")
         if operation.get("native_callable"):
-            if not str(operation.get("implementation", "")).startswith(
-                "php_runtime::api::native_"
+            implementation = str(operation.get("implementation", ""))
+            callers = set(operation.get("native_callers", []))
+            baseline_only = implementation.startswith("php_runtime::api::baseline_")
+            if not (
+                implementation.startswith("php_runtime::api::native_")
+                or baseline_only
             ):
                 failures.append(f"{name} has no concrete typed native implementation")
-            callers = set(operation.get("native_callers", []))
-            if callers != {"baseline", "optimizing"}:
-                failures.append(f"{name} is not callable from both native tiers")
+            expected_callers = {"baseline"} if baseline_only else {"baseline", "optimizing"}
+            if callers != expected_callers:
+                failures.append(
+                    f"{name} has native callers {sorted(callers)}, "
+                    f"expected {sorted(expected_callers)}"
+                )
 
     if not COVERAGE.is_file():
         failures.append("instruction coverage JSON was not generated")

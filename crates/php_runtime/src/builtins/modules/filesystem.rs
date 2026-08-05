@@ -158,7 +158,7 @@ impl NativePathOutput {
         }
     }
 
-    fn bytes<'a>(self, source: &'a [u8]) -> Option<&'a [u8]> {
+    fn bytes(self, source: &[u8]) -> Option<&[u8]> {
         match self.static_bytes {
             Some(bytes) => Some(bytes),
             None => {
@@ -870,6 +870,48 @@ pub fn native_rename(
     Some(fs::rename(from, to).is_ok())
 }
 
+/// Terminal result of one admitted native uploaded-file move.
+///
+/// The operation owns its mutation once called: failure variants must be
+/// reported by the generated caller and must never be replayed through the
+/// baseline builtin implementation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeMoveUploadedFileResult {
+    NotActiveUpload,
+    DestinationDenied,
+    SamePath,
+    MoveFailed,
+    Moved,
+}
+
+/// Exact request-local uploaded-file move over the stable upload registry and
+/// filesystem capability. Outer `None` is reserved for a wrapper-backed
+/// destination and is returned before any filesystem mutation.
+pub fn native_move_uploaded_file(
+    cwd: &Path,
+    filesystem: &crate::FilesystemCapabilities,
+    registry: &mut crate::UploadRegistry,
+    from: &[u8],
+    to: &[u8],
+) -> Option<NativeMoveUploadedFileResult> {
+    let from_text = String::from_utf8_lossy(from);
+    if !registry.is_active_upload(&from_text) {
+        return Some(NativeMoveUploadedFileResult::NotActiveUpload);
+    }
+    let Some(to) = native_local_path(cwd, filesystem, to)? else {
+        return Some(NativeMoveUploadedFileResult::DestinationDenied);
+    };
+    let from_path = PathBuf::from(from_text.as_ref());
+    if same_filesystem_path(&from_path, &to) {
+        return Some(NativeMoveUploadedFileResult::SamePath);
+    }
+    if move_upload_temp_file(&from_path, &to).is_err() {
+        return Some(NativeMoveUploadedFileResult::MoveFailed);
+    }
+    registry.mark_moved(&from_text);
+    Some(NativeMoveUploadedFileResult::Moved)
+}
+
 /// Exact native local-file removal.
 pub fn native_unlink(
     cwd: &Path,
@@ -880,18 +922,34 @@ pub fn native_unlink(
         .map(|path| path.is_some_and(|path| fs::remove_file(path).is_ok()))
 }
 
-/// Exact native local-directory creation for the default-argument shape.
-///
-/// Explicit mode, recursion, and stream-context forms remain at the single
-/// baseline continuation until their mutable request capabilities are
-/// published independently.
+/// Exact native local-directory creation after scalar argument coercion and
+/// stream-context validation have completed at the generated call boundary.
 pub fn native_mkdir(
     cwd: &Path,
     filesystem: &crate::FilesystemCapabilities,
     path: &[u8],
+    mode: i64,
+    recursive: bool,
+    umask: i64,
 ) -> Option<bool> {
-    native_local_path(cwd, filesystem, path)
-        .map(|path| path.is_some_and(|path| fs::create_dir(path).is_ok()))
+    native_local_path(cwd, filesystem, path).map(|path| {
+        path.is_some_and(|path| {
+            if recursive && path.exists() {
+                return false;
+            }
+            let result = if recursive {
+                fs::create_dir_all(&path)
+            } else {
+                fs::create_dir(&path)
+            };
+            if result.is_err() {
+                return false;
+            }
+            let masked = mode & !umask;
+            let _ = set_permissions_mode(&path, masked as u32);
+            true
+        })
+    })
 }
 
 /// Exact native local-directory removal.

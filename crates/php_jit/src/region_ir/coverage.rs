@@ -10,7 +10,7 @@ use php_runtime::api::{
 
 /// Exactly one baseline lowering route for an IR operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BaselineLoweringClass {
+pub enum GenericLoweringClass {
     DirectClif,
     TypedRuntimeHelper(JitHelperId),
     NativeControlFlow,
@@ -20,9 +20,9 @@ pub enum BaselineLoweringClass {
 
 /// Typed PHP-visible effects used by lowering and safepoint audits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BaselineEffectFlags(u16);
+pub struct GenericEffectFlags(u16);
 
-impl BaselineEffectFlags {
+impl GenericEffectFlags {
     pub const NONE: Self = Self(0);
     pub const READS_STATE: Self = Self(1 << 0);
     pub const WRITES_STATE: Self = Self(1 << 1);
@@ -44,10 +44,10 @@ impl BaselineEffectFlags {
 
 /// One generated manifest row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BaselineLoweringManifestEntry {
+pub struct GenericLoweringManifestEntry {
     pub variant: &'static str,
-    pub class: BaselineLoweringClass,
-    pub effects: BaselineEffectFlags,
+    pub class: GenericLoweringClass,
+    pub effects: GenericEffectFlags,
     pub may_throw: bool,
     pub may_diagnose: bool,
     pub may_call_user_code: bool,
@@ -55,16 +55,16 @@ pub struct BaselineLoweringManifestEntry {
     pub requires_safepoint: bool,
 }
 
-const PURE: BaselineEffectFlags = BaselineEffectFlags::NONE;
-const READ: BaselineEffectFlags = BaselineEffectFlags::READS_STATE;
-const WRITE: BaselineEffectFlags = BaselineEffectFlags::WRITES_STATE;
-const ALLOCATE: BaselineEffectFlags = BaselineEffectFlags::ALLOCATES;
-const CONTROL: BaselineEffectFlags = BaselineEffectFlags::CONTROL_FLOW;
-const DECLARE: BaselineEffectFlags = BaselineEffectFlags::DECLARATION;
-const IO: BaselineEffectFlags = BaselineEffectFlags::IO;
-const READ_WRITE: BaselineEffectFlags = READ.union(WRITE);
-const ALLOCATE_WRITE: BaselineEffectFlags = ALLOCATE.union(WRITE);
-const CONTROL_WRITE: BaselineEffectFlags = CONTROL.union(WRITE);
+const PURE: GenericEffectFlags = GenericEffectFlags::NONE;
+const READ: GenericEffectFlags = GenericEffectFlags::READS_STATE;
+const WRITE: GenericEffectFlags = GenericEffectFlags::WRITES_STATE;
+const ALLOCATE: GenericEffectFlags = GenericEffectFlags::ALLOCATES;
+const CONTROL: GenericEffectFlags = GenericEffectFlags::CONTROL_FLOW;
+const DECLARE: GenericEffectFlags = GenericEffectFlags::DECLARATION;
+const IO: GenericEffectFlags = GenericEffectFlags::IO;
+const READ_WRITE: GenericEffectFlags = READ.union(WRITE);
+const ALLOCATE_WRITE: GenericEffectFlags = ALLOCATE.union(WRITE);
+const CONTROL_WRITE: GenericEffectFlags = CONTROL.union(WRITE);
 
 const HELPER_UNARY: JitHelperId = JIT_HELPER_SCALAR_UNARY;
 const HELPER_BINARY: JitHelperId = JIT_HELPER_SCALAR_BINARY;
@@ -76,11 +76,11 @@ macro_rules! define_instruction_coverage {
     ($($pattern:pat => ($variant:literal, $class:expr, $effects:expr, $throw:literal, $diagnose:literal, $user:literal, $suspend:literal, $safepoint:literal);)+) => {
         /// Exhaustive authoritative classification. No wildcard is permitted.
         #[must_use]
-        pub fn baseline_instruction_lowering(
+        pub fn generic_instruction_lowering(
             instruction: &InstructionKind,
-        ) -> BaselineLoweringManifestEntry {
+        ) -> GenericLoweringManifestEntry {
             match instruction {
-                $($pattern => BaselineLoweringManifestEntry {
+                $($pattern => GenericLoweringManifestEntry {
                     variant: $variant,
                     class: $class,
                     effects: $effects,
@@ -94,8 +94,8 @@ macro_rules! define_instruction_coverage {
         }
 
         /// Manifest generated from the exact same typed variant list.
-        pub const BASELINE_INSTRUCTION_MANIFEST: &[BaselineLoweringManifestEntry] = &[
-            $(BaselineLoweringManifestEntry {
+        pub const GENERIC_INSTRUCTION_MANIFEST: &[GenericLoweringManifestEntry] = &[
+            $(GenericLoweringManifestEntry {
                 variant: $variant,
                 class: $class,
                 effects: $effects,
@@ -110,119 +110,119 @@ macro_rules! define_instruction_coverage {
 }
 
 define_instruction_coverage! {
-    InstructionKind::Nop => ("Nop", BaselineLoweringClass::DirectClif, PURE, false, false, false, false, false);
-    InstructionKind::LoadConst { .. } => ("LoadConst", BaselineLoweringClass::DirectClif, PURE, false, false, false, false, false);
-    InstructionKind::FetchConst { .. } => ("FetchConst", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::RegisterConstant { .. } => ("RegisterConstant", BaselineLoweringClass::NativeStateMachine, WRITE.union(DECLARE), true, true, false, false, true);
-    InstructionKind::DeclareFunction { .. } => ("DeclareFunction", BaselineLoweringClass::NativeStateMachine, DECLARE, false, true, false, false, true);
-    InstructionKind::DeclareClass { .. } => ("DeclareClass", BaselineLoweringClass::NativeStateMachine, DECLARE, true, true, true, false, true);
-    InstructionKind::Move { .. } => ("Move", BaselineLoweringClass::DirectClif, PURE, false, false, false, false, false);
-    InstructionKind::LoadLocal { .. } => ("LoadLocal", BaselineLoweringClass::NativeStateMachine, READ, false, true, false, false, false);
-    InstructionKind::LoadLocalQuiet { .. } => ("LoadLocalQuiet", BaselineLoweringClass::DirectClif, READ, false, false, false, false, false);
-    InstructionKind::StoreLocal { .. } => ("StoreLocal", BaselineLoweringClass::DirectClif, WRITE, false, false, false, false, false);
-    InstructionKind::BindReference { .. } => ("BindReference", BaselineLoweringClass::NativeStateMachine, READ_WRITE, false, false, false, false, true);
-    InstructionKind::BindGlobal { .. } => ("BindGlobal", BaselineLoweringClass::NativeStateMachine, READ_WRITE, false, false, false, false, true);
-    InstructionKind::BindReferenceDim { .. } => ("BindReferenceDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceProperty { .. } => ("BindReferenceProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferencePropertyDim { .. } => ("BindReferencePropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceDimFromProperty { .. } => ("BindReferenceDimFromProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceFromProperty { .. } => ("BindReferenceFromProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceFromPropertyDim { .. } => ("BindReferenceFromPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceFromDim { .. } => ("BindReferenceFromDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceFromStaticPropertyDim { .. } => ("BindReferenceFromStaticPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceStaticProperty { .. } => ("BindReferenceStaticProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceFromCall { .. } => ("BindReferenceFromCall", BaselineLoweringClass::NativeControlFlow, CONTROL_WRITE, true, true, true, false, true);
-    InstructionKind::BindReferenceFromMethodCall { .. } => ("BindReferenceFromMethodCall", BaselineLoweringClass::NativeControlFlow, CONTROL_WRITE, true, true, true, false, true);
-    InstructionKind::InitStaticLocal { .. } => ("InitStaticLocal", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, false, false, true);
-    InstructionKind::Binary { .. } => ("Binary", BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY), PURE, true, true, true, false, true);
-    InstructionKind::Compare { .. } => ("Compare", BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE), PURE, true, true, true, false, true);
-    InstructionKind::InstanceOf { .. } => ("InstanceOf", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::DynamicInstanceOf { .. } => ("DynamicInstanceOf", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::Unary { .. } => ("Unary", BaselineLoweringClass::TypedRuntimeHelper(HELPER_UNARY), PURE, true, true, true, false, true);
-    InstructionKind::Cast { .. } => ("Cast", BaselineLoweringClass::TypedRuntimeHelper(HELPER_CAST), ALLOCATE, true, true, true, false, true);
-    InstructionKind::Discard { .. } => ("Discard", BaselineLoweringClass::DirectClif, PURE, false, false, false, false, false);
-    InstructionKind::Echo { .. } => ("Echo", BaselineLoweringClass::TypedRuntimeHelper(HELPER_ECHO), IO, true, true, true, false, true);
-    InstructionKind::EmitDiagnostic { .. } => ("EmitDiagnostic", BaselineLoweringClass::NativeStateMachine, IO, false, true, true, false, true);
-    InstructionKind::Yield { .. } => ("Yield", BaselineLoweringClass::NativeStateMachine, CONTROL_WRITE, true, true, true, true, true);
-    InstructionKind::YieldFrom { .. } => ("YieldFrom", BaselineLoweringClass::NativeStateMachine, CONTROL_WRITE, true, true, true, true, true);
-    InstructionKind::CallFunction { .. } => ("CallFunction", BaselineLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
-    InstructionKind::CallMethod { .. } => ("CallMethod", BaselineLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
-    InstructionKind::CallStaticMethod { .. } => ("CallStaticMethod", BaselineLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
-    InstructionKind::CloneObject { .. } => ("CloneObject", BaselineLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, true, false, true);
-    InstructionKind::CloneWith { .. } => ("CloneWith", BaselineLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, true, false, true);
-    InstructionKind::EnterTry { .. } => ("EnterTry", BaselineLoweringClass::NativeStateMachine, CONTROL_WRITE, false, false, false, false, true);
-    InstructionKind::LeaveTry => ("LeaveTry", BaselineLoweringClass::NativeStateMachine, CONTROL_WRITE, false, false, false, false, true);
-    InstructionKind::EndFinally { .. } => ("EndFinally", BaselineLoweringClass::NativeStateMachine, CONTROL_WRITE, true, false, false, false, true);
-    InstructionKind::Throw { .. } => ("Throw", BaselineLoweringClass::NativeStateMachine, CONTROL_WRITE, true, true, true, false, true);
-    InstructionKind::MakeException { .. } => ("MakeException", BaselineLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, false, false, true);
-    InstructionKind::MakeClosure { .. } => ("MakeClosure", BaselineLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, false, false, true);
-    InstructionKind::CallClosure { .. } => ("CallClosure", BaselineLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
-    InstructionKind::ResolveCallable { .. } => ("ResolveCallable", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::AcquireCallable { .. } => ("AcquireCallable", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::CallCallable { .. } => ("CallCallable", BaselineLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
-    InstructionKind::Pipe { .. } => ("Pipe", BaselineLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
-    InstructionKind::Include { .. } => ("Include", BaselineLoweringClass::NativeControlFlow, CONTROL_WRITE, true, true, true, false, true);
-    InstructionKind::Eval { .. } => ("Eval", BaselineLoweringClass::NativeControlFlow, CONTROL_WRITE, true, true, true, false, true);
-    InstructionKind::NewObject { .. } => ("NewObject", BaselineLoweringClass::NativeControlFlow, ALLOCATE_WRITE.union(CONTROL), true, true, true, false, true);
-    InstructionKind::DynamicNewObject { .. } => ("DynamicNewObject", BaselineLoweringClass::NativeControlFlow, ALLOCATE_WRITE.union(CONTROL), true, true, true, false, true);
-    InstructionKind::FetchProperty { .. } => ("FetchProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::FetchDynamicProperty { .. } => ("FetchDynamicProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::IssetProperty { .. } => ("IssetProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::IssetDynamicProperty { .. } => ("IssetDynamicProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::EmptyProperty { .. } => ("EmptyProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::EmptyDynamicProperty { .. } => ("EmptyDynamicProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::IssetDynamicPropertyDim { .. } => ("IssetDynamicPropertyDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::EmptyDynamicPropertyDim { .. } => ("EmptyDynamicPropertyDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::IssetPropertyDim { .. } => ("IssetPropertyDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::EmptyPropertyDim { .. } => ("EmptyPropertyDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::UnsetProperty { .. } => ("UnsetProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::UnsetPropertyDim { .. } => ("UnsetPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::UnsetDynamicProperty { .. } => ("UnsetDynamicProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::UnsetDynamicPropertyDim { .. } => ("UnsetDynamicPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::FetchStaticProperty { .. } => ("FetchStaticProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::FetchDynamicStaticProperty { .. } => ("FetchDynamicStaticProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::IssetStaticProperty { .. } => ("IssetStaticProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::EmptyStaticProperty { .. } => ("EmptyStaticProperty", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::IssetStaticPropertyDim { .. } => ("IssetStaticPropertyDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::EmptyStaticPropertyDim { .. } => ("EmptyStaticPropertyDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::UnsetStaticPropertyDim { .. } => ("UnsetStaticPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::FetchClassConstant { .. } => ("FetchClassConstant", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::FetchObjectClassName { .. } => ("FetchObjectClassName", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, false);
-    InstructionKind::AssignProperty { .. } => ("AssignProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::AssignPropertyDim { .. } => ("AssignPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::AssignDynamicProperty { .. } => ("AssignDynamicProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::AssignDynamicPropertyDim { .. } => ("AssignDynamicPropertyDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::AssignStaticProperty { .. } => ("AssignStaticProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::AssignDynamicStaticProperty { .. } => ("AssignDynamicStaticProperty", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::NewArray { .. } => ("NewArray", BaselineLoweringClass::NativeStateMachine, ALLOCATE, true, true, false, false, true);
-    InstructionKind::ArrayInsert { .. } => ("ArrayInsert", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::ArraySpread { .. } => ("ArraySpread", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::FetchDim { .. } => ("FetchDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::AssignDim { .. } => ("AssignDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::AppendDim { .. } => ("AppendDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::IssetLocal { .. } => ("IssetLocal", BaselineLoweringClass::NativeStateMachine, READ, false, false, false, false, false);
-    InstructionKind::EmptyLocal { .. } => ("EmptyLocal", BaselineLoweringClass::NativeStateMachine, READ, false, false, false, false, false);
-    InstructionKind::UnsetLocal { .. } => ("UnsetLocal", BaselineLoweringClass::NativeStateMachine, WRITE, false, false, false, false, false);
-    InstructionKind::IssetDim { .. } => ("IssetDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::EmptyDim { .. } => ("EmptyDim", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::UnsetDim { .. } => ("UnsetDim", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::ForeachInit { .. } => ("ForeachInit", BaselineLoweringClass::NativeStateMachine, ALLOCATE.union(READ), true, true, true, false, true);
-    InstructionKind::ForeachNext { .. } => ("ForeachNext", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::ForeachCleanup { .. } => ("ForeachCleanup", BaselineLoweringClass::NativeStateMachine, WRITE, false, false, false, false, true);
-    InstructionKind::ForeachInitRef { .. } => ("ForeachInitRef", BaselineLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, true, false, true);
-    InstructionKind::ForeachNextRef { .. } => ("ForeachNextRef", BaselineLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
-    InstructionKind::ArrayGet { .. } => ("ArrayGet", BaselineLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
-    InstructionKind::RuntimeError { .. } => ("RuntimeError", BaselineLoweringClass::CompileTimeFatal, CONTROL, false, true, false, false, true);
+    InstructionKind::Nop => ("Nop", GenericLoweringClass::DirectClif, PURE, false, false, false, false, false);
+    InstructionKind::LoadConst { .. } => ("LoadConst", GenericLoweringClass::DirectClif, PURE, false, false, false, false, false);
+    InstructionKind::FetchConst { .. } => ("FetchConst", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::RegisterConstant { .. } => ("RegisterConstant", GenericLoweringClass::NativeStateMachine, WRITE.union(DECLARE), true, true, false, false, true);
+    InstructionKind::DeclareFunction { .. } => ("DeclareFunction", GenericLoweringClass::NativeStateMachine, DECLARE, false, true, false, false, true);
+    InstructionKind::DeclareClass { .. } => ("DeclareClass", GenericLoweringClass::NativeStateMachine, DECLARE, true, true, true, false, true);
+    InstructionKind::Move { .. } => ("Move", GenericLoweringClass::DirectClif, PURE, false, false, false, false, false);
+    InstructionKind::LoadLocal { .. } => ("LoadLocal", GenericLoweringClass::NativeStateMachine, READ, false, true, false, false, false);
+    InstructionKind::LoadLocalQuiet { .. } => ("LoadLocalQuiet", GenericLoweringClass::DirectClif, READ, false, false, false, false, false);
+    InstructionKind::StoreLocal { .. } => ("StoreLocal", GenericLoweringClass::DirectClif, WRITE, false, false, false, false, false);
+    InstructionKind::BindReference { .. } => ("BindReference", GenericLoweringClass::NativeStateMachine, READ_WRITE, false, false, false, false, true);
+    InstructionKind::BindGlobal { .. } => ("BindGlobal", GenericLoweringClass::NativeStateMachine, READ_WRITE, false, false, false, false, true);
+    InstructionKind::BindReferenceDim { .. } => ("BindReferenceDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceProperty { .. } => ("BindReferenceProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferencePropertyDim { .. } => ("BindReferencePropertyDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceDimFromProperty { .. } => ("BindReferenceDimFromProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceFromProperty { .. } => ("BindReferenceFromProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceFromPropertyDim { .. } => ("BindReferenceFromPropertyDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceFromDim { .. } => ("BindReferenceFromDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceFromStaticPropertyDim { .. } => ("BindReferenceFromStaticPropertyDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceStaticProperty { .. } => ("BindReferenceStaticProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceFromCall { .. } => ("BindReferenceFromCall", GenericLoweringClass::NativeControlFlow, CONTROL_WRITE, true, true, true, false, true);
+    InstructionKind::BindReferenceFromMethodCall { .. } => ("BindReferenceFromMethodCall", GenericLoweringClass::NativeControlFlow, CONTROL_WRITE, true, true, true, false, true);
+    InstructionKind::InitStaticLocal { .. } => ("InitStaticLocal", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, false, false, true);
+    InstructionKind::Binary { .. } => ("Binary", GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY), PURE, true, true, true, false, true);
+    InstructionKind::Compare { .. } => ("Compare", GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE), PURE, true, true, true, false, true);
+    InstructionKind::InstanceOf { .. } => ("InstanceOf", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::DynamicInstanceOf { .. } => ("DynamicInstanceOf", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::Unary { .. } => ("Unary", GenericLoweringClass::TypedRuntimeHelper(HELPER_UNARY), PURE, true, true, true, false, true);
+    InstructionKind::Cast { .. } => ("Cast", GenericLoweringClass::TypedRuntimeHelper(HELPER_CAST), ALLOCATE, true, true, true, false, true);
+    InstructionKind::Discard { .. } => ("Discard", GenericLoweringClass::DirectClif, PURE, false, false, false, false, false);
+    InstructionKind::Echo { .. } => ("Echo", GenericLoweringClass::TypedRuntimeHelper(HELPER_ECHO), IO, true, true, true, false, true);
+    InstructionKind::EmitDiagnostic { .. } => ("EmitDiagnostic", GenericLoweringClass::NativeStateMachine, IO, false, true, true, false, true);
+    InstructionKind::Yield { .. } => ("Yield", GenericLoweringClass::NativeStateMachine, CONTROL_WRITE, true, true, true, true, true);
+    InstructionKind::YieldFrom { .. } => ("YieldFrom", GenericLoweringClass::NativeStateMachine, CONTROL_WRITE, true, true, true, true, true);
+    InstructionKind::CallFunction { .. } => ("CallFunction", GenericLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
+    InstructionKind::CallMethod { .. } => ("CallMethod", GenericLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
+    InstructionKind::CallStaticMethod { .. } => ("CallStaticMethod", GenericLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
+    InstructionKind::CloneObject { .. } => ("CloneObject", GenericLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, true, false, true);
+    InstructionKind::CloneWith { .. } => ("CloneWith", GenericLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, true, false, true);
+    InstructionKind::EnterTry { .. } => ("EnterTry", GenericLoweringClass::NativeStateMachine, CONTROL_WRITE, false, false, false, false, true);
+    InstructionKind::LeaveTry => ("LeaveTry", GenericLoweringClass::NativeStateMachine, CONTROL_WRITE, false, false, false, false, true);
+    InstructionKind::EndFinally { .. } => ("EndFinally", GenericLoweringClass::NativeStateMachine, CONTROL_WRITE, true, false, false, false, true);
+    InstructionKind::Throw { .. } => ("Throw", GenericLoweringClass::NativeStateMachine, CONTROL_WRITE, true, true, true, false, true);
+    InstructionKind::MakeException { .. } => ("MakeException", GenericLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, false, false, true);
+    InstructionKind::MakeClosure { .. } => ("MakeClosure", GenericLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, false, false, true);
+    InstructionKind::CallClosure { .. } => ("CallClosure", GenericLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
+    InstructionKind::ResolveCallable { .. } => ("ResolveCallable", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::AcquireCallable { .. } => ("AcquireCallable", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::CallCallable { .. } => ("CallCallable", GenericLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
+    InstructionKind::Pipe { .. } => ("Pipe", GenericLoweringClass::NativeControlFlow, CONTROL, true, true, true, false, true);
+    InstructionKind::Include { .. } => ("Include", GenericLoweringClass::NativeControlFlow, CONTROL_WRITE, true, true, true, false, true);
+    InstructionKind::Eval { .. } => ("Eval", GenericLoweringClass::NativeControlFlow, CONTROL_WRITE, true, true, true, false, true);
+    InstructionKind::NewObject { .. } => ("NewObject", GenericLoweringClass::NativeControlFlow, ALLOCATE_WRITE.union(CONTROL), true, true, true, false, true);
+    InstructionKind::DynamicNewObject { .. } => ("DynamicNewObject", GenericLoweringClass::NativeControlFlow, ALLOCATE_WRITE.union(CONTROL), true, true, true, false, true);
+    InstructionKind::FetchProperty { .. } => ("FetchProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::FetchDynamicProperty { .. } => ("FetchDynamicProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::IssetProperty { .. } => ("IssetProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::IssetDynamicProperty { .. } => ("IssetDynamicProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::EmptyProperty { .. } => ("EmptyProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::EmptyDynamicProperty { .. } => ("EmptyDynamicProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::IssetDynamicPropertyDim { .. } => ("IssetDynamicPropertyDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::EmptyDynamicPropertyDim { .. } => ("EmptyDynamicPropertyDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::IssetPropertyDim { .. } => ("IssetPropertyDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::EmptyPropertyDim { .. } => ("EmptyPropertyDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::UnsetProperty { .. } => ("UnsetProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::UnsetPropertyDim { .. } => ("UnsetPropertyDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::UnsetDynamicProperty { .. } => ("UnsetDynamicProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::UnsetDynamicPropertyDim { .. } => ("UnsetDynamicPropertyDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::FetchStaticProperty { .. } => ("FetchStaticProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::FetchDynamicStaticProperty { .. } => ("FetchDynamicStaticProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::IssetStaticProperty { .. } => ("IssetStaticProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::EmptyStaticProperty { .. } => ("EmptyStaticProperty", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::IssetStaticPropertyDim { .. } => ("IssetStaticPropertyDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::EmptyStaticPropertyDim { .. } => ("EmptyStaticPropertyDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::UnsetStaticPropertyDim { .. } => ("UnsetStaticPropertyDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::FetchClassConstant { .. } => ("FetchClassConstant", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::FetchObjectClassName { .. } => ("FetchObjectClassName", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, false);
+    InstructionKind::AssignProperty { .. } => ("AssignProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::AssignPropertyDim { .. } => ("AssignPropertyDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::AssignDynamicProperty { .. } => ("AssignDynamicProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::AssignDynamicPropertyDim { .. } => ("AssignDynamicPropertyDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::AssignStaticProperty { .. } => ("AssignStaticProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::AssignDynamicStaticProperty { .. } => ("AssignDynamicStaticProperty", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::NewArray { .. } => ("NewArray", GenericLoweringClass::NativeStateMachine, ALLOCATE, true, true, false, false, true);
+    InstructionKind::ArrayInsert { .. } => ("ArrayInsert", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::ArraySpread { .. } => ("ArraySpread", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::FetchDim { .. } => ("FetchDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::AssignDim { .. } => ("AssignDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::AppendDim { .. } => ("AppendDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::IssetLocal { .. } => ("IssetLocal", GenericLoweringClass::NativeStateMachine, READ, false, false, false, false, false);
+    InstructionKind::EmptyLocal { .. } => ("EmptyLocal", GenericLoweringClass::NativeStateMachine, READ, false, false, false, false, false);
+    InstructionKind::UnsetLocal { .. } => ("UnsetLocal", GenericLoweringClass::NativeStateMachine, WRITE, false, false, false, false, false);
+    InstructionKind::IssetDim { .. } => ("IssetDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::EmptyDim { .. } => ("EmptyDim", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::UnsetDim { .. } => ("UnsetDim", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::ForeachInit { .. } => ("ForeachInit", GenericLoweringClass::NativeStateMachine, ALLOCATE.union(READ), true, true, true, false, true);
+    InstructionKind::ForeachNext { .. } => ("ForeachNext", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::ForeachCleanup { .. } => ("ForeachCleanup", GenericLoweringClass::NativeStateMachine, WRITE, false, false, false, false, true);
+    InstructionKind::ForeachInitRef { .. } => ("ForeachInitRef", GenericLoweringClass::NativeStateMachine, ALLOCATE_WRITE, true, true, true, false, true);
+    InstructionKind::ForeachNextRef { .. } => ("ForeachNextRef", GenericLoweringClass::NativeStateMachine, READ_WRITE, true, true, true, false, true);
+    InstructionKind::ArrayGet { .. } => ("ArrayGet", GenericLoweringClass::NativeStateMachine, READ, true, true, true, false, true);
+    InstructionKind::RuntimeError { .. } => ("RuntimeError", GenericLoweringClass::CompileTimeFatal, CONTROL, false, true, false, false, true);
 }
 
 macro_rules! define_terminator_coverage {
     ($($pattern:pat => ($variant:literal, $class:expr, $effects:expr, $throw:literal, $diagnose:literal, $user:literal, $suspend:literal, $safepoint:literal);)+) => {
         #[must_use]
-        pub fn baseline_terminator_lowering(
+        pub fn generic_terminator_lowering(
             terminator: &TerminatorKind,
-        ) -> BaselineLoweringManifestEntry {
+        ) -> GenericLoweringManifestEntry {
             match terminator {
-                $($pattern => BaselineLoweringManifestEntry {
+                $($pattern => GenericLoweringManifestEntry {
                     variant: $variant,
                     class: $class,
                     effects: $effects,
@@ -235,8 +235,8 @@ macro_rules! define_terminator_coverage {
             }
         }
 
-        pub const BASELINE_TERMINATOR_MANIFEST: &[BaselineLoweringManifestEntry] = &[
-            $(BaselineLoweringManifestEntry {
+        pub const GENERIC_TERMINATOR_MANIFEST: &[GenericLoweringManifestEntry] = &[
+            $(GenericLoweringManifestEntry {
                 variant: $variant,
                 class: $class,
                 effects: $effects,
@@ -251,95 +251,95 @@ macro_rules! define_terminator_coverage {
 }
 
 define_terminator_coverage! {
-    TerminatorKind::Jump { .. } => ("Jump", BaselineLoweringClass::NativeControlFlow, CONTROL, false, false, false, false, false);
-    TerminatorKind::JumpIfFalse { .. } => ("JumpIfFalse", BaselineLoweringClass::NativeControlFlow, CONTROL, false, false, false, false, false);
-    TerminatorKind::JumpIfTrue { .. } => ("JumpIfTrue", BaselineLoweringClass::NativeControlFlow, CONTROL, false, false, false, false, false);
-    TerminatorKind::JumpIf { .. } => ("JumpIf", BaselineLoweringClass::NativeControlFlow, CONTROL, false, false, false, false, false);
-    TerminatorKind::Return { .. } => ("Return", BaselineLoweringClass::NativeControlFlow, CONTROL, true, true, false, false, true);
-    TerminatorKind::Exit { .. } => ("Exit", BaselineLoweringClass::NativeControlFlow, CONTROL_WRITE, false, true, false, false, true);
+    TerminatorKind::Jump { .. } => ("Jump", GenericLoweringClass::NativeControlFlow, CONTROL, false, false, false, false, false);
+    TerminatorKind::JumpIfFalse { .. } => ("JumpIfFalse", GenericLoweringClass::NativeControlFlow, CONTROL, false, false, false, false, false);
+    TerminatorKind::JumpIfTrue { .. } => ("JumpIfTrue", GenericLoweringClass::NativeControlFlow, CONTROL, false, false, false, false, false);
+    TerminatorKind::JumpIf { .. } => ("JumpIf", GenericLoweringClass::NativeControlFlow, CONTROL, false, false, false, false, false);
+    TerminatorKind::Return { .. } => ("Return", GenericLoweringClass::NativeControlFlow, CONTROL, true, true, false, false, true);
+    TerminatorKind::Exit { .. } => ("Exit", GenericLoweringClass::NativeControlFlow, CONTROL_WRITE, false, true, false, false, true);
 }
 
 #[must_use]
-pub const fn baseline_unary_class(op: UnaryOp) -> BaselineLoweringClass {
+pub const fn baseline_unary_class(op: UnaryOp) -> GenericLoweringClass {
     match op {
-        UnaryOp::Plus => BaselineLoweringClass::TypedRuntimeHelper(HELPER_UNARY),
-        UnaryOp::Minus => BaselineLoweringClass::TypedRuntimeHelper(HELPER_UNARY),
-        UnaryOp::Not => BaselineLoweringClass::TypedRuntimeHelper(HELPER_UNARY),
-        UnaryOp::BitNot => BaselineLoweringClass::TypedRuntimeHelper(HELPER_UNARY),
+        UnaryOp::Plus => GenericLoweringClass::TypedRuntimeHelper(HELPER_UNARY),
+        UnaryOp::Minus => GenericLoweringClass::TypedRuntimeHelper(HELPER_UNARY),
+        UnaryOp::Not => GenericLoweringClass::TypedRuntimeHelper(HELPER_UNARY),
+        UnaryOp::BitNot => GenericLoweringClass::TypedRuntimeHelper(HELPER_UNARY),
     }
 }
 
 #[must_use]
-pub const fn baseline_binary_class(op: BinaryOp) -> BaselineLoweringClass {
+pub const fn baseline_binary_class(op: BinaryOp) -> GenericLoweringClass {
     match op {
-        BinaryOp::Add => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::Sub => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::Mul => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::Div => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::Mod => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::Concat => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::Pow => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::BitAnd => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::BitOr => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::BitXor => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::ShiftLeft => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
-        BinaryOp::ShiftRight => BaselineLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::Add => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::Sub => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::Mul => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::Div => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::Mod => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::Concat => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::Pow => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::BitAnd => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::BitOr => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::BitXor => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::ShiftLeft => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
+        BinaryOp::ShiftRight => GenericLoweringClass::TypedRuntimeHelper(HELPER_BINARY),
     }
 }
 
 #[must_use]
-pub const fn baseline_compare_class(op: CompareOp) -> BaselineLoweringClass {
+pub const fn baseline_compare_class(op: CompareOp) -> GenericLoweringClass {
     match op {
-        CompareOp::Equal => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
-        CompareOp::NotEqual => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
-        CompareOp::Identical => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
-        CompareOp::NotIdentical => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
-        CompareOp::Less => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
-        CompareOp::LessEqual => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
-        CompareOp::Greater => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
-        CompareOp::GreaterEqual => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
-        CompareOp::Spaceship => BaselineLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::Equal => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::NotEqual => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::Identical => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::NotIdentical => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::Less => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::LessEqual => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::Greater => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::GreaterEqual => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
+        CompareOp::Spaceship => GenericLoweringClass::TypedRuntimeHelper(HELPER_COMPARE),
     }
 }
 
 #[must_use]
-pub const fn baseline_cast_class(kind: CastKind) -> BaselineLoweringClass {
+pub const fn baseline_cast_class(kind: CastKind) -> GenericLoweringClass {
     match kind {
-        CastKind::Bool => BaselineLoweringClass::TypedRuntimeHelper(HELPER_CAST),
-        CastKind::Int => BaselineLoweringClass::TypedRuntimeHelper(HELPER_CAST),
-        CastKind::Float => BaselineLoweringClass::TypedRuntimeHelper(HELPER_CAST),
-        CastKind::String => BaselineLoweringClass::TypedRuntimeHelper(HELPER_CAST),
-        CastKind::Array => BaselineLoweringClass::TypedRuntimeHelper(HELPER_CAST),
-        CastKind::Object => BaselineLoweringClass::TypedRuntimeHelper(HELPER_CAST),
-        CastKind::Void => BaselineLoweringClass::TypedRuntimeHelper(HELPER_CAST),
+        CastKind::Bool => GenericLoweringClass::TypedRuntimeHelper(HELPER_CAST),
+        CastKind::Int => GenericLoweringClass::TypedRuntimeHelper(HELPER_CAST),
+        CastKind::Float => GenericLoweringClass::TypedRuntimeHelper(HELPER_CAST),
+        CastKind::String => GenericLoweringClass::TypedRuntimeHelper(HELPER_CAST),
+        CastKind::Array => GenericLoweringClass::TypedRuntimeHelper(HELPER_CAST),
+        CastKind::Object => GenericLoweringClass::TypedRuntimeHelper(HELPER_CAST),
+        CastKind::Void => GenericLoweringClass::TypedRuntimeHelper(HELPER_CAST),
     }
 }
 
 #[must_use]
-pub const fn baseline_include_class(kind: IncludeKind) -> BaselineLoweringClass {
+pub const fn baseline_include_class(kind: IncludeKind) -> GenericLoweringClass {
     match kind {
-        IncludeKind::Include => BaselineLoweringClass::NativeControlFlow,
-        IncludeKind::IncludeOnce => BaselineLoweringClass::NativeControlFlow,
-        IncludeKind::Require => BaselineLoweringClass::NativeControlFlow,
-        IncludeKind::RequireOnce => BaselineLoweringClass::NativeControlFlow,
+        IncludeKind::Include => GenericLoweringClass::NativeControlFlow,
+        IncludeKind::IncludeOnce => GenericLoweringClass::NativeControlFlow,
+        IncludeKind::Require => GenericLoweringClass::NativeControlFlow,
+        IncludeKind::RequireOnce => GenericLoweringClass::NativeControlFlow,
     }
 }
 
 #[must_use]
-pub fn baseline_callable_class(kind: &CallableKind) -> BaselineLoweringClass {
+pub fn baseline_callable_class(kind: &CallableKind) -> GenericLoweringClass {
     match kind {
-        CallableKind::FunctionName { .. } => BaselineLoweringClass::NativeControlFlow,
-        CallableKind::MethodPlaceholder { .. } => BaselineLoweringClass::NativeControlFlow,
-        CallableKind::UnresolvedDynamic { .. } => BaselineLoweringClass::NativeControlFlow,
+        CallableKind::FunctionName { .. } => GenericLoweringClass::NativeControlFlow,
+        CallableKind::MethodPlaceholder { .. } => GenericLoweringClass::NativeControlFlow,
+        CallableKind::UnresolvedDynamic { .. } => GenericLoweringClass::NativeControlFlow,
     }
 }
 
 #[must_use]
-pub const fn baseline_call_arg_class(kind: IrCallArgValueKind) -> BaselineLoweringClass {
+pub const fn baseline_call_arg_class(kind: IrCallArgValueKind) -> GenericLoweringClass {
     match kind {
-        IrCallArgValueKind::Direct => BaselineLoweringClass::NativeControlFlow,
-        IrCallArgValueKind::IndirectTemporary => BaselineLoweringClass::NativeControlFlow,
-        IrCallArgValueKind::ByRefLocationPlaceholder => BaselineLoweringClass::NativeControlFlow,
+        IrCallArgValueKind::Direct => GenericLoweringClass::NativeControlFlow,
+        IrCallArgValueKind::IndirectTemporary => GenericLoweringClass::NativeControlFlow,
+        IrCallArgValueKind::ByRefLocationPlaceholder => GenericLoweringClass::NativeControlFlow,
     }
 }
 
@@ -350,10 +350,10 @@ mod tests {
 
     #[test]
     fn manifest_has_every_current_instruction_and_terminator() {
-        assert_eq!(BASELINE_INSTRUCTION_MANIFEST.len(), 103);
-        assert_eq!(BASELINE_TERMINATOR_MANIFEST.len(), 6);
+        assert_eq!(GENERIC_INSTRUCTION_MANIFEST.len(), 103);
+        assert_eq!(GENERIC_TERMINATOR_MANIFEST.len(), 6);
         assert_eq!(
-            BASELINE_INSTRUCTION_MANIFEST
+            GENERIC_INSTRUCTION_MANIFEST
                 .iter()
                 .filter(|entry| entry.variant == "RuntimeError")
                 .count(),
@@ -363,14 +363,14 @@ mod tests {
 
     #[test]
     fn every_helper_mapped_instruction_has_a_real_typed_runtime_operation() {
-        let mapped = BASELINE_INSTRUCTION_MANIFEST
+        let mapped = GENERIC_INSTRUCTION_MANIFEST
             .iter()
             .filter_map(|entry| match entry.class {
-                BaselineLoweringClass::TypedRuntimeHelper(id) => Some(id),
-                BaselineLoweringClass::DirectClif
-                | BaselineLoweringClass::NativeControlFlow
-                | BaselineLoweringClass::NativeStateMachine
-                | BaselineLoweringClass::CompileTimeFatal => None,
+                GenericLoweringClass::TypedRuntimeHelper(id) => Some(id),
+                GenericLoweringClass::DirectClif
+                | GenericLoweringClass::NativeControlFlow
+                | GenericLoweringClass::NativeStateMachine
+                | GenericLoweringClass::CompileTimeFatal => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(mapped.len(), 5);
@@ -379,7 +379,6 @@ mod tests {
             assert!(operation.native_callable);
             assert!(operation.gc_safepoint);
             assert!(operation.native_callers.contains(&"baseline"));
-            assert!(operation.native_callers.contains(&"optimizing"));
         }
         assert_eq!(
             NATIVE_OPERATION_REGISTRY

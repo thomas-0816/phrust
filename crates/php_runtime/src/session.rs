@@ -62,6 +62,17 @@ impl Default for NativeSessionControlState {
 }
 
 impl NativeSessionControlState {
+    /// Marks a transport-loaded payload authoritative in the native data
+    /// plane. The payload itself is owned by the caller.
+    pub fn mark_payload_loaded(&mut self) {
+        self.data_loaded = true;
+    }
+
+    /// Stages a transport-generated id for the next value-free activation.
+    pub fn set_pending_generated_id(&mut self, id: impl Into<String>) {
+        self.pending_generated_id = Some(id.into());
+    }
+
     #[must_use]
     pub const fn status(&self) -> i64 {
         self.status

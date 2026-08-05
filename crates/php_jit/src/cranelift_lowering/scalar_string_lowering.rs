@@ -488,7 +488,7 @@ fn lower_optimizing_scalar_conversion(
             let truthy = lower_optimizing_truthy(builder, encoded, transition)?;
             Ok(encode_native_bool(builder, truthy))
         }
-        StableScalarConsumerBuiltin::FloatVal => emit_total_exact_native_value!(
+        StableScalarConsumerBuiltin::FloatVal => emit_total_exact_scalar_value!(
             module,
             builder,
             float_cast,
@@ -496,7 +496,7 @@ fn lower_optimizing_scalar_conversion(
             transition,
             "exact native float-cast handler was not declared",
         ),
-        StableScalarConsumerBuiltin::IntVal => emit_total_exact_native_value!(
+        StableScalarConsumerBuiltin::IntVal => emit_total_exact_scalar_value!(
             module,
             builder,
             int_cast,
@@ -504,7 +504,7 @@ fn lower_optimizing_scalar_conversion(
             transition,
             "exact native integer-cast handler was not declared",
         ),
-        StableScalarConsumerBuiltin::StrVal => emit_total_exact_native_value!(
+        StableScalarConsumerBuiltin::StrVal => emit_total_exact_scalar_value!(
             module,
             builder,
             string_cast,
@@ -529,38 +529,53 @@ fn lower_optimizing_type_name(
         StableScalarConsumerBuiltin::GetType | StableScalarConsumerBuiltin::GetDebugType
     ));
     let debug = operation == StableScalarConsumerBuiltin::GetDebugType;
-    let bytes: &[u8] = match fact.class {
+    let bytes: Option<&[u8]> = match fact.class {
         SsaValueClass::Null => {
             if debug {
-                b"null"
+                Some(b"null")
             } else {
-                b"NULL"
+                Some(b"NULL")
             }
         }
         SsaValueClass::Bool => {
             if debug {
-                b"bool"
+                Some(b"bool")
             } else {
-                b"boolean"
+                Some(b"boolean")
             }
         }
         SsaValueClass::Int => {
             if debug {
-                b"int"
+                Some(b"int")
             } else {
-                b"integer"
+                Some(b"integer")
             }
         }
         SsaValueClass::Float => {
             if debug {
-                b"float"
+                Some(b"float")
             } else {
-                b"double"
+                Some(b"double")
             }
         }
-        SsaValueClass::StringHandle => b"string",
-        _ => unreachable!("publication admits only total scalar type-name classes"),
+        SsaValueClass::StringHandle => Some(b"string"),
+        SsaValueClass::ArrayHandle => Some(b"array"),
+        SsaValueClass::CallableHandle => Some(if debug { b"Closure" } else { b"object" }),
+        SsaValueClass::ResourceHandle => Some(b"resource"),
+        SsaValueClass::GeneratorHandle => Some(if debug { b"Generator" } else { b"object" }),
+        SsaValueClass::FiberHandle => Some(if debug { b"Fiber" } else { b"object" }),
+        SsaValueClass::ObjectHandle if !debug => Some(b"object"),
+        SsaValueClass::Uninitialized
+        | SsaValueClass::ObjectHandle
+        | SsaValueClass::ReferenceHandle
+        | SsaValueClass::MixedHandle => None,
     };
+    let bytes = bytes.ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_TYPE_NAME_PUBLICATION",
+            "dynamic get_debug_type class naming requires an exact published class-name plan",
+        )
+    })?;
     lower_optimizing_static_string(builder, bytes, transition)
 }
 
@@ -1565,6 +1580,7 @@ fn lower_total_native_scalar_string_coercion(
     encoded: ir::Value,
     fact: SsaValueFact,
     float_to_string: Option<NativeHelper>,
+    string_cast: Option<NativeHelper>,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<NativeScalarStringCoercion, CraneliftLoweringError> {
     let encoded = lower_optimizing_reference_scalar(builder, encoded, false, transition)?;
@@ -1619,7 +1635,7 @@ fn lower_total_native_scalar_string_coercion(
             let value = builder
                 .ins()
                 .bitcast(types::F64, MemFlagsData::new(), bits);
-            let value = emit_total_exact_native_value!(
+            let value = emit_total_exact_scalar_value!(
                 module,
                 builder,
                 float_to_string,
@@ -1629,10 +1645,17 @@ fn lower_total_native_scalar_string_coercion(
             )?;
             Ok(temporary(builder, value, true))
         }
-        _ => Err(CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_SCALAR_STRING_PUBLICATION",
-            "non-scalar value reached a publication-total string coercion",
-        )),
+        _ => {
+            let value = emit_total_exact_runtime_value!(
+                module,
+                builder,
+                string_cast,
+                &[encoded],
+                transition,
+                "exact native string-cast handler was not declared",
+            )?;
+            Ok(temporary(builder, value, true))
+        }
     }
 }
 
@@ -1814,7 +1837,7 @@ fn lower_optimizing_scalar_string_coercion(
 
     builder.switch_to_block(float);
     let value = builder.block_params(float)[0];
-    let value = emit_total_exact_native_value!(
+    let value = emit_total_exact_scalar_value!(
         module,
         builder,
         float_to_string,
@@ -1892,6 +1915,7 @@ fn lower_optimizing_explode(
     builder: &mut FunctionBuilder<'_>,
     delimiter: ir::Value,
     input: ir::Value,
+    piece_limit: Option<u64>,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let (delimiter_length, delimiter_bytes) =
@@ -1956,6 +1980,15 @@ fn lower_optimizing_explode(
 
     builder.switch_to_block(counted);
     let count = builder.block_params(counted)[0];
+    let count = if let Some(piece_limit) = piece_limit {
+        let limit = builder.ins().iconst(types::I64, piece_limit as i64);
+        let exceeds_limit = builder
+            .ins()
+            .icmp(IntCC::UnsignedGreaterThan, count, limit);
+        builder.ins().select(exceeds_limit, limit, count)
+    } else {
+        count
+    };
     let required_slots = builder.ins().iadd_imm(count, 1);
     lower_optimizing_require_direct_value_capacity(builder, required_slots, transition)?;
     let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
@@ -2101,12 +2134,19 @@ fn lower_optimizing_explode(
 
 fn lower_optimizing_implode(
     builder: &mut FunctionBuilder<'_>,
-    separator: ir::Value,
+    separator: Option<ir::Value>,
     array: ir::Value,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
-    let (separator_length, separator_bytes) =
-        lower_optimizing_string_descriptor(builder, separator, transition)?;
+    let (separator_length, separator_bytes) = if let Some(separator) = separator {
+        lower_optimizing_string_descriptor(builder, separator, transition)?
+    } else {
+        let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+        (
+            builder.ins().iconst(types::I64, 0),
+            builder.ins().iconst(pointer_type, 0),
+        )
+    };
     let (_, length, entries) =
         lower_optimizing_direct_array_descriptor(builder, array, transition)?;
     let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
@@ -2146,7 +2186,12 @@ fn lower_optimizing_implode(
         entry,
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
-    let value = lower_optimizing_admitted_reference_scalar(builder, value, transition.deopt_out);
+    let value = lower_optimizing_admitted_reference_scalar(
+        builder,
+        value,
+        transition.deopt_out,
+        transition.reference_payload_proof,
+    );
     let (_, value_length, _) =
         lower_native_string_key_descriptor(builder, value, transition.deopt_out);
     let first = builder.ins().icmp_imm(IntCC::Equal, index, 0);
@@ -2271,7 +2316,12 @@ fn lower_optimizing_implode(
         entry,
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
-    let value = lower_optimizing_admitted_reference_scalar(builder, value, transition.deopt_out);
+    let value = lower_optimizing_admitted_reference_scalar(
+        builder,
+        value,
+        transition.deopt_out,
+        transition.reference_payload_proof,
+    );
     let (_, value_length, value_bytes) =
         lower_native_string_key_descriptor(builder, value, transition.deopt_out);
     builder.ins().jump(
@@ -2354,7 +2404,7 @@ fn lower_optimizing_str_replace(
     replacement: ir::Value,
     subject: ir::Value,
     transition: NativeOptimizingTransition<'_>,
-) -> Result<ir::Value, CraneliftLoweringError> {
+) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
     let (search_length, search_bytes) =
         lower_optimizing_string_descriptor(builder, search, transition)?;
     let (replacement_length, replacement_bytes) =
@@ -2370,12 +2420,17 @@ fn lower_optimizing_str_replace(
     let merge = builder.create_block();
     builder.append_block_param(scan, types::I64);
     builder.append_block_param(scan, types::I64);
+    builder.append_block_param(scan, types::I64);
+    builder.append_block_param(matched, types::I64);
     builder.append_block_param(matched, types::I64);
     builder.append_block_param(matched, types::I64);
     builder.append_block_param(different, types::I64);
     builder.append_block_param(different, types::I64);
+    builder.append_block_param(different, types::I64);
     builder.append_block_param(counted, types::I64);
     builder.append_block_param(counted, types::I64);
+    builder.append_block_param(counted, types::I64);
+    builder.append_block_param(merge, types::I64);
     builder.append_block_param(merge, types::I64);
     let zero = builder.ins().iconst(types::I64, 0);
     let search_empty = builder.ins().icmp_imm(IntCC::Equal, search_length, 0);
@@ -2384,7 +2439,7 @@ fn lower_optimizing_str_replace(
         empty_search,
         &[],
         scan,
-        &[zero.into(), zero.into()],
+        &[zero.into(), zero.into(), zero.into()],
     );
 
     builder.switch_to_block(empty_search);
@@ -2396,11 +2451,14 @@ fn lower_optimizing_str_replace(
         },
         transition,
     )?;
-    builder.ins().jump(merge, &[unchanged.into()]);
+    builder
+        .ins()
+        .jump(merge, &[unchanged.into(), zero.into()]);
 
     builder.switch_to_block(scan);
     let position = builder.block_params(scan)[0];
     let output_length = builder.block_params(scan)[1];
+    let replacement_count = builder.block_params(scan)[2];
     let end = builder.ins().iadd(position, search_length);
     let has_candidate = builder
         .ins()
@@ -2410,7 +2468,11 @@ fn lower_optimizing_str_replace(
         inspect,
         &[],
         counted,
-        &[position.into(), output_length.into()],
+        &[
+            position.into(),
+            output_length.into(),
+            replacement_count.into(),
+        ],
     );
 
     builder.switch_to_block(inspect);
@@ -2419,32 +2481,50 @@ fn lower_optimizing_str_replace(
     builder.ins().brif(
         equal,
         matched,
-        &[position.into(), output_length.into()],
+        &[
+            position.into(),
+            output_length.into(),
+            replacement_count.into(),
+        ],
         different,
-        &[position.into(), output_length.into()],
+        &[
+            position.into(),
+            output_length.into(),
+            replacement_count.into(),
+        ],
     );
 
     builder.switch_to_block(matched);
     let position = builder.block_params(matched)[0];
     let output_length = builder.block_params(matched)[1];
+    let replacement_count = builder.block_params(matched)[2];
     let next_output = builder.ins().iadd(output_length, replacement_length);
     let next_position = builder.ins().iadd(position, search_length);
-    builder
-        .ins()
-        .jump(scan, &[next_position.into(), next_output.into()]);
+    let next_count = builder.ins().iadd_imm(replacement_count, 1);
+    builder.ins().jump(
+        scan,
+        &[next_position.into(), next_output.into(), next_count.into()],
+    );
 
     builder.switch_to_block(different);
     let position = builder.block_params(different)[0];
     let output_length = builder.block_params(different)[1];
+    let replacement_count = builder.block_params(different)[2];
     let next_position = builder.ins().iadd_imm(position, 1);
     let next_output = builder.ins().iadd_imm(output_length, 1);
-    builder
-        .ins()
-        .jump(scan, &[next_position.into(), next_output.into()]);
+    builder.ins().jump(
+        scan,
+        &[
+            next_position.into(),
+            next_output.into(),
+            replacement_count.into(),
+        ],
+    );
 
     builder.switch_to_block(counted);
     let position = builder.block_params(counted)[0];
     let output_length = builder.block_params(counted)[1];
+    let replacement_count = builder.block_params(counted)[2];
     // Once no complete search string can begin, the remaining suffix is
     // literal output and is included in the one final allocation.
     let suffix_length = builder.ins().isub(subject_length, position);
@@ -2575,10 +2655,16 @@ fn lower_optimizing_str_replace(
 
     builder.switch_to_block(finish);
     lower_optimizing_finish_string(builder, allocation, output_length);
-    builder.ins().jump(merge, &[allocation.value.into()]);
+    builder.ins().jump(
+        merge,
+        &[allocation.value.into(), replacement_count.into()],
+    );
 
     builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
+    Ok((
+        builder.block_params(merge)[0],
+        builder.block_params(merge)[1],
+    ))
 }
 
 fn lower_optimizing_chr(
@@ -3338,7 +3424,7 @@ fn lower_optimizing_extrema(
         for &candidate in &arguments[1..] {
             let candidate =
                 lower_optimizing_reference_scalar(builder, candidate, false, transition)?;
-            let ordering = emit_total_exact_native_value!(
+            let ordering = emit_total_exact_scalar_value!(
                 module,
                 builder,
                 spaceship,
@@ -3398,7 +3484,7 @@ fn lower_optimizing_extrema(
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
     let candidate = lower_optimizing_reference_scalar(builder, candidate, false, transition)?;
-    let ordering = emit_total_exact_native_value!(
+    let ordering = emit_total_exact_scalar_value!(
         module,
         builder,
         spaceship,

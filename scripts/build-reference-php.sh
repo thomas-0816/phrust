@@ -34,10 +34,19 @@ if [[ ! -x ./configure || "${FORCE_BUILDCONF:-0}" == "1" ]]; then
   ./buildconf --force 2>&1 | tee "../../$LOG_DIR/buildconf.log"
 fi
 
+# Generated dependency files contain absolute source paths. Reusing them after
+# the checkout or workspace has moved can silently retain the preceding build
+# configuration or make the new configure result unbuildable.
+if [[ -f Makefile ]]; then
+  make clean 2>&1 | tee "../../$LOG_DIR/clean.log"
+fi
+
 ./configure \
   --disable-all \
   --enable-cli \
   --enable-tokenizer \
+  --enable-mysqlnd \
+  --with-mysqli \
   --enable-debug \
   2>&1 | tee "../../$LOG_DIR/configure.log"
 
@@ -48,6 +57,7 @@ sapi/cli/php -v
 sapi/cli/php -m
 sapi/cli/php -r 'echo PHP_VERSION, "\n";'
 sapi/cli/php -r 'var_export(function_exists("token_get_all")); echo "\n";'
+sapi/cli/php -r 'if (!extension_loaded("mysqli") || !class_exists("mysqli") || !function_exists("mysqli_connect")) { fwrite(STDERR, "mysqli reference capability missing\n"); exit(1); } echo "mysqli reference capability: ok\n";'
 
 popd >/dev/null
 

@@ -63,6 +63,9 @@ pub struct ClassFlags {
     pub implements_countable: bool,
     /// Instances satisfy the built-in `Traversable` interface hierarchy.
     pub implements_traversable: bool,
+    /// Instances may create undeclared properties without magic/deprecation
+    /// handling (`stdClass` or a class carrying `AllowDynamicProperties`).
+    pub allows_dynamic_properties: bool,
     /// Abstract class.
     pub is_abstract: bool,
     /// Final class.

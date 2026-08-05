@@ -48,6 +48,7 @@ mod expression_targets;
 mod expressions;
 mod session;
 mod statements;
+mod static_failures;
 
 pub use context::{LoweringContext, LoweringOptions, LoweringResult};
 pub use diagnostics::*;

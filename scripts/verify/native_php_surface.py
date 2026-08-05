@@ -205,10 +205,10 @@ def phpt_evidence() -> dict:
     )
     source_paths = [
         ROOT / "crates/php_syntax/src/grammar/expressions.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/native_builtins.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/exact_call_dispatch.rs",
         ROOT / "crates/php_vm/src/vm/jit_abi.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/object_support.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/internal_classes/pdo.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/class_plans.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/cold_class_metadata.rs",
         ROOT / "crates/php_runtime/src/builtins/modules/date.rs",
         ROOT / "crates/php_runtime/src/builtins/modules/fileinfo.rs",
         ROOT / "crates/php_runtime/src/builtins/modules/openssl.rs",
@@ -411,8 +411,8 @@ def main() -> int:
     oracle_path, oracle = latest_oracle_report()
     vm_binary = ROOT / "target/debug/php-vm"
     runtime_sources = [
-        ROOT / "crates/php_vm/src/vm/jit_abi/native_builtins.rs",
-        ROOT / "crates/php_vm/src/vm/jit_abi/call_dispatch.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/exact_call_dispatch.rs",
+        ROOT / "crates/php_vm/src/vm/jit_abi/native/exact_runtime_ops.rs",
         ROOT / "crates/php_jit/src/region_ir/semantic_ops.rs",
     ]
     oracle_stale = bool(oracle) and (
@@ -478,7 +478,7 @@ def main() -> int:
                 "crates/php_jit/src/abi.rs",
                 "crates/php_jit/src/cranelift_lowering/call_metadata.rs",
                 "crates/php_vm/src/vm/jit_abi.rs",
-                "crates/php_vm/src/vm/jit_abi/call_dispatch.rs",
+                "crates/php_vm/src/vm/jit_abi/native/exact_call_dispatch.rs",
             ],
             "required_rebase_actions": [
                 "consume JitNativeCallKind::SEMANTIC_OPERATION",

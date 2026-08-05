@@ -52,6 +52,54 @@ pub(super) fn publish_native_call_diagnostic(
     ));
 }
 
+pub(in crate::vm) fn publish_explicit_native_runtime_fatal(
+    context: &mut NativeRequestColdState<'_>,
+    function: u32,
+    continuation: u32,
+) -> Option<String> {
+    let instruction = context.instruction_for_continuation(function, continuation)?;
+    let php_ir::InstructionKind::RuntimeError {
+        diagnostic_id,
+        message,
+    } = &instruction.kind
+    else {
+        return None;
+    };
+    let diagnostic_id = diagnostic_id.clone();
+    let message = message.clone();
+    let span = instruction.span;
+    let path = context
+        .unit
+        .files
+        .get(span.file.index())
+        .map(|file| file.path.clone());
+    let class = if diagnostic_id == "E_PHP_VM_UNHANDLED_MATCH" {
+        "UnhandledMatchError"
+    } else {
+        "Error"
+    };
+    context.output.write_slices(&[
+        b"\nFatal error: Uncaught ",
+        class.as_bytes(),
+        b": ",
+        message.as_bytes(),
+        b"\n",
+    ]);
+    context.diagnostic = Some(php_runtime::api::RuntimeDiagnostic::new(
+        diagnostic_id,
+        php_runtime::api::RuntimeSeverity::FatalError,
+        message.clone(),
+        php_runtime::api::RuntimeSourceSpan {
+            file: path,
+            start: span.start,
+            end: span.end,
+        },
+        Vec::new(),
+        None,
+    ));
+    Some(message)
+}
+
 pub(super) fn record_native_helper_failure(
     context: &mut NativeRequestColdState<'_>,
     message: String,
@@ -100,37 +148,6 @@ pub(super) fn native_php_float_label(value: f64) -> String {
         return scientific;
     }
     value.to_string()
-}
-
-pub(super) fn native_implicit_float_to_int_message(value: &Value) -> Option<String> {
-    match value {
-        Value::Reference(reference) => native_implicit_float_to_int_message(&reference.get()),
-        Value::Float(value) => {
-            let value = value.to_f64();
-            (value.is_finite() && value.fract() != 0.0).then(|| {
-                format!(
-                    "Implicit conversion from float {} to int loses precision",
-                    native_php_float_label(value)
-                )
-            })
-        }
-        Value::String(string) => {
-            let classified = php_runtime::experimental::numeric_string::classify_php_string(string);
-            let float = match classified.value {
-                Some(php_runtime::experimental::numeric_string::NumericStringValue::Float(
-                    value,
-                )) => value,
-                _ => return None,
-            };
-            (float.is_finite() && float.fract() != 0.0).then(|| {
-                format!(
-                    "Implicit conversion from float-string \"{}\" to int loses precision",
-                    string.to_string_lossy()
-                )
-            })
-        }
-        _ => None,
-    }
 }
 
 pub(super) fn native_assignment_type_name(value: &Value) -> String {
@@ -192,6 +209,80 @@ pub(crate) struct PreparedNativeThrowableSite {
     pub line: i64,
 }
 
+/// Immutable throwable family used by exact builtins: ordinary argument
+/// rejection throws `TypeError`, range/mode rejection throws `ValueError`,
+/// and JSON decode failures with `JSON_THROW_ON_ERROR` throw `JsonException`.
+/// `type_error` is first so the published opaque pointer remains directly
+/// usable by the existing exact throwable allocator.
+#[repr(C)]
+pub(crate) struct PreparedNativeCountThrowableSites {
+    pub type_error: PreparedNativeThrowableSite,
+    pub value_error: PreparedNativeThrowableSite,
+    pub json_exception: PreparedNativeThrowableSite,
+}
+
+#[repr(C)]
+pub(crate) struct PreparedNativeBinaryThrowableSites {
+    pub type_error: PreparedNativeThrowableSite,
+    pub division_by_zero: PreparedNativeThrowableSite,
+    pub arithmetic_error: PreparedNativeThrowableSite,
+}
+
+/// Immutable declaration contract for one generated static-property site.
+/// The exact leaf consumes authoritative native encodings and this prepared
+/// metadata only; it cannot recover the cold coordinator or a Rust `Value`.
+pub(crate) struct PreparedNativeStaticPropertyContract {
+    pub throwable: PreparedNativeThrowableSite,
+    pub owner_display_name: String,
+    pub property: String,
+    pub type_: Option<php_ir::IrReturnType>,
+    pub strict_types: bool,
+}
+
+/// Immutable unresolved fixed-constant failure prepared for one generated
+/// source continuation.
+pub(crate) struct PreparedNativeUndefinedConstantContract {
+    pub throwable: PreparedNativeThrowableSite,
+    pub message: String,
+}
+
+pub(crate) enum PreparedNativeThrowableOwner {
+    Single(Box<PreparedNativeThrowableSite>),
+    Count(Box<PreparedNativeCountThrowableSites>),
+    Binary(Box<PreparedNativeBinaryThrowableSites>),
+    StaticProperty(Box<PreparedNativeStaticPropertyContract>),
+    UndefinedConstant(Box<PreparedNativeUndefinedConstantContract>),
+}
+
+impl PreparedNativeThrowableOwner {
+    pub fn type_error_pointer(&self) -> u64 {
+        let site = match self {
+            Self::Single(site) => site.as_ref(),
+            Self::Count(sites) => &sites.type_error,
+            Self::Binary(sites) => &sites.type_error,
+            Self::StaticProperty(contract) => &contract.throwable,
+            Self::UndefinedConstant(contract) => &contract.throwable,
+        };
+        std::ptr::from_ref(site) as usize as u64
+    }
+
+    pub fn static_property_pointer(&self) -> Option<u64> {
+        let Self::StaticProperty(contract) = self else {
+            return None;
+        };
+        Some(std::ptr::from_ref(contract.as_ref()) as usize as u64)
+    }
+
+    pub fn undefined_constant_pointer(&self) -> Option<u64> {
+        match self {
+            Self::UndefinedConstant(contract) => {
+                Some(std::ptr::from_ref(contract.as_ref()) as usize as u64)
+            }
+            _ => None,
+        }
+    }
+}
+
 pub(super) fn prepare_native_throwable_site(
     context: &NativeRequestColdState<'_>,
     class: &str,
@@ -218,15 +309,14 @@ pub(super) fn prepare_native_throwable_site(
             |file| Box::<[u8]>::from(file.path.as_bytes()),
         );
     let line = i64::try_from(native_source_line_for_span(context, span)).unwrap_or(i64::MAX);
-    let fixed_string_bytes = string_capacity(file.len()).saturating_add(
-        include_function_frame
-            .then(|| {
-                string_capacity("function".len())
-                    .saturating_add(string_capacity(function_name.len()))
-                    .saturating_add(string_capacity("args".len()))
-            })
-            .unwrap_or(0),
-    );
+    let frame_string_bytes = if include_function_frame {
+        string_capacity("function".len())
+            .saturating_add(string_capacity(function_name.len()))
+            .saturating_add(string_capacity("args".len()))
+    } else {
+        0
+    };
+    let fixed_string_bytes = string_capacity(file.len()).saturating_add(frame_string_bytes);
     PreparedNativeThrowableSite {
         native_view: php_jit::JitNativePreparedExceptionView {
             fixed_string_bytes: u64::try_from(fixed_string_bytes).unwrap_or(u64::MAX),
@@ -296,73 +386,6 @@ pub(super) fn native_throwable_class(class: &str) -> (php_runtime::api::ClassEnt
         },
         display_name,
     )
-}
-
-pub(super) fn initialize_native_throwable_parent(
-    context: &mut NativeRequestColdState<'_>,
-    class: &str,
-    method: &str,
-    arguments: &[i64],
-) -> Option<Result<i64, String>> {
-    if !method.eq_ignore_ascii_case("__construct")
-        || !matches!(
-            normalize_class_name(class).as_str(),
-            "exception"
-                | "errorexception"
-                | "error"
-                | "typeerror"
-                | "valueerror"
-                | "argumentcounterror"
-                | "fibererror"
-        )
-    {
-        return None;
-    }
-    Some((|| {
-        let object = context
-            .call_frames
-            .last()
-            .and_then(|frame| frame.object.clone())
-            .ok_or_else(|| format!("{class}::__construct() has no active object receiver"))?;
-        let receiver = context.encode_native_object_owner(object)?;
-        let default_message = arguments
-            .first()
-            .is_none()
-            .then(|| context.encode_native_string_owner(PhpString::from_bytes(Vec::new())))
-            .transpose()?;
-        let message = arguments
-            .first()
-            .copied()
-            .or(default_message)
-            .expect("throwable message has an argument or native default");
-        let code = arguments
-            .get(1)
-            .copied()
-            .unwrap_or_else(|| context.encode_native_int(0).unwrap_or(0));
-        let previous = arguments
-            .get(2)
-            .copied()
-            .unwrap_or_else(|| php_jit::jit_encode_constant(u32::MAX));
-        let assigned = (|| {
-            for (property, value) in [("message", message), ("code", code), ("previous", previous)]
-            {
-                if context
-                    .assign_plain_native_dynamic_property(receiver, value, property, true)?
-                    .is_none()
-                {
-                    return Err(format!(
-                        "{class}::__construct() could not publish native ${property}"
-                    ));
-                }
-            }
-            Ok(php_jit::jit_encode_constant(u32::MAX))
-        })();
-        if let Some(default_message) = default_message {
-            let _ = context.release(default_message);
-        }
-        let released = context.release(receiver);
-        assigned.and(released.map(|()| php_jit::jit_encode_constant(u32::MAX)))
-    })())
 }
 
 fn encode_native_throwable_fields(

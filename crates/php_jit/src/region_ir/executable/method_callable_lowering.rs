@@ -127,6 +127,7 @@ fn lower_stable_method_callable_call(
                     target: RegionCallTarget::Function {
                         name: signature.name.clone(),
                         function: None,
+                        linked_function: Some(signature.link_index),
                     },
                     args: args.to_vec(),
                     argument_operand_offset: 1,

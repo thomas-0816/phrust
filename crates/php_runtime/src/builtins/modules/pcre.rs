@@ -299,6 +299,9 @@ pub fn native_preg_callback_plan_into<P: NativePregCapturePublisher>(
 /// Runs `preg_match` over native bytes and publishes each borrowed capture
 /// directly into the authoritative native sink.
 #[doc(hidden)]
+// Architecture: this is the complete typed native preg_match boundary; grouping
+// these publication inputs would only add a second adapter ABI.
+#[allow(clippy::too_many_arguments)]
 pub fn native_preg_match_into<P: NativePregCapturePublisher>(
     state: &mut crate::builtins::PcreRequestState,
     limits: pcre::PcreMatchLimits,
@@ -402,6 +405,9 @@ pub fn native_preg_match_into<P: NativePregCapturePublisher>(
 }
 
 #[doc(hidden)]
+// Architecture: this is the complete typed native preg_match_all boundary;
+// grouping these publication inputs would only add a second adapter ABI.
+#[allow(clippy::too_many_arguments)]
 pub fn native_preg_match_all_into<P: NativePregCapturePublisher>(
     state: &mut crate::builtins::PcreRequestState,
     limits: pcre::PcreMatchLimits,
@@ -611,6 +617,9 @@ pub fn native_preg_replace_scalar(
 /// string subjects. Keys remain authoritative in the caller; this returns
 /// only replacement bytes and the aggregate replacement count.
 #[doc(hidden)]
+// Architecture: this is the complete typed native multi-subject replacement
+// boundary; grouping these publication inputs would only add a second adapter.
+#[allow(clippy::too_many_arguments)]
 pub fn native_preg_replace_many_into<'a, E>(
     state: &mut crate::builtins::PcreRequestState,
     limits: pcre::PcreMatchLimits,

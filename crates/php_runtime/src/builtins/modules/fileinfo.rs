@@ -157,6 +157,42 @@ pub fn validate_fileinfo_options(flags: i64, magic_file: Option<&str>) -> Result
     MagicDetector::open(flags, magic_file).map(drop)
 }
 
+/// Runs libmagic over an authoritative native byte slice.
+pub fn native_fileinfo_detect_buffer(
+    bytes: &[u8],
+    flags: i64,
+    magic_file: Option<&str>,
+) -> Result<String, String> {
+    let value = MagicDetector::open(flags, magic_file)?.buffer(bytes)?;
+    if flags & FILEINFO_MIME_TYPE != 0
+        && flags & FILEINFO_MIME_ENCODING == 0
+        && looks_like_php_source(bytes)
+    {
+        Ok("text/x-php".to_owned())
+    } else {
+        Ok(value)
+    }
+}
+
+/// Runs fileinfo against one admitted local path. `Ok(None)` is the final
+/// PHP-visible `false` result for an unreadable or denied local file.
+pub fn native_fileinfo_detect_file(
+    cwd: &std::path::Path,
+    filesystem: &crate::FilesystemCapabilities,
+    path: &[u8],
+    flags: i64,
+    magic_file: Option<&str>,
+) -> Result<Option<String>, String> {
+    if super::filesystem::native_is_dir(cwd, filesystem, path) == Some(true) {
+        return Ok(Some("directory".to_owned()));
+    }
+    let Some(bytes) = super::filesystem::native_file_get_contents(cwd, filesystem, path, 0, None)
+    else {
+        return Ok(None);
+    };
+    native_fileinfo_detect_buffer(&bytes, flags, magic_file).map(Some)
+}
+
 impl Drop for MagicDetector {
     fn drop(&mut self) {
         // SAFETY: `handle` is owned by this wrapper and closed exactly once.
@@ -318,7 +354,7 @@ fn builtin_image_type_to_mime_type(
     if args.len() != 1 {
         return Err(arity_error("image_type_to_mime_type", "one argument"));
     }
-    Ok(Value::string(image_type_to_mime_type(int_arg(
+    Ok(Value::string(native_image_type_to_mime_type(int_arg(
         "image_type_to_mime_type",
         &args[0],
     )?)))
@@ -500,7 +536,7 @@ fn looks_like_php_source(bytes: &[u8]) -> bool {
         || bytes.starts_with(b"<?=")
 }
 
-pub(in crate::builtins::modules) fn image_type(bytes: &[u8]) -> Option<i64> {
+pub fn native_image_type(bytes: &[u8]) -> Option<i64> {
     if bytes.starts_with(b"\xFF\xD8\xFF") {
         Some(IMAGETYPE_JPEG)
     } else if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
@@ -516,7 +552,7 @@ pub(in crate::builtins::modules) fn image_type(bytes: &[u8]) -> Option<i64> {
     }
 }
 
-fn image_type_to_mime_type(image_type: i64) -> &'static str {
+pub fn native_image_type_to_mime_type(image_type: i64) -> &'static str {
     match image_type {
         1 => "image/gif",
         2 => "image/jpeg",
@@ -590,7 +626,7 @@ fn image_type_to_extension(image_type: i64, include_dot: bool) -> Option<&'stati
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(in crate::builtins::modules) struct ImageInfo {
+pub struct ImageInfo {
     pub width: i64,
     pub height: i64,
     pub image_type: i64,
@@ -655,8 +691,14 @@ pub(in crate::builtins::modules) fn image_size(bytes: &[u8]) -> Option<ImageInfo
     jpeg_info(bytes)
 }
 
-pub(in crate::builtins::modules) fn image_app_info(bytes: &[u8]) -> PhpArray {
-    let mut info = PhpArray::new();
+/// Detects native image dimensions and type without constructing a PHP value.
+pub fn native_image_size(bytes: &[u8]) -> Option<ImageInfo> {
+    image_size(bytes)
+}
+
+/// Extracts JPEG APP segments into Value-free key/byte pairs.
+pub fn native_image_app_info(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut info = Vec::new();
     if !bytes.starts_with(b"\xFF\xD8") {
         return info;
     }
@@ -682,13 +724,23 @@ pub(in crate::builtins::modules) fn image_app_info(bytes: &[u8]) -> PhpArray {
             break;
         }
         if (0xE0..=0xEF).contains(&marker) {
-            let app_index = marker - 0xE0;
-            info.insert(
-                crate::builtins::modules::core::string_array_key(&format!("APP{app_index}")),
-                Value::string(bytes[offset + 2..offset + len].to_vec()),
-            );
+            info.push((
+                format!("APP{}", marker - 0xE0),
+                bytes[offset + 2..offset + len].to_vec(),
+            ));
         }
         offset += len;
+    }
+    info
+}
+
+pub(in crate::builtins::modules) fn image_app_info(bytes: &[u8]) -> PhpArray {
+    let mut info = PhpArray::new();
+    for (key, value) in native_image_app_info(bytes) {
+        info.insert(
+            crate::builtins::modules::core::string_array_key(&key),
+            Value::string(value),
+        );
     }
     info
 }

@@ -2,7 +2,7 @@
 
 use crate::code_manager::{ManagedCompileError, NativeCompileAdmission};
 use crate::region_ir::{
-    BaselineRegionBuilder, CompileMetadata, ExecutableValueFlow, NativeCompilerTier,
+    CompileMetadata, ExecutableValueFlow, GenericRegionBuilder, NativeCompilerTier,
     RegionArrayCallbackOperation, RegionArrayCallbackTarget, RegionBinaryOp, RegionCallResult,
     RegionCallTarget, RegionCastOp, RegionCompareOpCode, RegionGraph, RegionInstruction,
     RegionInstructionKind, RegionNativeCall, RegionNativeControl, RegionNativeDynamicCode,
@@ -26,7 +26,7 @@ use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module, ModuleReloc, ModuleRelocTarget};
-use php_ir::{BlockId, FunctionId, IrConstant, IrSpan, IrUnit, LocalId, RegId};
+use php_ir::{BlockId, FunctionId, IrConstant, IrUnit, LocalId, RegId};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -51,36 +51,6 @@ struct NativeFunctionMetadata {
     has_exception_handlers: bool,
 }
 
-fn native_callable_return_type_is_releasable_scalar(type_: &php_ir::IrReturnType) -> bool {
-    use php_ir::IrReturnType as Type;
-    match type_ {
-        Type::Int
-        | Type::Float
-        | Type::String
-        | Type::Bool
-        | Type::Null
-        | Type::False
-        | Type::True
-        | Type::Void
-        | Type::Never => true,
-        Type::Nullable { inner } => native_callable_return_type_is_releasable_scalar(inner),
-        Type::Union { members } => {
-            !members.is_empty()
-                && members
-                    .iter()
-                    .all(native_callable_return_type_is_releasable_scalar)
-        }
-        Type::Array
-        | Type::Callable
-        | Type::Iterable
-        | Type::Object
-        | Type::Mixed
-        | Type::Class { .. }
-        | Type::Intersection { .. }
-        | Type::Dnf { .. } => false,
-    }
-}
-
 #[derive(Clone, Copy)]
 enum OptimizingCompiledCallAddress {
     Local(FunctionId),
@@ -102,7 +72,7 @@ struct OptimizingCompiledCallTarget<'a> {
 ///
 /// The publication cells and linked runtime view are engine-integrity
 /// invariants. Load them once before entering a callback loop; an individual
-/// invocation only selects the baseline entry when its value-dependent PHP
+/// invocation only selects the Generic entry when its value-dependent PHP
 /// parameter guards reject the optimizing entry.
 #[derive(Clone, Copy)]
 struct OptimizingPreparedCallback {
@@ -110,6 +80,7 @@ struct OptimizingPreparedCallback {
     baseline_address: ir::Value,
     linked_runtime_view: Option<ir::Value>,
     initial_resume_id: i32,
+    trace_metadata: ir::Value,
 }
 
 /// Runtime-selected same-unit callable admitted against one immutable packed
@@ -119,8 +90,13 @@ struct OptimizingPreparedCallback {
 struct OptimizingPreparedDynamicCallable {
     callback: OptimizingPreparedCallback,
     view: ir::Value,
+    binding_plan: ir::Value,
     hidden_argument_count: ir::Value,
+    parameter_by_reference: [ir::Value; 4],
     first_parameter_by_reference: ir::Value,
+    magic_dispatch: ir::Value,
+    variadic: ir::Value,
+    fixed_parameter_count: ir::Value,
 }
 
 #[derive(Clone, Copy)]
@@ -266,6 +242,31 @@ enum OptimizingDynamicCallableArity {
     Native(ir::Value),
 }
 
+fn unresolved_function_link_index(
+    call: &RegionNativeCall,
+    signatures: &[crate::JitExternalFunctionSignature],
+) -> Option<u32> {
+    let RegionCallTarget::Function {
+        name,
+        function: None,
+        linked_function,
+    } = &call.target
+    else {
+        return None;
+    };
+    linked_function.or_else(|| {
+        signatures
+            .iter()
+            .find(|signature| {
+                signature
+                    .name
+                    .trim_start_matches('\\')
+                    .eq_ignore_ascii_case(name.trim_start_matches('\\'))
+            })
+            .map(|signature| signature.link_index)
+    })
+}
+
 fn direct_linked_signature<'a>(
     call: &RegionNativeCall,
     signatures: &'a [crate::JitExternalFunctionSignature],
@@ -274,7 +275,8 @@ fn direct_linked_signature<'a>(
         RegionCallTarget::Function {
             name,
             function: None,
-        } => (Some(name.as_str()), None),
+            linked_function,
+        } => (Some(name.as_str()), *linked_function),
         RegionCallTarget::Method {
             function: None,
             linked_function: Some(link_index),
@@ -365,17 +367,16 @@ fn bounded_inline_call_operand(
 }
 use std::time::Instant;
 
-mod baseline_streaming;
 mod call_metadata;
 mod dynamic_code;
 mod executable_region;
 mod fallback_helpers;
+mod generic_streaming;
 mod module_layout;
 mod native_linkage;
 mod terminators;
 mod value_lowering;
 
-use module_layout::split_oversized_region_blocks;
 pub use module_layout::{NATIVE_FRAGMENT_PLAN_SCHEMA_VERSION, NativeCompilePlan};
 pub use native_linkage::{
     NativeFunctionKey, NativeFunctionTier, NativeIndirectionCell, NativeIndirectionState,
@@ -388,17 +389,27 @@ pub const fn native_compiler_mode_identity(optimizing: bool) -> &'static str {
     if optimizing {
         native_linkage::OPTIMIZING_FUNCTION_SPECIALIZATION
     } else {
-        native_linkage::BASELINE_FUNCTION_SPECIALIZATION
+        native_linkage::GENERIC_FUNCTION_SPECIALIZATION
     }
+}
+
+fn compact_native_compile_plan(region: &RegionGraph) -> NativeCompilePlan {
+    // Catch/finally, suspension, and OSR targets are natural generated entry
+    // blocks, but they do not pre-partition a PHP body. Exact finished-CLIF
+    // measurement is the only route to a deterministic natural split.
+    NativeCompilePlan::for_region(region)
 }
 
 use call_metadata::*;
 use dynamic_code::*;
 use fallback_helpers::*;
-use terminators::{
-    lower_optimizing_region_terminator, lower_owned_frame_locals, lower_region_terminator,
+use terminators::{lower_optimizing_region_terminator, lower_region_terminator};
+use value_lowering::{
+    NATIVE_EXACT_ARITHMETIC_COUNT, NATIVE_EXACT_ARITHMETIC_OPERATIONS, encode_native_bool,
+    lower_direct_cast, lower_direct_compare, lower_native_literal_value,
+    native_callable_return_type_is_releasable_scalar, native_exact_arithmetic_index,
+    native_exact_arithmetic_symbol, scalar_truthy,
 };
-use value_lowering::{encode_native_bool, lower_direct_cast, lower_direct_compare, scalar_truthy};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NativeScalarRegionCompileResult {
@@ -413,7 +424,7 @@ struct NativeScalarRegionCompileResult {
     pre_regalloc_replans: usize,
     fast_path_hits: u64,
     has_control_flow: bool,
-    compilation_mode: baseline_streaming::NativeCompilationMode,
+    compilation_mode: generic_streaming::NativeCompilationMode,
     plan: NativeCompilePlan,
 }
 
@@ -427,25 +438,10 @@ struct NativeStreamingCallExit {
     block: ir::Block,
 }
 
-#[derive(Clone, Copy)]
-struct NativeForeachSuspension<'a> {
-    pending_status: Variable,
-    pending_value: Variable,
-    resume_state: ir::Value,
-    function: FunctionId,
-    local_count: u32,
-    instruction: &'a RegionInstruction,
-    locals: &'a NativeLocalMap,
-    registers: &'a NativeRegisterMap,
-    live_registers: &'a [RegId],
-    native_version: u32,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct NativeHelper {
     function: FuncId,
     terminal_exit: Option<NativeTerminalExit>,
-    inline_runtime_view: bool,
     runtime: Option<ir::Value>,
 }
 
@@ -466,13 +462,6 @@ impl NativeHelper {
         })
     }
 
-    fn with_inline_runtime_view(self) -> Self {
-        Self {
-            inline_runtime_view: true,
-            ..self
-        }
-    }
-
     fn with_runtime(self, runtime: ir::Value) -> Self {
         Self {
             runtime: Some(runtime),
@@ -481,54 +470,12 @@ impl NativeHelper {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum NativeDirectCallee {
-    Local(FuncId),
-    Resolved(FunctionId),
-    Linked(u32),
-}
-
 #[derive(Clone, Copy, Debug, Default)]
-struct BaselineNativeOperations {
-    runtime: Option<ir::Value>,
-    builtin_dispatch: Option<NativeHelper>,
-    semantic_dispatch: Option<NativeHelper>,
-    function_resolve: Option<NativeHelper>,
-    frame_alloc: Option<NativeHelper>,
-    frame_release: Option<NativeHelper>,
-    unary: Option<NativeHelper>,
-    baseline_binary: Option<NativeHelper>,
-    compare: Option<NativeHelper>,
-    cast: Option<NativeHelper>,
-    echo: Option<NativeHelper>,
-    local_fetch: Option<NativeHelper>,
-    local_store: Option<NativeHelper>,
-    value_release: Option<NativeHelper>,
-    reference_bind: Option<NativeHelper>,
+struct GenericNativeOperations {
+    // These are the remaining Generic entry/terminator services. Ordinary
+    // instructions use `NativeOptimizingOperations` in both tiers.
     argument_check: Option<NativeHelper>,
     return_check: Option<NativeHelper>,
-    exception_new: Option<NativeHelper>,
-    array_new: Option<NativeHelper>,
-    object_new: Option<NativeHelper>,
-    property_fetch: Option<NativeHelper>,
-    property_assign: Option<NativeHelper>,
-    object_clone: Option<NativeHelper>,
-    object_clone_with: Option<NativeHelper>,
-    array_insert: Option<NativeHelper>,
-    array_insert_local: Option<NativeHelper>,
-    array_fetch: Option<NativeHelper>,
-    array_unset: Option<NativeHelper>,
-    array_spread: Option<NativeHelper>,
-    foreach_init: Option<NativeHelper>,
-    foreach_next: Option<NativeHelper>,
-    foreach_cleanup: Option<NativeHelper>,
-    constant_fetch: Option<NativeHelper>,
-    truthy: Option<NativeHelper>,
-    type_predicate: Option<NativeHelper>,
-    stable_length: Option<NativeHelper>,
-    string_predicate: Option<NativeHelper>,
-    runtime_fatal: Option<NativeHelper>,
-    execution_poll: Option<NativeHelper>,
 }
 
 fn native_string_bitwise_index(operation: RegionBinaryOp) -> usize {
@@ -606,15 +553,161 @@ const fn native_exact_compare_symbol(operation: RegionCompareOpCode) -> &'static
     }
 }
 
+/// True when a prepared fixed builtin has a complete generated implementation
+/// in this module. This is the publication-router predicate; the presence or
+/// absence of a legacy baseline helper is deliberately irrelevant.
+fn stable_direct_native_builtin(target: &RegionCallTarget) -> bool {
+    stable_builtin_call_user_func(target)
+        || stable_builtin_type_predicate(target).is_some()
+        || stable_builtin_ctype(target).is_some()
+        || stable_builtin_is_numeric(target)
+        || stable_builtin_scalar_math(target).is_some()
+        || stable_builtin_pure_math(target).is_some()
+        || stable_builtin_extrema(target).is_some()
+        || stable_builtin_scalar_consumer(target).is_some()
+        || stable_builtin_numeric_operator(target).is_some()
+        || stable_builtin_base_conversion(target).is_some()
+        || stable_builtin_network_address(target).is_some()
+        || stable_builtin_compression_codec(target).is_some()
+        || stable_builtin_error_reporting(target)
+        || stable_builtin_error_log(target)
+        || stable_builtin_sleep(target)
+        || stable_builtin_symbol_query(target).is_some()
+        || stable_builtin_pcre(target).is_some()
+        || stable_builtin_json(target).is_some()
+        || stable_builtin_format(target).is_some()
+        || stable_builtin_hash(target).is_some()
+        || stable_builtin_byte_codec(target).is_some()
+        || stable_builtin_string_search_compare(target).is_some()
+        || stable_builtin_string_rewrite(target).is_some()
+        || stable_builtin_html_codec(target).is_some()
+        || stable_builtin_url_query(target).is_some()
+        || stable_builtin_array_aggregate(target).is_some()
+        || stable_builtin_recursive_array(target).is_some()
+        || stable_builtin_array_sort(target).is_some()
+        || stable_builtin_array_multisort(target)
+        || stable_builtin_print(target)
+        || stable_builtin_print_r(target)
+        || stable_builtin_var_dump(target)
+        || stable_builtin_var_export(target)
+        || stable_builtin_mysqli_set_charset(target)
+        || stable_builtin_mysqli_query(target)
+        || stable_builtin_mysqli_fetch_array(target)
+        || stable_builtin_mysqli_fetch_object(target)
+        || stable_builtin_mysqli_character_set_name(target)
+        || stable_builtin_mysqli_result_count(target).is_some()
+        || stable_builtin_mysqli_fetch_field(target)
+        || stable_builtin_mysqli_connect_status(target).is_some()
+        || stable_builtin_mysqli_close(target)
+        || stable_builtin_mysqli_get_server_info(target)
+        || stable_builtin_mysqli_select_db(target)
+        || stable_builtin_mysqli_real_escape_string(target)
+        || stable_builtin_mysqli_free_result(target)
+        || stable_builtin_mysqli_more_results(target)
+        || stable_builtin_mysqli_next_result(target)
+        || stable_builtin_mysqli_report(target)
+        || stable_builtin_mysqli_init(target)
+        || stable_builtin_mysqli_options(target)
+        || stable_builtin_mysqli_real_connect(target)
+        || stable_builtin_mysqli_connection_status(target).is_some()
+        || stable_builtin_object_identity(target).is_some()
+        || stable_builtin_callable_query(target).is_some()
+        || stable_builtin_callback_handler(target).is_some()
+        || stable_builtin_autoload_callback(target).is_some()
+        || stable_builtin_shutdown_callback(target)
+        || stable_builtin_serialization(target).is_some()
+        || stable_builtin_tokenizer(target).is_some()
+        || stable_builtin_mbstring(target).is_some()
+        || stable_builtin_bcmath(target).is_some()
+        || stable_builtin_filter(target).is_some()
+        || stable_builtin_session(target).is_some()
+        || stable_builtin_object_vars(target).is_some()
+        || stable_builtin_get_class(target)
+        || stable_builtin_class_metadata(target).is_some()
+        || stable_builtin_class_lineage(target).is_some()
+        || stable_builtin_extension_query(target).is_some()
+        || stable_builtin_memory_query(target).is_some()
+        || stable_builtin_gc(target).is_some()
+        || stable_builtin_resource_query(target).is_some()
+        || stable_builtin_error_state(target).is_some()
+        || stable_builtin_settype(target)
+        || stable_builtin_configuration(target).is_some()
+        || stable_builtin_http_response(target).is_some()
+        || stable_builtin_cookie(target).is_some()
+        || stable_builtin_clock(target).is_some()
+        || stable_builtin_date(target).is_some()
+        || stable_builtin_random(target).is_some()
+        || stable_builtin_request_query(target).is_some()
+        || stable_builtin_declaration_inventory(target).is_some()
+        || stable_builtin_constant_inventory(target)
+        || stable_builtin_compact(target)
+        || stable_builtin_get_defined_vars(target)
+        || stable_builtin_frame_introspection(target).is_some()
+        || stable_builtin_path(target).is_some()
+        || stable_builtin_output_buffer(target).is_some()
+        || stable_builtin_length(target).is_some()
+        || stable_builtin_string_predicate(target).is_some()
+        || stable_builtin_ascii_case(target).is_some()
+        || stable_builtin_string_transform(target).is_some()
+        || stable_builtin_str_repeat(target)
+        || stable_builtin_addslashes(target)
+        || stable_builtin_substr_count(target)
+        || stable_builtin_string_compare(target).is_some()
+        || stable_builtin_string_position(target).is_some()
+        || stable_builtin_string_span(target).is_some()
+        || stable_builtin_ord(target)
+        || stable_builtin_chr(target)
+        || stable_builtin_default_trim(target).is_some()
+        || stable_builtin_substr(target)
+        || stable_builtin_array_constructor(target).is_some()
+        || stable_builtin_array_shape(target).is_some()
+        || stable_builtin_array_set(target).is_some()
+        || stable_builtin_array_projection(target).is_some()
+        || stable_builtin_array_change_key_case(target)
+        || stable_builtin_callback_neutral_array(target).is_some()
+        || stable_builtin_array_lookup(target).is_some()
+        || stable_builtin_array_edge_key(target).is_some()
+        || stable_builtin_array_pointer(target).is_some()
+        || stable_builtin_array_stack(target).is_some()
+        || stable_builtin_array_is_list(target)
+        || stable_builtin_implode(target)
+        || stable_builtin_explode(target)
+        || stable_builtin_array_slice(target)
+        || stable_builtin_array_splice(target)
+        || stable_builtin_array_reverse(target)
+        || stable_builtin_array_merge(target)
+        || stable_builtin_str_replace(target)
+        || stable_builtin_array_key_exists(target)
+}
+
+fn stable_builtin_call_user_func(target: &RegionCallTarget) -> bool {
+    matches!(
+        target,
+        RegionCallTarget::Function { name, .. }
+            if name.trim_start_matches('\\').eq_ignore_ascii_case("call_user_func")
+    )
+}
+
 #[derive(Clone, Copy, Debug)]
 struct NativeOptimizingOperations {
     execution_poll: Option<NativeHelper>,
+    frame_alloc: Option<NativeHelper>,
+    frame_release: Option<NativeHelper>,
+    object_release_prepare: Option<NativeHelper>,
+    object_release_finalize: Option<NativeHelper>,
+    object_release_children_drop: Option<NativeHelper>,
     array_union: Option<NativeHelper>,
     concat: Option<NativeHelper>,
     string_bitwise: [Option<NativeHelper>; 3],
     exact_unary: [Option<NativeHelper>; NATIVE_EXACT_UNARY_COUNT],
+    exact_arithmetic: [Option<NativeHelper>; NATIVE_EXACT_ARITHMETIC_COUNT],
     exact_compare: [Option<NativeHelper>; NATIVE_EXACT_COMPARE_COUNT],
     echo_bytes: Option<NativeHelper>,
+    undefined_variable_warning: Option<NativeHelper>,
+    undefined_array_key_warning: Option<NativeHelper>,
+    array_offset_warning: Option<NativeHelper>,
+    global_binding_unset: Option<NativeHelper>,
+    global_binding_rebind: Option<NativeHelper>,
     float_to_string: Option<NativeHelper>,
     numeric_string: Option<NativeHelper>,
     fmod_f64: Option<NativeHelper>,
@@ -627,13 +720,22 @@ struct NativeOptimizingOperations {
     callback_return_string: Option<NativeHelper>,
     object_cast: Option<NativeHelper>,
     object_class_name: Option<NativeHelper>,
+    type_name: Option<NativeHelper>,
     acquire_callable: Option<NativeHelper>,
+    acquire_method_callable: Option<NativeHelper>,
+    acquire_class_plan: Option<NativeHelper>,
     resolve_callable: Option<NativeHelper>,
     prepared_object_new: Option<NativeHelper>,
     prepared_exception_new: Option<NativeHelper>,
+    static_property_contract: Option<NativeHelper>,
+    typed_static_reference_bind: Option<NativeHelper>,
+    typed_reference_store: Option<NativeHelper>,
+    typed_reference_array_init: Option<NativeHelper>,
+    undefined_constant: Option<NativeHelper>,
     prepared_closure_new: Option<NativeHelper>,
     plain_object_clone: Option<NativeHelper>,
     dynamic_property_slot: Option<NativeHelper>,
+    named_dynamic_property_slot: Option<NativeHelper>,
     dynamic_property_test_slot: Option<NativeHelper>,
     exact_symbol_query: [Option<NativeHelper>; StableSymbolQueryBuiltin::COUNT],
     exact_pcre: [Option<NativeHelper>; StablePcreBuiltin::COUNT],
@@ -669,6 +771,7 @@ struct NativeOptimizingOperations {
     exact_memory_query: [Option<NativeHelper>; StableMemoryQueryBuiltin::COUNT],
     exact_gc: [Option<NativeHelper>; StableGcBuiltin::COUNT],
     exact_resource_query: [Option<NativeHelper>; StableResourceQueryBuiltin::COUNT],
+    exact_fileinfo: [Option<NativeHelper>; StableFileinfoBuiltin::COUNT],
     exact_error_state: [Option<NativeHelper>; StableErrorStateBuiltin::COUNT],
     exact_settype: Option<NativeHelper>,
     exact_configuration: [Option<NativeHelper>; StableConfigurationBuiltin::COUNT],
@@ -688,6 +791,38 @@ struct NativeOptimizingOperations {
     exact_compression_codec: [Option<NativeHelper>; StableCompressionCodecBuiltin::COUNT],
     exact_path: [Option<NativeHelper>; StablePathBuiltin::COUNT],
     exact_output_buffer: [Option<NativeHelper>; StableOutputBufferBuiltin::COUNT],
+    exact_print: Option<NativeHelper>,
+    exact_print_r: Option<NativeHelper>,
+    exact_var_dump: Option<NativeHelper>,
+    exact_var_export: Option<NativeHelper>,
+    exact_mysqli_set_charset: Option<NativeHelper>,
+    exact_mysqli_query: Option<NativeHelper>,
+    exact_mysqli_fetch_array: Option<NativeHelper>,
+    exact_mysqli_fetch_object: Option<NativeHelper>,
+    exact_mysqli_character_set_name: Option<NativeHelper>,
+    exact_mysqli_result_count: [Option<NativeHelper>; StableMysqliResultCountBuiltin::COUNT],
+    exact_mysqli_fetch_field: Option<NativeHelper>,
+    exact_mysqli_connect_status: [Option<NativeHelper>; StableMysqliConnectStatusBuiltin::COUNT],
+    exact_mysqli_close: Option<NativeHelper>,
+    exact_mysqli_get_server_info: Option<NativeHelper>,
+    exact_mysqli_select_db: Option<NativeHelper>,
+    exact_mysqli_real_escape_string: Option<NativeHelper>,
+    exact_mysqli_connection_status:
+        [Option<NativeHelper>; StableMysqliConnectionStatusBuiltin::COUNT],
+    exact_error_log: Option<NativeHelper>,
+    exact_sleep: Option<NativeHelper>,
+    exact_mysqli_free_result: Option<NativeHelper>,
+    exact_mysqli_more_results: Option<NativeHelper>,
+    exact_mysqli_next_result: Option<NativeHelper>,
+    exact_mysqli_report: Option<NativeHelper>,
+    exact_mysqli_init: Option<NativeHelper>,
+    exact_mysqli_options: Option<NativeHelper>,
+    exact_mysqli_real_connect: Option<NativeHelper>,
+    exact_throwable_method: [Option<NativeHelper>; StableThrowableMethod::COUNT],
+    array_allocate: FuncId,
+    array_allocate_symbol: FunctionId,
+    array_lookup: FuncId,
+    array_lookup_symbol: FunctionId,
     array_ensure_unique: FuncId,
     array_ensure_unique_symbol: FunctionId,
     array_child_entry: FuncId,
@@ -701,6 +836,19 @@ impl NativeOptimizingOperations {
         self.execution_poll = self
             .execution_poll
             .map(|helper| helper.with_runtime(runtime));
+        self.frame_alloc = self.frame_alloc.map(|helper| helper.with_runtime(runtime));
+        self.frame_release = self
+            .frame_release
+            .map(|helper| helper.with_runtime(runtime));
+        self.object_release_prepare = self
+            .object_release_prepare
+            .map(|helper| helper.with_runtime(runtime));
+        self.object_release_finalize = self
+            .object_release_finalize
+            .map(|helper| helper.with_runtime(runtime));
+        self.object_release_children_drop = self
+            .object_release_children_drop
+            .map(|helper| helper.with_runtime(runtime));
         self.array_union = self.array_union.map(|helper| helper.with_runtime(runtime));
         self.concat = self.concat.map(|helper| helper.with_runtime(runtime));
         self.string_bitwise = self
@@ -709,10 +857,28 @@ impl NativeOptimizingOperations {
         self.exact_unary = self
             .exact_unary
             .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
+        self.exact_arithmetic = self
+            .exact_arithmetic
+            .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
         self.exact_compare = self
             .exact_compare
             .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
         self.echo_bytes = self.echo_bytes.map(|helper| helper.with_runtime(runtime));
+        self.undefined_variable_warning = self
+            .undefined_variable_warning
+            .map(|helper| helper.with_runtime(runtime));
+        self.undefined_array_key_warning = self
+            .undefined_array_key_warning
+            .map(|helper| helper.with_runtime(runtime));
+        self.array_offset_warning = self
+            .array_offset_warning
+            .map(|helper| helper.with_runtime(runtime));
+        self.global_binding_unset = self
+            .global_binding_unset
+            .map(|helper| helper.with_runtime(runtime));
+        self.global_binding_rebind = self
+            .global_binding_rebind
+            .map(|helper| helper.with_runtime(runtime));
         self.float_to_string = self
             .float_to_string
             .map(|helper| helper.with_runtime(runtime));
@@ -746,8 +912,15 @@ impl NativeOptimizingOperations {
         self.object_class_name = self
             .object_class_name
             .map(|helper| helper.with_runtime(runtime));
+        self.type_name = self.type_name.map(|helper| helper.with_runtime(runtime));
         self.acquire_callable = self
             .acquire_callable
+            .map(|helper| helper.with_runtime(runtime));
+        self.acquire_method_callable = self
+            .acquire_method_callable
+            .map(|helper| helper.with_runtime(runtime));
+        self.acquire_class_plan = self
+            .acquire_class_plan
             .map(|helper| helper.with_runtime(runtime));
         self.resolve_callable = self
             .resolve_callable
@@ -758,6 +931,21 @@ impl NativeOptimizingOperations {
         self.prepared_exception_new = self
             .prepared_exception_new
             .map(|helper| helper.with_runtime(runtime));
+        self.static_property_contract = self
+            .static_property_contract
+            .map(|helper| helper.with_runtime(runtime));
+        self.typed_static_reference_bind = self
+            .typed_static_reference_bind
+            .map(|helper| helper.with_runtime(runtime));
+        self.typed_reference_store = self
+            .typed_reference_store
+            .map(|helper| helper.with_runtime(runtime));
+        self.typed_reference_array_init = self
+            .typed_reference_array_init
+            .map(|helper| helper.with_runtime(runtime));
+        self.undefined_constant = self
+            .undefined_constant
+            .map(|helper| helper.with_runtime(runtime));
         self.prepared_closure_new = self
             .prepared_closure_new
             .map(|helper| helper.with_runtime(runtime));
@@ -766,6 +954,9 @@ impl NativeOptimizingOperations {
             .map(|helper| helper.with_runtime(runtime));
         self.dynamic_property_slot = self
             .dynamic_property_slot
+            .map(|helper| helper.with_runtime(runtime));
+        self.named_dynamic_property_slot = self
+            .named_dynamic_property_slot
             .map(|helper| helper.with_runtime(runtime));
         self.dynamic_property_test_slot = self
             .dynamic_property_test_slot
@@ -872,6 +1063,9 @@ impl NativeOptimizingOperations {
         self.exact_resource_query = self
             .exact_resource_query
             .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
+        self.exact_fileinfo = self
+            .exact_fileinfo
+            .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
         self.exact_error_state = self
             .exact_error_state
             .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
@@ -929,125 +1123,134 @@ impl NativeOptimizingOperations {
         self.exact_output_buffer = self
             .exact_output_buffer
             .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
+        self.exact_print = self.exact_print.map(|helper| helper.with_runtime(runtime));
+        self.exact_print_r = self
+            .exact_print_r
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_var_dump = self
+            .exact_var_dump
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_var_export = self
+            .exact_var_export
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_set_charset = self
+            .exact_mysqli_set_charset
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_query = self
+            .exact_mysqli_query
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_fetch_array = self
+            .exact_mysqli_fetch_array
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_fetch_object = self
+            .exact_mysqli_fetch_object
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_character_set_name = self
+            .exact_mysqli_character_set_name
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_result_count = self
+            .exact_mysqli_result_count
+            .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
+        self.exact_mysqli_fetch_field = self
+            .exact_mysqli_fetch_field
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_connect_status = self
+            .exact_mysqli_connect_status
+            .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
+        self.exact_mysqli_close = self
+            .exact_mysqli_close
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_get_server_info = self
+            .exact_mysqli_get_server_info
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_select_db = self
+            .exact_mysqli_select_db
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_real_escape_string = self
+            .exact_mysqli_real_escape_string
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_connection_status = self
+            .exact_mysqli_connection_status
+            .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
+        self.exact_error_log = self
+            .exact_error_log
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_sleep = self.exact_sleep.map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_free_result = self
+            .exact_mysqli_free_result
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_more_results = self
+            .exact_mysqli_more_results
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_next_result = self
+            .exact_mysqli_next_result
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_report = self
+            .exact_mysqli_report
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_init = self
+            .exact_mysqli_init
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_options = self
+            .exact_mysqli_options
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_mysqli_real_connect = self
+            .exact_mysqli_real_connect
+            .map(|helper| helper.with_runtime(runtime));
+        self.exact_throwable_method = self
+            .exact_throwable_method
+            .map(|helper| helper.map(|helper| helper.with_runtime(runtime)));
+        self
+    }
+
+    fn with_terminal_exit(mut self, terminal_exit: NativeTerminalExit) -> Self {
+        self.execution_poll = self
+            .execution_poll
+            .map(|helper| helper.with_terminal_exit(terminal_exit));
+        self.frame_alloc = self
+            .frame_alloc
+            .map(|helper| helper.with_terminal_exit(terminal_exit));
+        self.frame_release = self
+            .frame_release
+            .map(|helper| helper.with_terminal_exit(terminal_exit));
         self
     }
 }
 
-/// Runtime entrypoints are a baseline-only capability.  The optimizing tier
+/// Runtime entrypoints are a Generic-tier capability. The optimizing tier
 /// deliberately has no variant carrying helper addresses, so an optimizing
 /// artifact cannot acquire a generic warm-runtime import by accident.
 #[derive(Clone, Copy, Debug)]
 #[allow(clippy::large_enum_variant)]
 enum NativeTierOperations {
-    Baseline {
-        call: Option<NativeHelper>,
+    Generic {
         dynamic_code: Option<NativeHelper>,
-        operations: BaselineNativeOperations,
+        operations: GenericNativeOperations,
+        exact_operations: NativeOptimizingOperations,
         value_release_commit: FuncId,
-        value_release_commit_symbol: FunctionId,
     },
     Optimizing {
         operations: NativeOptimizingOperations,
+        argument_contract: Option<NativeHelper>,
     },
 }
 
-impl BaselineNativeOperations {
+impl GenericNativeOperations {
     fn with_runtime(mut self, runtime: ir::Value) -> Self {
-        self.runtime = Some(runtime);
-        macro_rules! bind {
-            ($($field:ident),+ $(,)?) => {
-                $(self.$field = self.$field.map(|helper| helper.with_runtime(runtime));)+
-            };
-        }
-        bind!(
-            builtin_dispatch,
-            semantic_dispatch,
-            function_resolve,
-            frame_alloc,
-            frame_release,
-            unary,
-            baseline_binary,
-            compare,
-            cast,
-            echo,
-            local_fetch,
-            local_store,
-            value_release,
-            reference_bind,
-            argument_check,
-            return_check,
-            exception_new,
-            array_new,
-            object_new,
-            property_fetch,
-            property_assign,
-            object_clone,
-            object_clone_with,
-            array_insert,
-            array_insert_local,
-            array_fetch,
-            array_unset,
-            array_spread,
-            foreach_init,
-            foreach_next,
-            foreach_cleanup,
-            constant_fetch,
-            truthy,
-            type_predicate,
-            stable_length,
-            string_predicate,
-            runtime_fatal,
-            execution_poll,
-        );
+        self.argument_check = self
+            .argument_check
+            .map(|helper| helper.with_runtime(runtime));
+        self.return_check = self.return_check.map(|helper| helper.with_runtime(runtime));
         self
     }
 
     fn with_terminal_exit(mut self, terminal_exit: NativeTerminalExit) -> Self {
-        macro_rules! bind {
-            ($($field:ident),+ $(,)?) => {
-                $(self.$field = self.$field.map(|helper| helper.with_terminal_exit(terminal_exit));)+
-            };
-        }
-        bind!(
-            builtin_dispatch,
-            semantic_dispatch,
-            function_resolve,
-            frame_alloc,
-            frame_release,
-            unary,
-            baseline_binary,
-            compare,
-            cast,
-            echo,
-            local_fetch,
-            local_store,
-            value_release,
-            reference_bind,
-            argument_check,
-            return_check,
-            exception_new,
-            array_new,
-            object_new,
-            property_fetch,
-            property_assign,
-            object_clone,
-            object_clone_with,
-            array_insert,
-            array_insert_local,
-            array_fetch,
-            array_unset,
-            array_spread,
-            foreach_init,
-            foreach_next,
-            foreach_cleanup,
-            constant_fetch,
-            truthy,
-            type_predicate,
-            stable_length,
-            string_predicate,
-            runtime_fatal,
-            execution_poll,
-        );
+        self.argument_check = self
+            .argument_check
+            .map(|helper| helper.with_terminal_exit(terminal_exit));
+        self.return_check = self
+            .return_check
+            .map(|helper| helper.with_terminal_exit(terminal_exit));
         self
     }
 }
@@ -1085,18 +1288,60 @@ fn call_native_pure_handler(
 fn native_php_entry_signature(module: &JITModule) -> Signature {
     let pointer_type = module.target_config().pointer_type();
     let mut signature = module.make_signature();
-    #[cfg(target_arch = "x86_64")]
-    {
-        signature.call_conv = CallConv::Tail;
-    }
-    signature.params.push(AbiParam::new(pointer_type));
     signature.params.push(AbiParam::new(pointer_type));
     signature.params.push(AbiParam::new(pointer_type));
     signature.params.push(AbiParam::new(pointer_type));
     signature.params.push(AbiParam::new(types::I32));
     signature.params.push(AbiParam::new(pointer_type));
-    signature.returns.push(AbiParam::new(types::I32));
+    // `JitNativeControlResult` is returned as two integer ABI words. The
+    // first contains the u32 status/detail pair and the second is the native
+    // encoded value. Generic and Optimizing entries use this exact signature.
+    signature.returns.push(AbiParam::new(types::I64));
+    signature.returns.push(AbiParam::new(types::I64));
     signature
+}
+
+fn return_native_php_control(
+    builder: &mut FunctionBuilder<'_>,
+    status: ir::Value,
+    result_out: ir::Value,
+) {
+    let status_word = if builder.func.dfg.value_type(status) == types::I64 {
+        status
+    } else {
+        builder.ins().uextend(types::I64, status)
+    };
+    let value = builder
+        .ins()
+        .load(types::I64, MemFlagsData::new(), result_out, 0);
+    builder.ins().return_(&[status_word, value]);
+}
+
+fn return_native_or_fragment_control(
+    builder: &mut FunctionBuilder<'_>,
+    status: ir::Value,
+    result_out: ir::Value,
+) {
+    if builder.func.signature.returns.len() == 2 {
+        return_native_php_control(builder, status, result_out);
+    } else {
+        debug_assert_eq!(builder.func.signature.returns.len(), 1);
+        builder.ins().return_(&[status]);
+    }
+}
+
+fn unpack_native_php_control(
+    builder: &mut FunctionBuilder<'_>,
+    call: ir::Inst,
+    result_out: ir::Value,
+) -> ir::Value {
+    let results = builder.inst_results(call);
+    let status_word = results[0];
+    let value = results[1];
+    builder
+        .ins()
+        .store(MemFlagsData::new(), value, result_out, 0);
+    builder.ins().ireduce(types::I32, status_word)
 }
 
 fn compile_managed_native(
@@ -1136,15 +1381,22 @@ fn compile_managed_native(
         .dependency_identity
         .clone()
         .unwrap_or_else(|| format!("ir:{compiled_unit}"));
+    let compiler_tier = if request.opt_level < 2 {
+        "generic"
+    } else {
+        "optimizing"
+    };
     let key = CraneliftCodeKey {
         compiled_unit,
-        region: format!("{}:function:{}", request.region_id, function.raw()),
-        abi_hash: JIT_RUNTIME_ABI_HASH,
-        compiler_tier: if request.opt_level < 2 {
-            "baseline".to_owned()
+        region: if request.opt_level < 2 {
+            // Generic identity is the authoritative source function, not the
+            // caller-provided compilation label used by diagnostics.
+            format!("function:{}", function.raw())
         } else {
-            "optimizing".to_owned()
+            format!("{}:function:{}", request.region_id, function.raw())
         },
+        abi_hash: JIT_RUNTIME_ABI_HASH,
+        compiler_tier: compiler_tier.to_owned(),
         helper_abi_hash: JIT_RUNTIME_ABI_HASH
             ^ crate::JIT_HELPER_REGISTRY_ABI_HASH
             ^ php_runtime::api::NATIVE_OPERATION_ABI_HASH,
@@ -1189,11 +1441,7 @@ fn native_helper_import_symbol(base: &str, address: usize) -> String {
     }
 }
 
-const BASELINE_NATIVE_CALL_DISPATCH_SYMBOL: &str = "phrust_baseline_native_call_dispatch";
-const BASELINE_NATIVE_BUILTIN_DISPATCH_SYMBOL: &str = "phrust_baseline_native_builtin_dispatch";
-const BASELINE_NATIVE_SEMANTIC_DISPATCH_SYMBOL: &str = "phrust_baseline_native_semantic_dispatch";
-const NATIVE_FUNCTION_RESOLVE_SYMBOL: &str = "phrust_jit_native_function_resolve";
-const NATIVE_DYNAMIC_CODE_SYMBOL: &str = "phrust_jit_native_dynamic_code";
+const COLD_DYNAMIC_UNIT_RESOLVE_SYMBOL: &str = "phrust_cold_dynamic_unit_resolve";
 
 /// Mandatory Cranelift native compiler.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1281,9 +1529,9 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             .compile
             .ir_fingerprint
             .clone()
-            .unwrap_or_else(|| format!("unit-{}-function-{}", unit.id.raw(), function.raw())),
+            .unwrap_or_else(|| crate::stable_function_ir_fingerprint(unit, function)),
         tier: if request.compile.opt_level < 2 {
-            NativeCompilerTier::Baseline
+            NativeCompilerTier::Generic
         } else {
             NativeCompilerTier::Optimizing
         },
@@ -1300,6 +1548,15 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             .unwrap_or_else(|| format!("unit-{}-version-{}", unit.id.raw(), unit.version)),
     };
     let mut compile = request.compile.clone();
+    compile
+        .ir_fingerprint
+        .get_or_insert_with(|| metadata.ir_fingerprint.clone());
+    compile
+        .deployment_identity
+        .get_or_insert_with(|| deployment_unit.clone());
+    compile
+        .dependency_identity
+        .get_or_insert_with(|| metadata.dependency_identity.clone());
     for specialization in &compile.method_specializations {
         let crate::JitMethodSpecializationTarget::Linked(signature) = &specialization.target else {
             continue;
@@ -1312,7 +1569,7 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             compile.external_function_signatures.push(signature.clone());
         }
     }
-    let region = match BaselineRegionBuilder::build_with_runtime_specializations(
+    let region = match GenericRegionBuilder::build_with_runtime_specializations(
         unit,
         function,
         &metadata,
@@ -1329,7 +1586,6 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             );
         }
     };
-    let region = split_oversized_region_blocks(region);
     if let Err(error) = region.verify() {
         return NativeCompileOutcome::skipped(
             JitCompileStatus::Rejected {
@@ -1338,7 +1594,7 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             format!("normalized native Region IR failed verification: {error}"),
         );
     }
-    let plan = NativeCompilePlan::for_region(&region);
+    let plan = compact_native_compile_plan(&region);
     if plan.function != function {
         return NativeCompileOutcome::skipped(
             JitCompileStatus::Rejected {
@@ -1364,7 +1620,12 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             NativeCompileOutcome::compiled(
                 compiled.handle,
                 format!(
-                    "Cranelift baseline Region IR `{}` function={} compilation_mode={} abi_hash={} code_bytes={} clif_blocks={} max_fragment_clif_blocks={} max_fragment_clif_values={} max_fragment_clif_instructions={} max_fragment_block_parameters={} max_fragment_clif_loads={} max_fragment_clif_stores={} max_fragment_loads_per_source_instruction_milli={} max_fragment_stores_per_source_instruction_milli={} max_temporary_cache_entries={} fragment_frame_slots={} fragment_shared_register_slots={} fragment_scratch_register_slots={} pre_regalloc_replans={} fast_path_hits={} control_flow={} plan_ir_instructions={} plan_php_blocks={} plan_estimated_clif_blocks={} plan_virtual_values={} plan_safepoints={} plan_live_sum={} plan_fragments={} plan_max_fragment_blocks={} plan_max_fragment_instructions={} plan_max_fragment_estimated_clif_blocks={}",
+                    "Cranelift {} Region IR `{}` function={} compilation_mode={} abi_hash={} code_bytes={} clif_blocks={} max_fragment_clif_blocks={} max_fragment_clif_values={} max_fragment_clif_instructions={} max_fragment_block_parameters={} max_fragment_clif_loads={} max_fragment_clif_stores={} max_fragment_loads_per_source_instruction_milli={} max_fragment_stores_per_source_instruction_milli={} max_temporary_cache_entries={} fragment_frame_slots={} fragment_shared_register_slots={} fragment_scratch_register_slots={} pre_regalloc_replans={} fast_path_hits={} control_flow={} plan_ir_instructions={} plan_php_blocks={} plan_estimated_clif_blocks={} plan_virtual_values={} plan_safepoints={} plan_live_sum={} plan_fragments={} plan_max_fragment_blocks={} plan_max_fragment_instructions={} plan_max_fragment_estimated_clif_blocks={}",
+                    if compiled.compilation_mode.is_generic() {
+                        "Generic"
+                    } else {
+                        "Optimizing"
+                    },
                     request.compile.region_id,
                     function.raw(),
                     compiled.compilation_mode.as_str(),
@@ -1441,20 +1702,20 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
             if request.compile.opt_level >= 2
                 && error.code == "JIT_CRANELIFT_PRE_REGALLOC_BUDGET" =>
         {
-            let mut baseline_compile = request.compile.clone();
-            baseline_compile.opt_level = 0;
-            baseline_compile.region_id = format!("{}.baseline", baseline_compile.region_id);
-            let baseline_request = NativeCompileRequest {
-                compile: &baseline_compile,
+            let mut generic_compile = request.compile.clone();
+            generic_compile.opt_level = 0;
+            generic_compile.region_id = format!("{}.generic", generic_compile.region_id);
+            let generic_request = NativeCompileRequest {
+                compile: &generic_compile,
                 unit: request.unit,
                 function: request.function,
                 runtime_helpers: request.runtime_helpers,
             };
-            let mut outcome = compile_authoritative_region(&baseline_request);
+            let mut outcome = compile_authoritative_region(&generic_request);
             outcome.diagnostics.insert(
                 0,
                 format!(
-                    "optimizing compile exceeded its exact backend budget and used baseline code: {error}"
+                    "optimizing compile exceeded its exact backend budget and used Generic code: {error}"
                 ),
             );
             if outcome.handle.is_some() {
@@ -1472,7 +1733,7 @@ fn compile_authoritative_region(request: &NativeCompileRequest<'_>) -> NativeCom
                 reason: error.code.to_owned(),
             },
             format!(
-                "Cranelift baseline Region IR compile rejected region `{}`: {error}",
+                "Cranelift Generic Region IR compile rejected region `{}`: {error}",
                 request.compile.region_id
             ),
         ),
@@ -1514,6 +1775,9 @@ pub struct CraneliftLoweringError {
     pub code: &'static str,
     /// Human-readable detail.
     pub detail: String,
+    /// Minimum deterministic natural fragments required by an exact backend
+    /// ceiling. Present only for pre-regalloc budget failures.
+    pub required_pre_regalloc_pieces: Option<usize>,
 }
 
 impl CraneliftLoweringError {
@@ -1521,7 +1785,13 @@ impl CraneliftLoweringError {
         Self {
             code,
             detail: detail.into(),
+            required_pre_regalloc_pieces: None,
         }
+    }
+
+    fn with_required_pre_regalloc_pieces(mut self, pieces: usize) -> Self {
+        self.required_pre_regalloc_pieces = Some(pieces.max(2));
+        self
     }
 }
 
@@ -1613,6 +1883,24 @@ fn cranelift_block(
 #[derive(Clone, Copy, Debug)]
 enum NativeLocalStorage {
     Variable(Variable),
+    FrameSlot {
+        frame: ir::Value,
+        offset: i32,
+    },
+    /// Request globals are shared mutable bindings, not SSA values. The local
+    /// cache remains available for continuation publication, but every PHP
+    /// read observes the authoritative stable request slot directly. This
+    /// keeps reference-identity changes visible across local, linked, and
+    /// dynamically prepared generated calls without a post-call dispatcher.
+    RequestGlobal {
+        cache: NativeLocalCache,
+        slot: ir::Value,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NativeLocalCache {
+    Variable(Variable),
     FrameSlot { frame: ir::Value, offset: i32 },
 }
 
@@ -1627,6 +1915,11 @@ type NativeLocalMap = BTreeMap<LocalId, NativeLocalStorage>;
 enum NativeRegisterStorage {
     Variable(Variable),
     FrameSlot {
+        frame: ir::Value,
+        offset: i32,
+        type_: ir::Type,
+    },
+    SpillSlot {
         frame: ir::Value,
         offset: i32,
         type_: ir::Type,
@@ -1653,11 +1946,18 @@ fn use_region_register(
                 )
             })
         }
-        Some(NativeRegisterStorage::FrameSlot {
-            frame,
-            offset,
-            type_,
-        }) => {
+        Some(
+            NativeRegisterStorage::FrameSlot {
+                frame,
+                offset,
+                type_,
+            }
+            | NativeRegisterStorage::SpillSlot {
+                frame,
+                offset,
+                type_,
+            },
+        ) => {
             let value = builder
                 .ins()
                 .load(types::I64, MemFlagsData::new(), frame, offset);
@@ -1671,7 +1971,7 @@ fn use_region_register(
         Some(NativeRegisterStorage::Transient { .. }) | None => Err(CraneliftLoweringError::new(
             "JIT_CRANELIFT_REJECT_MISSING_REGISTER",
             format!(
-                "register {} has no dominating baseline value or frame slot",
+                "register {} has no dominating Generic value or frame slot",
                 register.raw()
             ),
         )),
@@ -1707,6 +2007,12 @@ fn use_local_variable(
                 .ins()
                 .load(types::I64, MemFlagsData::new(), frame, offset))
         }
+        NativeLocalStorage::RequestGlobal { slot, .. } => Ok(builder.ins().load(
+            types::I64,
+            MemFlagsData::new(),
+            slot,
+            std::mem::offset_of!(crate::JitNativeRequestLocalSlot, encoded) as i32,
+        )),
     }
 }
 
@@ -1723,6 +2029,14 @@ fn define_local_variable(
                 .ins()
                 .store(MemFlagsData::new(), value, frame, offset);
         }
+        NativeLocalStorage::RequestGlobal { cache, .. } => match cache {
+            NativeLocalCache::Variable(variable) => builder.def_var(variable, value),
+            NativeLocalCache::FrameSlot { frame, offset } => {
+                builder
+                    .ins()
+                    .store(MemFlagsData::new(), value, frame, offset);
+            }
+        },
     }
     Ok(())
 }
@@ -1786,9 +2100,9 @@ fn lower_suspension_runtime_view(builder: &mut FunctionBuilder<'_>, state: ir::V
 }
 
 /// Records one baseline-native function entry in the process-owned dense
-/// counter plane. This is emitted only by baseline function entry bodies:
+/// counter plane. This is emitted only by Generic function entry bodies:
 /// optimizing code contains neither a telemetry branch nor a runtime helper.
-fn lower_baseline_function_entry(
+fn lower_generic_function_entry(
     builder: &mut FunctionBuilder<'_>,
     deopt_out: ir::Value,
     function: FunctionId,
@@ -1799,7 +2113,7 @@ fn lower_baseline_function_entry(
         types::I64,
         MemFlagsData::new(),
         view,
-        std::mem::offset_of!(crate::JitNativeRuntimeView, baseline_function_entry_counts) as i32,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, generic_function_entry_counts) as i32,
     );
     let counters = if pointer_type == types::I64 {
         counters
@@ -1813,7 +2127,7 @@ fn lower_baseline_function_entry(
         .ok_or_else(|| {
             CraneliftLoweringError::new(
                 "JIT_CRANELIFT_FUNCTION_ENTRY_COUNTER",
-                "baseline function-entry counter offset does not fit the native address space",
+                "Generic function-entry counter offset does not fit the native address space",
             )
         })?;
     let counter = builder.ins().iadd_imm(counters, byte_offset);
@@ -1836,7 +2150,7 @@ fn lower_baseline_function_entry(
 /// A failed check returns before the callee frame becomes live, and the caller
 /// releases the current contents of every packed slot on that status edge.
 #[allow(clippy::too_many_arguments)]
-fn lower_baseline_bind_packed_arguments(
+fn lower_generic_bind_packed_arguments(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
     argument_check: Option<NativeHelper>,
@@ -1884,24 +2198,31 @@ fn lower_baseline_bind_packed_arguments(
     } else {
         None
     };
-    let target = builder.ins().iconst(types::I64, i64::from(function.raw()));
-    let caller = builder.ins().load(
-        types::I32,
+    let runtime_view = lower_active_runtime_view(builder, deopt_out);
+    let function_contracts = builder.ins().load(
+        pointer_type,
         MemFlagsData::new(),
-        deopt_out,
-        std::mem::offset_of!(crate::JitDeoptState, function_id) as i32,
+        runtime_view,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_function_contracts) as i32,
     );
-    let caller = builder.ins().uextend(types::I64, caller);
-    let continuation = builder.ins().load(
-        types::I32,
+    let function_contract = builder.ins().iadd_imm(
+        function_contracts,
+        i64::try_from(
+            function
+                .index()
+                .saturating_mul(std::mem::size_of::<crate::JitNativeFunctionContractView>()),
+        )
+        .unwrap_or(i64::MAX),
+    );
+    let parameter_contracts = builder.ins().load(
+        pointer_type,
         MemFlagsData::new(),
-        deopt_out,
-        std::mem::offset_of!(crate::JitDeoptState, continuation_id) as i32,
+        function_contract,
+        std::mem::offset_of!(crate::JitNativeFunctionContractView, parameter_contracts) as i32,
     );
-    let continuation = builder.ins().uextend(types::I64, continuation);
-    let strict_bit = builder.ins().iconst(types::I64, 1_i64 << 32);
-    let weak_bit = builder.ins().iconst(types::I64, 0);
-    let strict_bit = builder.ins().select(strict, strict_bit, weak_bit);
+    let strict_value = builder.ins().iconst(types::I64, 1);
+    let weak_value = builder.ins().iconst(types::I64, 0);
+    let strict_value = builder.ins().select(strict, strict_value, weak_value);
 
     for (index, parameter) in params.iter().enumerate() {
         if parameter.type_.is_none() {
@@ -1921,9 +2242,95 @@ fn lower_baseline_bind_packed_arguments(
         let original = builder
             .ins()
             .load(types::I64, MemFlagsData::new(), arguments, offset);
+        let parameter_contract = builder.ins().load(
+            types::I64,
+            MemFlagsData::new(),
+            parameter_contracts,
+            i32::try_from(index.saturating_mul(8)).unwrap_or(i32::MAX),
+        );
+        if parameter.variadic {
+            // Generated callers pass one authoritative direct array in the
+            // physical variadic slot. The declared type applies to each
+            // PHP-visible element, never to that compiler-owned container.
+            let slot = lower_optimizing_slot_address(builder, original, deopt_out);
+            let length = builder.ins().load(
+                types::I64,
+                MemFlagsData::new(),
+                slot,
+                std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+            );
+            let entries = builder.ins().load(
+                pointer_type,
+                MemFlagsData::new(),
+                slot,
+                std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+            );
+            let scan = builder.create_block();
+            let inspect = builder.create_block();
+            let complete = builder.create_block();
+            builder.append_block_param(scan, types::I64);
+            let zero = builder.ins().iconst(types::I64, 0);
+            builder.ins().jump(scan, &[zero.into()]);
+
+            builder.switch_to_block(scan);
+            let element_index = builder.block_params(scan)[0];
+            let done = builder
+                .ins()
+                .icmp(IntCC::UnsignedGreaterThanOrEqual, element_index, length);
+            builder.ins().brif(done, complete, &[], inspect, &[]);
+
+            builder.switch_to_block(inspect);
+            let entry_offset = builder.ins().imul_imm(
+                element_index,
+                i64::try_from(std::mem::size_of::<crate::JitNativeDirectArrayEntry>())
+                    .unwrap_or(i64::MAX),
+            );
+            let entry = builder.ins().iadd(entries, entry_offset);
+            let value_field = builder.ins().iadd_imm(
+                entry,
+                i64::try_from(std::mem::offset_of!(
+                    crate::JitNativeDirectArrayEntry,
+                    value
+                ))
+                .unwrap_or(i64::MAX),
+            );
+            let element = builder
+                .ins()
+                .load(types::I64, MemFlagsData::new(), value_field, 0);
+            let call = call_native_helper(
+                module,
+                builder,
+                argument_check.expect("typed variadic entry checker"),
+                &[element, parameter_contract, strict_value, result_out],
+            );
+            let status = builder.inst_results(call)[0];
+            let admitted = builder.create_block();
+            let failed = builder.create_block();
+            let ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+            builder.ins().brif(ok, admitted, &[], failed, &[]);
+
+            builder.switch_to_block(failed);
+            return_native_or_fragment_control(builder, status, result_out);
+
+            builder.switch_to_block(admitted);
+            let checked = builder
+                .ins()
+                .load(types::I64, MemFlagsData::new(), result_out, 0);
+            if !parameter.by_ref {
+                lower_optimizing_release_replaced_call_owner(builder, element, checked, deopt_out);
+            }
+            builder
+                .ins()
+                .store(MemFlagsData::new(), checked, value_field, 0);
+            let next = builder.ins().iadd_imm(element_index, 1);
+            builder.ins().jump(scan, &[next.into()]);
+
+            builder.switch_to_block(complete);
+            continue;
+        }
         let parameter_ready = builder.create_block();
         if parameter.by_ref {
-            let payload = lower_optimizing_admitted_reference_scalar(builder, original, deopt_out);
+            let payload = lower_direct_reference_payload_unchecked(builder, original, deopt_out);
             if let Some(native_match) = lower_optimizing_type_guard(
                 builder,
                 payload,
@@ -1943,24 +2350,11 @@ fn lower_baseline_bind_packed_arguments(
                 builder.switch_to_block(cold_check);
             }
         }
-        let parameter_index = builder
-            .ins()
-            .iconst(types::I64, i64::try_from(index).unwrap_or(i64::MAX));
-        let parameter_flags = builder.ins().bor(parameter_index, strict_bit);
-        let opcode = builder.ins().iconst(types::I32, 0);
         let call = call_native_helper(
             module,
             builder,
             argument_check.expect("typed entry checker"),
-            &[
-                opcode,
-                original,
-                target,
-                parameter_flags,
-                caller,
-                continuation,
-                result_out,
-            ],
+            &[original, parameter_contract, strict_value, result_out],
         );
         let status = builder.inst_results(call)[0];
         let checked = builder
@@ -1972,13 +2366,13 @@ fn lower_baseline_bind_packed_arguments(
         builder.ins().brif(ok, admitted, &[], failed, &[]);
 
         builder.switch_to_block(failed);
-        builder.ins().return_(&[status]);
+        return_native_or_fragment_control(builder, status, result_out);
 
         builder.switch_to_block(admitted);
         // The source SSA/local owner remains live in the caller. The packed
         // owner is therefore known to be shared and can be decremented in
         // direct CLIF before the checked owner replaces it.
-        lower_optimizing_release_call_owner(builder, original, deopt_out);
+        lower_optimizing_release_replaced_call_owner(builder, original, checked, deopt_out);
         builder
             .ins()
             .store(MemFlagsData::new(), checked, arguments, offset);
@@ -2009,12 +2403,163 @@ struct NativeCallTracePublication {
     previous_fixed_count: ir::Value,
     previous_fixed_arguments: ir::Value,
     previous_tail_arguments: ir::Value,
+    trace_depth_field: ir::Value,
+    previous_trace_depth: ir::Value,
+}
+
+fn lower_native_function_trace_metadata(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_type: ir::Type,
+    runtime_view: ir::Value,
+    function: ir::Value,
+) -> ir::Value {
+    let contracts = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        runtime_view,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_function_contracts) as i32,
+    );
+    let function = if builder.func.dfg.value_type(function) == pointer_type {
+        function
+    } else {
+        builder.ins().uextend(pointer_type, function)
+    };
+    let offset = builder.ins().imul_imm(
+        function,
+        i64::try_from(std::mem::size_of::<crate::JitNativeFunctionContractView>())
+            .unwrap_or(i64::MAX),
+    );
+    let contract = builder.ins().iadd(contracts, offset);
+    builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        contract,
+        std::mem::offset_of!(crate::JitNativeFunctionContractView, trace_metadata) as i32,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_native_shadow_frame(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_type: ir::Type,
+    runtime: ir::Value,
+    metadata: ir::Value,
+    arguments: ir::Value,
+    argument_count: ir::Value,
+    fixed_argument_count: ir::Value,
+    tail_arguments: ir::Value,
+) -> (ir::Value, ir::Value) {
+    let frames = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        runtime,
+        std::mem::offset_of!(crate::JitNativeFastStateHeader, trace_frames) as i32,
+    );
+    let depth_field = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        runtime,
+        std::mem::offset_of!(crate::JitNativeFastStateHeader, trace_depth) as i32,
+    );
+    let depth = builder
+        .ins()
+        .load(types::I32, MemFlagsData::new(), depth_field, 0);
+    let depth_wide = builder.ins().uextend(pointer_type, depth);
+    // Recursion is bounded by the frame arena, not by this buffer, so the
+    // depth can exceed the published shadow stack. Writing at that depth
+    // overruns the request-owned mapping. Clamp to the last slot instead: the
+    // deepest frames stop being individually addressable once the stack is
+    // full, which only truncates a backtrace, while the arena keeps owning
+    // the actual recursion limit.
+    let capacity = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        runtime,
+        std::mem::offset_of!(crate::JitNativeFastStateHeader, trace_capacity) as i32,
+    );
+    let capacity_wide = builder.ins().uextend(pointer_type, capacity);
+    let last_slot = builder.ins().iadd_imm(capacity_wide, -1);
+    let bounded = builder.ins().umin(depth_wide, last_slot);
+    let empty = builder.ins().icmp_imm(IntCC::Equal, capacity_wide, 0);
+    let zero = builder.ins().iconst(pointer_type, 0);
+    let bounded = builder.ins().select(empty, zero, bounded);
+    let offset = builder.ins().imul_imm(
+        bounded,
+        i64::try_from(std::mem::size_of::<crate::JitNativeTraceFrame>()).unwrap_or(i64::MAX),
+    );
+    let frame = builder.ins().iadd(frames, offset);
+    for (value, offset) in [
+        (
+            metadata,
+            std::mem::offset_of!(crate::JitNativeTraceFrame, metadata),
+        ),
+        (
+            arguments,
+            std::mem::offset_of!(crate::JitNativeTraceFrame, arguments),
+        ),
+    ] {
+        builder
+            .ins()
+            .store(MemFlagsData::new(), value, frame, offset as i32);
+    }
+    for (value, offset) in [
+        (
+            argument_count,
+            std::mem::offset_of!(crate::JitNativeTraceFrame, argument_count),
+        ),
+        (
+            fixed_argument_count,
+            std::mem::offset_of!(crate::JitNativeTraceFrame, fixed_argument_count),
+        ),
+    ] {
+        builder
+            .ins()
+            .store(MemFlagsData::new(), value, frame, offset as i32);
+    }
+    let zero_pointer = builder.ins().iconst(pointer_type, 0);
+    builder.ins().store(
+        MemFlagsData::new(),
+        zero_pointer,
+        frame,
+        std::mem::offset_of!(crate::JitNativeTraceFrame, fixed_arguments) as i32,
+    );
+    builder.ins().store(
+        MemFlagsData::new(),
+        tail_arguments,
+        frame,
+        std::mem::offset_of!(crate::JitNativeTraceFrame, tail_arguments) as i32,
+    );
+    let zero64 = builder.ins().iconst(types::I64, 0);
+    for offset in [
+        std::mem::offset_of!(crate::JitNativeTraceFrame, receiver),
+        std::mem::offset_of!(crate::JitNativeTraceFrame, class_bytes),
+    ] {
+        builder
+            .ins()
+            .store(MemFlagsData::new(), zero64, frame, offset as i32);
+    }
+    let zero32 = builder.ins().iconst(types::I32, 0);
+    for offset in [
+        std::mem::offset_of!(crate::JitNativeTraceFrame, class_length),
+        std::mem::offset_of!(crate::JitNativeTraceFrame, flags),
+    ] {
+        builder
+            .ins()
+            .store(MemFlagsData::new(), zero32, frame, offset as i32);
+    }
+    let next = builder.ins().iadd_imm(depth, 1);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), next, depth_field, 0);
+    (depth_field, depth)
 }
 
 fn publish_native_call_trace(
     builder: &mut FunctionBuilder<'_>,
     pointer_type: ir::Type,
+    runtime: ir::Value,
     runtime_view: ir::Value,
+    trace_metadata: ir::Value,
     values: &[ir::Value],
     fixed_count: usize,
     tail: Option<(ir::Value, ir::Value)>,
@@ -2074,6 +2619,31 @@ fn publish_native_call_trace(
         ))
         .unwrap_or(i64::MAX),
     );
+    let count = if let Some((count, _)) = tail {
+        builder.ins().ireduce(types::I32, count)
+    } else {
+        builder
+            .ins()
+            .iconst(types::I32, i64::try_from(values.len()).unwrap_or(i64::MAX))
+    };
+    let fixed_count = builder
+        .ins()
+        .iconst(types::I32, i64::try_from(fixed_count).unwrap_or(i64::MAX));
+    let tail_arguments = if let Some((_, array)) = tail {
+        array
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    };
+    let (trace_depth_field, previous_trace_depth) = publish_native_shadow_frame(
+        builder,
+        pointer_type,
+        runtime,
+        trace_metadata,
+        trace,
+        count,
+        fixed_count,
+        tail_arguments,
+    );
     let publication = NativeCallTracePublication {
         arguments_field,
         count_field,
@@ -2107,23 +2677,15 @@ fn publish_native_call_trace(
             tail_arguments_field,
             0,
         ),
+        trace_depth_field,
+        previous_trace_depth,
     };
     builder
         .ins()
         .store(MemFlagsData::new(), trace, arguments_field, 0);
-    let count = if let Some((count, _)) = tail {
-        builder.ins().ireduce(types::I32, count)
-    } else {
-        builder
-            .ins()
-            .iconst(types::I32, i64::try_from(values.len()).unwrap_or(i64::MAX))
-    };
     builder
         .ins()
         .store(MemFlagsData::new(), count, count_field, 0);
-    let fixed_count = builder
-        .ins()
-        .iconst(types::I32, i64::try_from(fixed_count).unwrap_or(i64::MAX));
     builder
         .ins()
         .store(MemFlagsData::new(), fixed_count, fixed_count_field, 0);
@@ -2131,11 +2693,6 @@ fn publish_native_call_trace(
     builder
         .ins()
         .store(MemFlagsData::new(), zero, fixed_arguments_field, 0);
-    let tail_arguments = if let Some((_, array)) = tail {
-        array
-    } else {
-        builder.ins().iconst(types::I64, 0)
-    };
     builder
         .ins()
         .store(MemFlagsData::new(), tail_arguments, tail_arguments_field, 0);
@@ -2176,62 +2733,115 @@ fn restore_native_call_trace(
         publication.tail_arguments_field,
         0,
     );
+    builder.ins().store(
+        MemFlagsData::new(),
+        publication.previous_trace_depth,
+        publication.trace_depth_field,
+        0,
+    );
 }
 
-/// Publishes one immutable constant from its explicit unit-local index.
-///
-/// The index is producer metadata; it is never recovered from the value bits.
-/// Dynamic SSA values are already authoritative native encodings, and after a
-/// linked call the active literal table can belong to a different unit than a
-/// value's producer. The returned flag is true when the result borrows the
-/// published literal slot's owner.
-pub(super) fn lower_native_literal_value(
+fn publish_native_packed_call_trace(
     builder: &mut FunctionBuilder<'_>,
-    value: ir::Value,
-    constant_index: u32,
-    deopt_out: ir::Value,
-) -> (ir::Value, ir::Value) {
-    if constant_index >= crate::JIT_VALUE_TRUE {
-        let not_borrowed = builder.ins().iconst(types::I8, 0);
-        return (value, not_borrowed);
-    }
-    // The index is embedded by this compiled unit and the table is published
-    // before its entrypoint becomes callable. Named/class constants keep an
-    // empty slot, selected branchlessly back to their original encoding;
-    // immutable literals load the request-owned value.
-    let pointer_type = builder.func.dfg.value_type(deopt_out);
-    let view = lower_active_runtime_view(builder, deopt_out);
-    let slots = builder.ins().load(
+    pointer_type: ir::Type,
+    runtime: ir::Value,
+    runtime_view: ir::Value,
+    trace_metadata: ir::Value,
+    packed: ir::Value,
+    count: ir::Value,
+) -> NativeCallTracePublication {
+    let field = |builder: &mut FunctionBuilder<'_>, offset: usize| {
+        builder
+            .ins()
+            .iadd_imm(runtime_view, i64::try_from(offset).unwrap_or(i64::MAX))
+    };
+    let arguments_field = field(
+        builder,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, active_call_arguments),
+    );
+    let count_field = field(
+        builder,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, active_call_argument_count),
+    );
+    let fixed_count_field = field(
+        builder,
+        std::mem::offset_of!(
+            crate::JitNativeRuntimeView,
+            active_call_fixed_argument_count
+        ),
+    );
+    let fixed_arguments_field = field(
+        builder,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, active_call_fixed_arguments),
+    );
+    let tail_arguments_field = field(
+        builder,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, active_call_tail_arguments),
+    );
+    let count = builder.ins().ireduce(types::I32, count);
+    let no_tail = builder.ins().iconst(types::I64, 0);
+    let (trace_depth_field, previous_trace_depth) = publish_native_shadow_frame(
+        builder,
         pointer_type,
-        MemFlagsData::new(),
-        view,
-        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_literal_slots) as i32,
+        runtime,
+        trace_metadata,
+        packed,
+        count,
+        count,
+        no_tail,
     );
-    let slot = builder.ins().iadd_imm(
-        slots,
-        i64::from(constant_index)
-            * i64::try_from(std::mem::size_of::<crate::JitNativeTrustedLiteralSlot>())
-                .unwrap_or(i64::MAX),
-    );
-    let state = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeTrustedLiteralSlot, state) as i32,
-    );
-    let ready = builder.ins().icmp_imm(
-        IntCC::Equal,
-        state,
-        i64::from(crate::JIT_NATIVE_TRUSTED_LITERAL_PUBLISHED),
-    );
-    let native = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeTrustedLiteralSlot, value) as i32,
-    );
-    let selected = builder.ins().select(ready, native, value);
-    (selected, ready)
+    let publication = NativeCallTracePublication {
+        arguments_field,
+        count_field,
+        fixed_count_field,
+        fixed_arguments_field,
+        tail_arguments_field,
+        previous_arguments: builder.ins().load(
+            pointer_type,
+            MemFlagsData::new(),
+            arguments_field,
+            0,
+        ),
+        previous_count: builder
+            .ins()
+            .load(types::I32, MemFlagsData::new(), count_field, 0),
+        previous_fixed_count: builder.ins().load(
+            types::I32,
+            MemFlagsData::new(),
+            fixed_count_field,
+            0,
+        ),
+        previous_fixed_arguments: builder.ins().load(
+            pointer_type,
+            MemFlagsData::new(),
+            fixed_arguments_field,
+            0,
+        ),
+        previous_tail_arguments: builder.ins().load(
+            types::I64,
+            MemFlagsData::new(),
+            tail_arguments_field,
+            0,
+        ),
+        trace_depth_field,
+        previous_trace_depth,
+    };
+    builder
+        .ins()
+        .store(MemFlagsData::new(), packed, arguments_field, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), count, count_field, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), count, fixed_count_field, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), packed, fixed_arguments_field, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), no_tail, tail_arguments_field, 0);
+    publication
 }
 
 fn lower_linked_native_literal_value(
@@ -2308,6 +2918,28 @@ fn prepared_call_operand_is_constant(operand: RegionOperand) -> bool {
         operand,
         RegionOperand::Constant(_) | RegionOperand::LinkedConstant { .. } | RegionOperand::I64(_)
     )
+}
+
+fn prepared_call_integer_constant(
+    constants: &[IrConstant],
+    value_flow: &ExecutableValueFlow,
+    operand: RegionOperand,
+) -> Option<i64> {
+    match operand {
+        RegionOperand::I64(value) => Some(value),
+        RegionOperand::Constant(index)
+        | RegionOperand::LinkedConstant {
+            constant: index, ..
+        } => match constants.get(index as usize) {
+            Some(IrConstant::Int(value)) => Some(*value),
+            _ => None,
+        },
+        RegionOperand::Register(_) | RegionOperand::Local(_) => value_flow
+            .operand_fact(constants, operand)
+            .integer_range
+            .filter(|range| range.minimum == range.maximum)
+            .map(|range| range.minimum),
+    }
 }
 
 fn prepared_call_operand_is_null(operand: RegionOperand) -> bool {
@@ -2436,6 +3068,28 @@ fn define_region_register(
                 .store(MemFlagsData::new(), stored, frame, offset);
             registers.insert(register, NativeRegisterStorage::Cached(value));
         }
+        NativeRegisterStorage::SpillSlot {
+            frame,
+            offset,
+            type_,
+        } => {
+            let stored = if type_ == types::I64 {
+                value
+            } else {
+                builder.ins().uextend(types::I64, value)
+            };
+            builder
+                .ins()
+                .store(MemFlagsData::new(), stored, frame, offset);
+            registers.insert(
+                register,
+                NativeRegisterStorage::SpillSlot {
+                    frame,
+                    offset,
+                    type_,
+                },
+            );
+        }
         NativeRegisterStorage::Transient { type_ } => {
             debug_assert_eq!(builder.func.dfg.value_type(value), type_);
             registers.insert(register, NativeRegisterStorage::Cached(value));
@@ -2472,13 +3126,13 @@ fn require_native_operation_ok(
 fn allocate_native_frame_storage(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
-    operations: BaselineNativeOperations,
+    frame_alloc: Option<NativeHelper>,
     bytes: u32,
     alignment_log2: u8,
     _result_out: ir::Value,
 ) -> ir::Value {
     let pointer_type = module.target_config().pointer_type();
-    let Some(helper) = operations.frame_alloc else {
+    let Some(helper) = frame_alloc else {
         let slot = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
             bytes,
@@ -2528,11 +3182,11 @@ fn allocate_native_stack_storage(
 fn release_native_frame_storage(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
-    operations: BaselineNativeOperations,
+    frame_release: Option<NativeHelper>,
     pointer: ir::Value,
     _result_out: ir::Value,
 ) -> Result<(), CraneliftLoweringError> {
-    let Some(helper) = operations.frame_release else {
+    let Some(helper) = frame_release else {
         return Ok(());
     };
     let context = builder.ins().iconst(types::I64, 0);
@@ -2542,25 +3196,6 @@ fn release_native_frame_storage(
         builder.inst_results(call)[0],
         helper.terminal_exit()?,
     )
-}
-
-fn require_native_value_operation_ok(
-    builder: &mut FunctionBuilder<'_>,
-    status: ir::Value,
-    terminal_exit: NativeTerminalExit,
-    value: ir::Value,
-) -> Result<(), CraneliftLoweringError> {
-    let ok = builder.create_block();
-    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-    builder.ins().brif(
-        is_ok,
-        ok,
-        &[],
-        terminal_exit.block,
-        &[status.into(), value.into()],
-    );
-    builder.switch_to_block(ok);
-    Ok(())
 }
 
 fn native_local_mask_words(live_locals: &[LocalId]) -> [u64; crate::JIT_DEOPT_LOCAL_MASK_WORDS] {
@@ -2838,7 +3473,7 @@ fn capture_native_fiber_callee_if_suspended(
     let runtime_error = builder
         .ins()
         .iconst(types::I32, i64::from(crate::JitCallStatus::RUNTIME_ERROR.0));
-    builder.ins().return_(&[runtime_error]);
+    return_native_or_fragment_control(builder, runtime_error, result_out);
 
     builder.switch_to_block(available);
     let index_pointer = builder.ins().uextend(pointer_type, index);
@@ -2918,7 +3553,7 @@ fn begin_native_call_or_resume(
     builder
         .ins()
         .store(MemFlagsData::new(), value, result_out, 0);
-    builder.ins().return_(&[status]);
+    return_native_or_fragment_control(builder, status, result_out);
 
     builder.switch_to_block(invoke);
     completed
@@ -3062,39 +3697,13 @@ fn publish_native_register_values(
     Ok(())
 }
 
-fn lower_native_value_operation(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    opcode: u32,
-    operands: &[ir::Value],
-    result_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let helper = helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-            format!("native value operation {opcode} has no declared helper"),
-        )
-    })?;
-    let opcode = builder.ins().iconst(types::I32, i64::from(opcode));
-    let mut args = Vec::with_capacity(operands.len() + 2);
-    args.push(opcode);
-    args.extend_from_slice(operands);
-    args.push(result_out);
-    let call = call_native_helper(module, builder, helper, &args);
-    let status = builder.inst_results(call)[0];
-    let value = builder
-        .ins()
-        .load(types::I64, MemFlagsData::new(), result_out, 0);
-    require_native_value_operation_ok(builder, status, helper.terminal_exit()?, value)?;
-    Ok(value)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn lower_native_return_check_with_frame_cleanup(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
-    native_operations: BaselineNativeOperations,
+    native_operations: GenericNativeOperations,
+    runtime: ir::Value,
+    value_release_commit: ir::FuncRef,
     function: FunctionId,
     local_count: u32,
     failure_continuation: u32,
@@ -3112,13 +3721,33 @@ fn lower_native_return_check_with_frame_cleanup(
             "native return check has no declared helper",
         )
     })?;
-    let opcode = builder.ins().iconst(types::I32, 0);
-    let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
+    let runtime_view = lower_active_runtime_view(builder, deopt_out);
+    let function_contracts = builder.ins().load(
+        module.target_config().pointer_type(),
+        MemFlagsData::new(),
+        runtime_view,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_function_contracts) as i32,
+    );
+    let function_contract = builder.ins().iadd_imm(
+        function_contracts,
+        i64::try_from(
+            function
+                .index()
+                .saturating_mul(std::mem::size_of::<crate::JitNativeFunctionContractView>()),
+        )
+        .unwrap_or(i64::MAX),
+    );
+    let return_contract = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        function_contract,
+        std::mem::offset_of!(crate::JitNativeFunctionContractView, return_contract) as i32,
+    );
     let call = call_native_helper(
         module,
         builder,
         helper,
-        &[opcode, value, function_value, result_out],
+        &[value, return_contract, result_out],
     );
     let status = builder.inst_results(call)[0];
     let checked = builder
@@ -3131,24 +3760,23 @@ fn lower_native_return_check_with_frame_cleanup(
 
     builder.switch_to_block(failed);
     if input_is_owned {
-        let _ = lower_guarded_value_release(
-            module,
+        let _ = lower_guarded_value_owner_change(
             builder,
-            native_operations.value_release,
-            native_dim_operation(1, function, 0),
+            false,
             value,
-            result_out,
             deopt_out,
+            runtime,
+            value_release_commit,
         )?;
     }
     terminators::lower_owned_frame_locals(
         module,
         builder,
         locals,
-        native_operations,
+        runtime,
+        value_release_commit,
         value_flow,
         function,
-        result_out,
         deopt_out,
     )?;
     // The type failure is raised after the innermost finally has completed.
@@ -3166,10 +3794,12 @@ fn lower_native_return_check_with_frame_cleanup(
         locals,
         native_version,
     )?;
+    let (failure_status, failure_value) =
+        select_generated_release_control(builder, deopt_out, status, checked);
     builder
         .ins()
-        .store(MemFlagsData::new(), checked, result_out, 0);
-    builder.ins().return_(&[status]);
+        .store(MemFlagsData::new(), failure_value, result_out, 0);
+    return_native_or_fragment_control(builder, failure_status, result_out);
 
     builder.switch_to_block(admitted);
     if input_is_owned {
@@ -3180,14 +3810,13 @@ fn lower_native_return_check_with_frame_cleanup(
         builder.ins().brif(unchanged, preserve, &[], release, &[]);
 
         builder.switch_to_block(release);
-        let _ = lower_guarded_value_release(
-            module,
+        let _ = lower_guarded_value_owner_change(
             builder,
-            native_operations.value_release,
-            native_dim_operation(1, function, 0),
+            false,
             value,
-            result_out,
             deopt_out,
+            runtime,
+            value_release_commit,
         )?;
         builder.ins().jump(done, &[]);
 
@@ -3198,371 +3827,6 @@ fn lower_native_return_check_with_frame_cleanup(
     }
     Ok(checked)
 }
-
-#[allow(clippy::too_many_arguments)]
-fn lower_native_value_operation_with_state(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    opcode: u32,
-    operands: &[ir::Value],
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    function: FunctionId,
-    local_count: u32,
-    instruction: &RegionInstruction,
-    locals: &NativeLocalMap,
-    registers: &NativeRegisterMap,
-    live_registers: &[RegId],
-    native_version: u32,
-    cleanup_helper: Option<NativeHelper>,
-    cleanup_values: &[ir::Value],
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let helper = helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-            format!("native value operation {opcode} has no declared helper"),
-        )
-    })?;
-    let opcode = builder.ins().iconst(types::I32, i64::from(opcode));
-    let mut args = Vec::with_capacity(operands.len() + 2);
-    args.push(opcode);
-    args.extend_from_slice(operands);
-    args.push(result_out);
-    let call = call_native_helper(module, builder, helper, &args);
-    let status = builder.inst_results(call)[0];
-    let value = builder
-        .ins()
-        .load(types::I64, MemFlagsData::new(), result_out, 0);
-    let ok = builder.create_block();
-    let failed = builder.create_block();
-    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-    builder.ins().brif(is_ok, ok, &[], failed, &[]);
-    builder.switch_to_block(failed);
-    for cleanup in cleanup_values {
-        let _ = lower_guarded_value_release(
-            module,
-            builder,
-            cleanup_helper,
-            1,
-            *cleanup,
-            result_out,
-            deopt_out,
-        )?;
-    }
-    publish_native_call_state(
-        builder,
-        deopt_out,
-        function,
-        local_count,
-        instruction,
-        locals,
-        native_version,
-    )?;
-    publish_native_register_state(builder, deopt_out, registers, live_registers)?;
-    builder
-        .ins()
-        .store(MemFlagsData::new(), value, result_out, 0);
-    builder.ins().return_(&[status]);
-    builder.switch_to_block(ok);
-    Ok(value)
-}
-
-fn publish_native_reference_local(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    value: ir::Value,
-    function: FunctionId,
-    local: LocalId,
-    result_out: ir::Value,
-) -> Result<(), CraneliftLoweringError> {
-    let Some(helper) = helper else {
-        return Ok(());
-    };
-    let function = builder.ins().iconst(types::I64, i64::from(function.raw()));
-    let local = builder.ins().iconst(types::I64, i64::from(local.raw()));
-    let _ = lower_native_value_operation(
-        module,
-        builder,
-        Some(helper),
-        4,
-        &[value, function, local],
-        result_out,
-    )?;
-    Ok(())
-}
-
-fn lower_guarded_reference_binding(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    value: ir::Value,
-    result_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let reference = builder.create_block();
-    let generic = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let is_reference = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    builder
-        .ins()
-        .brif(is_reference, reference, &[], generic, &[]);
-
-    builder.switch_to_block(reference);
-    builder.ins().jump(merge, &[value.into()]);
-
-    builder.switch_to_block(generic);
-    let zero = builder.ins().iconst(types::I64, 0);
-    let value =
-        lower_native_value_operation(module, builder, helper, 0, &[value, zero, zero], result_out)?;
-    builder.ins().jump(merge, &[value.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_direct_reference_argument(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    locals: &NativeLocalMap,
-    registers: &NativeRegisterMap,
-    argument: &php_ir::instruction::IrCallArg,
-    argument_index: usize,
-    fallback_value: ir::Value,
-    instruction: &RegionInstruction,
-    function: FunctionId,
-    defer_until_signature_published: bool,
-    publish_reference_locals: bool,
-    result_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    if let Some(local) = argument.by_ref_local {
-        let value = use_local_variable(builder, locals, local)?;
-        if defer_until_signature_published {
-            let callsite =
-                u64::from(function.raw()) | (u64::from(instruction.continuation_id) << 32);
-            let callsite = builder.ins().iconst(types::I64, callsite as i64);
-            let argument_index = builder.ins().iconst(
-                types::I64,
-                i64::try_from(argument_index).unwrap_or(i64::MAX),
-            );
-            let candidate = lower_native_value_operation(
-                module,
-                builder,
-                helper,
-                6,
-                &[value, callsite, argument_index],
-                result_out,
-            )?;
-            let bind_local = builder.create_block();
-            let keep_local = builder.create_block();
-            let merge = builder.create_block();
-            builder.append_block_param(merge, types::I64);
-            let is_reference =
-                lower_value_has_tag(builder, candidate, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-            builder
-                .ins()
-                .brif(is_reference, bind_local, &[], keep_local, &[]);
-
-            builder.switch_to_block(bind_local);
-            define_local_variable(builder, locals, local, candidate)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                publish_reference_locals.then_some(helper).flatten(),
-                candidate,
-                function,
-                local,
-                result_out,
-            )?;
-            builder.ins().jump(merge, &[candidate.into()]);
-
-            builder.switch_to_block(keep_local);
-            define_local_variable(builder, locals, local, value)?;
-            builder.ins().jump(merge, &[candidate.into()]);
-
-            builder.switch_to_block(merge);
-            return Ok(builder.block_params(merge)[0]);
-        }
-        let reference =
-            lower_guarded_reference_binding(module, builder, helper, value, result_out)?;
-        define_local_variable(builder, locals, local, reference)?;
-        publish_native_reference_local(
-            module,
-            builder,
-            publish_reference_locals.then_some(helper).flatten(),
-            reference,
-            function,
-            local,
-            result_out,
-        )?;
-        return Ok(reference);
-    }
-    if let Some(target) = &argument.by_ref_dim {
-        let root = use_local_variable(builder, locals, target.local)?;
-        let mut reference = root;
-        for dimension in &target.dims {
-            let key = lower_ir_operand(builder, locals, registers, *dimension)?;
-            let zero = builder.ins().iconst(types::I64, 0);
-            reference = lower_native_value_operation(
-                module,
-                builder,
-                helper,
-                native_dim_operation(1, function, instruction.continuation_id),
-                &[reference, key, zero],
-                result_out,
-            )?;
-        }
-        publish_native_reference_local(
-            module,
-            builder,
-            publish_reference_locals.then_some(helper).flatten(),
-            root,
-            function,
-            target.local,
-            result_out,
-        )?;
-        return Ok(reference);
-    }
-    if let Some(target) = &argument.by_ref_property {
-        let object = lower_ir_operand(builder, locals, registers, target.object)?;
-        let function_and_argument = u64::from(function.raw())
-            | (u64::from(
-                u32::try_from(argument_index)
-                    .unwrap_or(u32::MAX - 1)
-                    .saturating_add(1),
-            ) << 32);
-        let function_value = builder
-            .ins()
-            .iconst(types::I64, function_and_argument as i64);
-        let locator = builder
-            .ins()
-            .iconst(types::I64, i64::from(instruction.continuation_id));
-        return lower_native_value_operation(
-            module,
-            builder,
-            helper,
-            3,
-            &[object, function_value, locator],
-            result_out,
-        );
-    }
-    if let Some(target) = &argument.by_ref_property_dim {
-        let object = lower_ir_operand(builder, locals, registers, target.object)?;
-        let function_and_argument = u64::from(function.raw())
-            | (u64::from(
-                u32::try_from(argument_index)
-                    .unwrap_or(u32::MAX - 1)
-                    .saturating_add(1),
-            ) << 32);
-        let function_value = builder
-            .ins()
-            .iconst(types::I64, function_and_argument as i64);
-        let locator = builder
-            .ins()
-            .iconst(types::I64, i64::from(instruction.continuation_id));
-        let mut reference = lower_native_value_operation(
-            module,
-            builder,
-            helper,
-            3,
-            &[object, function_value, locator],
-            result_out,
-        )?;
-        for dimension in &target.dims {
-            let key = lower_ir_operand(builder, locals, registers, *dimension)?;
-            let zero = builder.ins().iconst(types::I64, 0);
-            reference = lower_native_value_operation(
-                module,
-                builder,
-                helper,
-                native_dim_operation(1, function, instruction.continuation_id),
-                &[reference, key, zero],
-                result_out,
-            )?;
-        }
-        return Ok(reference);
-    }
-    let zero = builder.ins().iconst(types::I64, 0);
-    lower_native_value_operation(
-        module,
-        builder,
-        helper,
-        0,
-        &[fallback_value, zero, zero],
-        result_out,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_baseline_native_binary_operation(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    opcode: u32,
-    lhs: ir::Value,
-    rhs: ir::Value,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    function: FunctionId,
-    local_count: u32,
-    instruction: &RegionInstruction,
-    locals: &NativeLocalMap,
-    registers: &NativeRegisterMap,
-    live_registers: &[RegId],
-    native_version: u32,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let helper = helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-            format!("native binary operation {opcode} has no declared helper"),
-        )
-    })?;
-    let opcode = builder.ins().iconst(types::I32, i64::from(opcode));
-    let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-    let continuation = builder
-        .ins()
-        .iconst(types::I64, i64::from(instruction.continuation_id));
-    let call = call_native_helper(
-        module,
-        builder,
-        helper,
-        &[opcode, lhs, rhs, function_value, continuation, result_out],
-    );
-    let status = builder.inst_results(call)[0];
-    let value = builder
-        .ins()
-        .load(types::I64, MemFlagsData::new(), result_out, 0);
-    if native_version == 0 {
-        require_native_value_operation_ok(builder, status, helper.terminal_exit()?, value)?;
-        return Ok(value);
-    }
-    let ok = builder.create_block();
-    let failed = builder.create_block();
-    let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-    builder.ins().brif(is_ok, ok, &[], failed, &[]);
-    builder.switch_to_block(failed);
-    publish_native_call_state(
-        builder,
-        deopt_out,
-        function,
-        local_count,
-        instruction,
-        locals,
-        native_version,
-    )?;
-    publish_native_register_state(builder, deopt_out, registers, live_registers)?;
-    builder
-        .ins()
-        .store(MemFlagsData::new(), value, result_out, 0);
-    builder.ins().return_(&[status]);
-    builder.switch_to_block(ok);
-    Ok(value)
-}
-
 fn lower_value_has_tag(builder: &mut FunctionBuilder<'_>, value: ir::Value, tag: u64) -> ir::Value {
     let encoded_tag = builder
         .ins()
@@ -3594,270 +3858,10 @@ fn lower_value_has_namespace_tag(
         .icmp_imm(IntCC::Equal, encoded_tag, tag as i64)
 }
 
-fn lower_not_bool(builder: &mut FunctionBuilder<'_>, value: ir::Value) -> ir::Value {
-    builder.ins().icmp_imm(IntCC::Equal, value, 0)
-}
-
-fn lower_is_immediate_int(
-    builder: &mut FunctionBuilder<'_>,
-    value: ir::Value,
-    is_constant: ir::Value,
-) -> ir::Value {
-    let is_runtime = lower_is_runtime_handle(builder, value);
-    let is_not_runtime = lower_not_bool(builder, is_runtime);
-    let is_not_constant = lower_not_bool(builder, is_constant);
-    builder.ins().band(is_not_runtime, is_not_constant)
-}
-
-fn lower_stable_builtin_type_predicate(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    op: u32,
-    value: ir::Value,
-    result_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    if !helper.is_some_and(|helper| helper.inline_runtime_view) {
-        return lower_native_value_operation(module, builder, helper, op, &[value], result_out);
-    }
-    let direct = builder.create_block();
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let is_reference = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    let is_constant = lower_value_has_namespace_tag(builder, value, crate::JIT_VALUE_CONSTANT_TAG);
-    let is_null = builder
-        .ins()
-        .icmp_imm(IntCC::Equal, value, crate::jit_encode_constant(u32::MAX));
-    let is_false = builder.ins().icmp_imm(
-        IntCC::Equal,
-        value,
-        crate::jit_encode_constant(crate::JIT_VALUE_FALSE),
-    );
-    let is_true = builder.ins().icmp_imm(
-        IntCC::Equal,
-        value,
-        crate::jit_encode_constant(crate::JIT_VALUE_TRUE),
-    );
-    let is_uninitialized = builder.ins().icmp_imm(
-        IntCC::Equal,
-        value,
-        crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
-    );
-    let is_reserved = builder.ins().bor(is_null, is_false);
-    let is_reserved = builder.ins().bor(is_reserved, is_true);
-    let is_reserved = builder.ins().bor(is_reserved, is_uninitialized);
-    let is_not_reserved = lower_not_bool(builder, is_reserved);
-    let is_non_reserved_constant = builder.ins().band(is_constant, is_not_reserved);
-    let mut needs_slow = builder.ins().bor(is_reference, is_non_reserved_constant);
-    if matches!(op, 2 | 8) {
-        let is_boxed_scalar = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_TAG);
-        needs_slow = builder.ins().bor(needs_slow, is_boxed_scalar);
-    }
-    if matches!(op, 9 | 10) {
-        let is_object = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_OBJECT_TAG);
-        needs_slow = builder.ins().bor(needs_slow, is_object);
-    }
-    builder.ins().brif(needs_slow, slow, &[], direct, &[]);
-
-    builder.switch_to_block(direct);
-    let is_bool = builder.ins().bor(is_false, is_true);
-    let matched = match op {
-        0 => is_null,
-        1 => is_bool,
-        2 => lower_is_immediate_int(builder, value, is_constant),
-        3 => lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_FLOAT_TAG),
-        4 => lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_STRING_TAG),
-        5 => lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_ARRAY_TAG),
-        6 => {
-            let is_object =
-                lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_OBJECT_TAG);
-            let is_callable =
-                lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_CALLABLE_TAG);
-            let is_generator =
-                lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_GENERATOR_TAG);
-            let is_fiber = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_FIBER_TAG);
-            let is_object = builder.ins().bor(is_object, is_callable);
-            let is_object = builder.ins().bor(is_object, is_generator);
-            builder.ins().bor(is_object, is_fiber)
-        }
-        7 => lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_RESOURCE_TAG),
-        8 => {
-            let is_int = lower_is_immediate_int(builder, value, is_constant);
-            let is_float = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_FLOAT_TAG);
-            let is_string =
-                lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_STRING_TAG);
-            let is_scalar = builder.ins().bor(is_bool, is_int);
-            let is_scalar = builder.ins().bor(is_scalar, is_float);
-            builder.ins().bor(is_scalar, is_string)
-        }
-        9 => lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_ARRAY_TAG),
-        10 => {
-            let array = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
-            let generator =
-                lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_GENERATOR_TAG);
-            builder.ins().bor(array, generator)
-        }
-        _ => {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_TYPE_PREDICATE",
-                format!("unsupported stable type predicate opcode {op}"),
-            ));
-        }
-    };
-    let matched = encode_native_bool(builder, matched);
-    builder.ins().jump(merge, &[matched.into()]);
-
-    builder.switch_to_block(slow);
-    let matched = lower_native_value_operation(module, builder, helper, op, &[value], result_out)?;
-    builder.ins().jump(merge, &[matched.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-fn lower_fast_array_key_exists(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    array: ir::Value,
-    key: ir::Value,
-    result_out: ir::Value,
-) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
-    let helper = helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_ARRAY_KEY_EXISTS",
-            "array_key_exists fast path has no declared array lookup helper",
-        )
-    })?;
-    let operation = builder.ins().iconst(types::I32, 2);
-    let args = [operation, array, key, result_out];
-    let call = call_native_helper(module, builder, helper, &args);
-    let status = builder.inst_results(call)[0];
-    let value = builder
-        .ins()
-        .load(types::I64, MemFlagsData::new(), result_out, 0);
-    Ok((status, value))
-}
-
-fn lower_fast_string_predicate(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    operation: u32,
-    haystack: ir::Value,
-    needle: ir::Value,
-    result_out: ir::Value,
-) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
-    let helper = helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_STRING_PREDICATE",
-            "string predicate fast path has no declared runtime helper",
-        )
-    })?;
-    let operation = builder.ins().iconst(types::I32, i64::from(operation));
-    let call = call_native_helper(
-        module,
-        builder,
-        helper,
-        &[operation, haystack, needle, result_out],
-    );
-    let status = builder.inst_results(call)[0];
-    let value = builder
-        .ins()
-        .load(types::I64, MemFlagsData::new(), result_out, 0);
-    Ok((status, value))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_stable_builtin_length(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    op: u32,
-    value: ir::Value,
-    function: FunctionId,
-    continuation_id: u32,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    if !helper.is_some_and(|helper| helper.inline_runtime_view) {
-        let function = builder.ins().iconst(types::I64, i64::from(function.raw()));
-        let continuation = builder.ins().iconst(types::I64, i64::from(continuation_id));
-        return lower_native_value_operation(
-            module,
-            builder,
-            helper,
-            op,
-            &[value, function, continuation],
-            result_out,
-        );
-    }
-    let inspect = builder.create_block();
-    let direct = builder.create_block();
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let expected_tag = if op == 0 {
-        crate::JIT_VALUE_RUNTIME_STRING_TAG
-    } else {
-        crate::JIT_VALUE_RUNTIME_ARRAY_TAG
-    };
-    let tag_matches = lower_value_has_tag(builder, value, expected_tag);
-    builder.ins().brif(tag_matches, inspect, &[], slow, &[]);
-
-    builder.switch_to_block(inspect);
-    let descriptor = lower_optimizing_slot_address(builder, value, deopt_out);
-    let kind = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
-    );
-    let expected_kind = if op == 0 {
-        crate::JIT_NATIVE_VALUE_VIEW_STRING
-    } else {
-        crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY
-    };
-    let representation_matches =
-        builder
-            .ins()
-            .icmp_imm(IntCC::Equal, kind, i64::from(expected_kind));
-    builder
-        .ins()
-        .brif(representation_matches, direct, &[], slow, &[]);
-
-    builder.switch_to_block(direct);
-    let payload = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
-    );
-    builder.ins().jump(merge, &[payload.into()]);
-
-    builder.switch_to_block(slow);
-    let function = builder.ins().iconst(types::I64, i64::from(function.raw()));
-    let continuation = builder.ins().iconst(types::I64, i64::from(continuation_id));
-    let length = lower_native_value_operation(
-        module,
-        builder,
-        helper,
-        op,
-        &[value, function, continuation],
-        result_out,
-    )?;
-    builder.ins().jump(merge, &[length.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
 #[allow(clippy::too_many_arguments)]
 #[derive(Clone, Copy)]
 struct NativeOptimizingTransition<'a> {
+    runtime: ir::Value,
     result_out: ir::Value,
     deopt_out: ir::Value,
     function: FunctionId,
@@ -3868,9 +3872,42 @@ struct NativeOptimizingTransition<'a> {
     live_values: &'a [(RegId, ir::Value)],
     native_version: u32,
     value_release_commit: ir::FuncRef,
+    frame_alloc: Option<NativeHelper>,
+    frame_release: Option<NativeHelper>,
+    reference_payload_proof: NativeReferencePayloadProof,
 }
 
+/// Compile-time witness that every value capable of carrying a direct
+/// reference into this optimizing region passed the total native publication
+/// admission. The constructor remains private to the admission module.
+#[derive(Clone, Copy)]
+struct NativeReferencePayloadProof(());
+
 impl NativeOptimizingTransition<'_> {
+    fn emit_exact_throw(
+        self,
+        builder: &mut FunctionBuilder<'_>,
+        detail: ir::Value,
+        value: ir::Value,
+    ) -> Result<(), CraneliftLoweringError> {
+        let status = builder
+            .ins()
+            .iconst(types::I32, i64::from(crate::JitCallStatus::THROW.0));
+        self.emit_control(builder, status, detail, value)
+    }
+
+    fn emit_exact_runtime_error(
+        self,
+        builder: &mut FunctionBuilder<'_>,
+        detail: ir::Value,
+        value: ir::Value,
+    ) -> Result<(), CraneliftLoweringError> {
+        let status = builder
+            .ins()
+            .iconst(types::I32, i64::from(crate::JitCallStatus::RUNTIME_ERROR.0));
+        self.emit_control(builder, status, detail, value)
+    }
+
     fn emit_control(
         self,
         builder: &mut FunctionBuilder<'_>,
@@ -3912,7 +3949,7 @@ impl NativeOptimizingTransition<'_> {
         builder
             .ins()
             .store(MemFlagsData::new(), value, self.result_out, 0);
-        builder.ins().return_(&[status]);
+        return_native_or_fragment_control(builder, status, self.result_out);
 
         let unreachable = builder.create_block();
         builder.switch_to_block(unreachable);
@@ -3924,65 +3961,6 @@ impl NativeOptimizingTransition<'_> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct EmittedOptimizingInstruction {
     pub(super) class: crate::JitProductionLoweringClass,
-}
-
-#[derive(Clone, Copy)]
-enum NativeBaselineArrayWriteFallback<'a> {
-    Baseline {
-        helper: Option<NativeHelper>,
-        lifecycle: Option<NativeHelper>,
-        operation: u32,
-        function: FunctionId,
-        local_count: u32,
-        instruction: &'a RegionInstruction,
-        locals: &'a NativeLocalMap,
-        registers: &'a NativeRegisterMap,
-        live_registers: &'a [RegId],
-        native_version: u32,
-    },
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_array_write_fallback(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    fallback: NativeBaselineArrayWriteFallback<'_>,
-    array: ir::Value,
-    key: ir::Value,
-    value: ir::Value,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let NativeBaselineArrayWriteFallback::Baseline {
-        helper,
-        operation,
-        function,
-        local_count,
-        instruction,
-        locals,
-        registers,
-        live_registers,
-        native_version,
-        ..
-    } = fallback;
-    lower_native_value_operation_with_state(
-        module,
-        builder,
-        helper,
-        operation,
-        &[array, key, value],
-        result_out,
-        deopt_out,
-        function,
-        local_count,
-        instruction,
-        locals,
-        registers,
-        live_registers,
-        native_version,
-        None,
-        &[],
-    )
 }
 
 fn lower_optimizing_slot_address(
@@ -4054,6 +4032,21 @@ fn lower_trusted_request_local_reference(
     function: FunctionId,
     local: LocalId,
 ) -> ir::Value {
+    let slot = lower_trusted_request_local_slot(builder, deopt_out, function, local);
+    builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeRequestLocalSlot, encoded) as i32,
+    )
+}
+
+fn lower_trusted_request_local_slot(
+    builder: &mut FunctionBuilder<'_>,
+    deopt_out: ir::Value,
+    function: FunctionId,
+    local: LocalId,
+) -> ir::Value {
     let pointer_type = builder.func.dfg.value_type(deopt_out);
     let view = lower_active_runtime_view(builder, deopt_out);
     let offsets = builder.ins().load(
@@ -4082,13 +4075,7 @@ fn lower_trusted_request_local_reference(
         view,
         std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_request_local_slots) as i32,
     );
-    let slot = builder.ins().iadd(slots, slot_offset);
-    builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeRequestLocalSlot, encoded) as i32,
-    )
+    builder.ins().iadd(slots, slot_offset)
 }
 
 /// Reserve one request-owned direct value slot without entering Rust.
@@ -4798,6 +4785,8 @@ fn lower_native_array_key_equal(
     rhs: ir::Value,
     deopt_out: ir::Value,
 ) -> ir::Value {
+    let lhs = lower_normalize_native_array_key(builder, lhs, deopt_out);
+    let rhs = lower_normalize_native_array_key(builder, rhs, deopt_out);
     let inspect_integer = builder.create_block();
     let inspect_encoded = builder.create_block();
     let inspect_strings = builder.create_block();
@@ -4894,6 +4883,28 @@ fn lower_native_array_key_equal(
 
     builder.switch_to_block(merge);
     builder.block_params(merge)[0]
+}
+
+/// Normalizes PHP `null` array keys to the request-owned canonical empty
+/// string. The selected handle stays in the authoritative native value plane;
+/// insertion retains it only when a new array entry takes ownership.
+fn lower_normalize_native_array_key(
+    builder: &mut FunctionBuilder<'_>,
+    key: ir::Value,
+    deopt_out: ir::Value,
+) -> ir::Value {
+    let null = builder
+        .ins()
+        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+    let is_null = builder.ins().icmp(IntCC::Equal, key, null);
+    let view = lower_active_runtime_view(builder, deopt_out);
+    let empty = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        view,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_empty_string_key) as i32,
+    );
+    builder.ins().select(is_null, empty, key)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5196,6 +5207,7 @@ fn lower_total_direct_foreach_next_reference(
     iterator: ir::Value,
     previous: ir::Value,
     retain_key: bool,
+    runtime: ir::Value,
     deopt_out: ir::Value,
     value_release_commit: ir::FuncRef,
 ) -> (ir::Value, ir::Value, ir::Value) {
@@ -5269,7 +5281,7 @@ fn lower_total_direct_foreach_next_reference(
     );
     let _ = builder
         .ins()
-        .call(value_release_commit, &[deopt_out, previous]);
+        .call(value_release_commit, &[runtime, deopt_out, previous]);
     let one = builder.ins().iconst(types::I64, 1);
     builder
         .ins()
@@ -5292,371 +5304,13 @@ fn lower_total_direct_foreach_next_reference(
 fn lower_total_direct_foreach_cleanup(
     builder: &mut FunctionBuilder<'_>,
     iterator: ir::Value,
+    runtime: ir::Value,
     deopt_out: ir::Value,
     value_release_commit: ir::FuncRef,
 ) {
     let _ = builder
         .ins()
-        .call(value_release_commit, &[deopt_out, iterator]);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_direct_foreach_init(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    source: ir::Value,
-    live_reference_source: Option<ir::Value>,
-    retain_source: bool,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    baseline_helper: Option<NativeHelper>,
-    function: FunctionId,
-    continuation_id: u32,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let inspect = builder.create_block();
-    let allocate = builder.create_block();
-    let rejected = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let source_kind = lower_value_has_tag(builder, source, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
-    let source_index = builder.ins().ireduce(types::I32, source);
-    let direct_index = builder.ins().icmp_imm(
-        IntCC::UnsignedGreaterThanOrEqual,
-        source_index,
-        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
-    );
-    let direct = builder.ins().band(source_kind, direct_index);
-    builder.ins().brif(direct, inspect, &[], rejected, &[]);
-
-    builder.switch_to_block(inspect);
-    let source_slot = lower_optimizing_slot_address(builder, source, deopt_out);
-    let source_kind = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        source_slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
-    );
-    let direct_array = builder.ins().icmp_imm(
-        IntCC::Equal,
-        source_kind,
-        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY),
-    );
-    let pointer_type = builder.func.dfg.value_type(deopt_out);
-    let view = lower_active_runtime_view(builder, deopt_out);
-    builder
-        .ins()
-        .brif(direct_array, allocate, &[], rejected, &[]);
-
-    builder.switch_to_block(allocate);
-    let next = lower_reserve_direct_value_index(builder, deopt_out, Some(rejected));
-    let iterator_source = live_reference_source.unwrap_or(source);
-    if retain_source {
-        lower_optimizing_retain(builder, iterator_source, deopt_out);
-    }
-    let slots = builder.ins().load(
-        pointer_type,
-        MemFlagsData::new(),
-        view,
-        std::mem::offset_of!(crate::JitNativeRuntimeView, direct_value_slots) as i32,
-    );
-    let next_pointer = builder.ins().uextend(pointer_type, next);
-    let slot_offset = builder.ins().ishl_imm(next_pointer, 5);
-    let slot = builder.ins().iadd(slots, slot_offset);
-    let length = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        source_slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
-    );
-    for (value, offset) in [
-        (
-            builder.ins().iconst(types::I32, 1),
-            std::mem::offset_of!(crate::JitNativeValueSlot, refcount),
-        ),
-        (
-            builder.ins().iconst(
-                types::I32,
-                i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH),
-            ),
-            std::mem::offset_of!(crate::JitNativeValueSlot, kind),
-        ),
-        (
-            builder.ins().iconst(
-                types::I32,
-                i64::from(crate::JIT_NATIVE_DIRECT_ARRAY_ABI_VERSION),
-            ),
-            std::mem::offset_of!(crate::JitNativeValueSlot, flags),
-        ),
-        (
-            if live_reference_source.is_some() {
-                builder.ins().iconst(
-                    types::I32,
-                    i64::from(crate::JIT_NATIVE_DIRECT_FOREACH_LIVE_REFERENCE),
-                )
-            } else {
-                builder.ins().ireduce(types::I32, length)
-            },
-            std::mem::offset_of!(crate::JitNativeValueSlot, reserved),
-        ),
-    ] {
-        builder
-            .ins()
-            .store(MemFlagsData::new(), value, slot, offset as i32);
-    }
-    builder.ins().store(
-        MemFlagsData::new(),
-        iterator_source,
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
-    );
-    let zero = builder.ins().iconst(types::I64, 0);
-    builder.ins().store(
-        MemFlagsData::new(),
-        zero,
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
-    );
-    let encoded_index = builder
-        .ins()
-        .iadd_imm(next, i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE));
-    let encoded_index = builder.ins().uextend(types::I64, encoded_index);
-    let iterator = builder
-        .ins()
-        .bor_imm(encoded_index, crate::JIT_VALUE_RUNTIME_ITERATOR_TAG as i64);
-    builder.ins().jump(merge, &[iterator.into()]);
-
-    builder.switch_to_block(rejected);
-    let function = builder.ins().iconst(types::I64, i64::from(function.raw()));
-    let continuation = builder.ins().iconst(types::I64, i64::from(continuation_id));
-    let placeholder = lower_native_value_operation(
-        module,
-        builder,
-        baseline_helper,
-        0,
-        &[source, function, continuation],
-        result_out,
-    )?;
-    builder.ins().jump(merge, &[placeholder.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_direct_arena_foreach_next(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    iterator: ir::Value,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    baseline_helper: Option<NativeHelper>,
-    baseline_lifecycle: Option<NativeHelper>,
-    baseline_suspension: Option<NativeForeachSuspension<'_>>,
-) -> Result<(ir::Value, ir::Value, ir::Value), CraneliftLoweringError> {
-    let inspect = builder.create_block();
-    let advance = builder.create_block();
-    let present = builder.create_block();
-    let exhausted = builder.create_block();
-    let rejected = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-    builder.append_block_param(merge, types::I64);
-    builder.append_block_param(merge, types::I64);
-
-    let iterator_kind =
-        lower_value_has_tag(builder, iterator, crate::JIT_VALUE_RUNTIME_ITERATOR_TAG);
-    let index = builder.ins().ireduce(types::I32, iterator);
-    let direct_index = builder.ins().icmp_imm(
-        IntCC::UnsignedGreaterThanOrEqual,
-        index,
-        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
-    );
-    let direct = builder.ins().band(iterator_kind, direct_index);
-    builder.ins().brif(direct, inspect, &[], rejected, &[]);
-
-    builder.switch_to_block(inspect);
-    let slot = lower_optimizing_slot_address(builder, iterator, deopt_out);
-    let kind = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
-    );
-    let direct_iterator = builder.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH),
-    );
-    builder
-        .ins()
-        .brif(direct_iterator, advance, &[], rejected, &[]);
-
-    builder.switch_to_block(advance);
-    let source = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
-    );
-    let cursor = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
-    );
-    let length = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
-    );
-    let length = builder.ins().uextend(types::I64, length);
-    let has_value = builder.ins().icmp(IntCC::UnsignedLessThan, cursor, length);
-    builder.ins().brif(has_value, present, &[], exhausted, &[]);
-
-    builder.switch_to_block(present);
-    let source_slot = lower_optimizing_slot_address(builder, source, deopt_out);
-    let pointer_type = builder.func.dfg.value_type(deopt_out);
-    let entries = builder.ins().load(
-        pointer_type,
-        MemFlagsData::new(),
-        source_slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
-    );
-    let entry_index = if pointer_type == types::I64 {
-        cursor
-    } else {
-        builder.ins().ireduce(pointer_type, cursor)
-    };
-    let entry_offset = builder.ins().ishl_imm(entry_index, 4);
-    let entry = builder.ins().iadd(entries, entry_offset);
-    let key = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        entry,
-        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, key) as i32,
-    );
-    let value = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        entry,
-        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
-    );
-    lower_optimizing_retain(builder, key, deopt_out);
-    lower_optimizing_retain(builder, value, deopt_out);
-    let next = builder.ins().iadd_imm(cursor, 1);
-    builder.ins().store(
-        MemFlagsData::new(),
-        next,
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
-    );
-    let one = builder.ins().iconst(types::I64, 1);
-    builder
-        .ins()
-        .jump(merge, &[key.into(), value.into(), one.into()]);
-
-    builder.switch_to_block(exhausted);
-    let null = builder
-        .ins()
-        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-    let zero = builder.ins().iconst(types::I64, 0);
-    builder
-        .ins()
-        .jump(merge, &[null.into(), null.into(), zero.into()]);
-
-    builder.switch_to_block(rejected);
-    let (key, value, has) = lower_direct_foreach_next(
-        module,
-        builder,
-        baseline_helper,
-        baseline_lifecycle,
-        iterator,
-        result_out,
-        deopt_out,
-        baseline_suspension,
-    )?;
-    builder
-        .ins()
-        .jump(merge, &[key.into(), value.into(), has.into()]);
-
-    builder.switch_to_block(merge);
-    let params = builder.block_params(merge);
-    Ok((params[0], params[1], params[2]))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_direct_arena_foreach_cleanup(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    iterator: ir::Value,
-    _result_out: ir::Value,
-    deopt_out: ir::Value,
-    baseline_helper: Option<NativeHelper>,
-    _baseline_lifecycle: Option<NativeHelper>,
-    baseline_direct_release: Option<ir::FuncRef>,
-) -> Result<(), CraneliftLoweringError> {
-    let inspect = builder.create_block();
-    let cleanup = builder.create_block();
-    let rejected = builder.create_block();
-    let done = builder.create_block();
-    let iterator_kind =
-        lower_value_has_tag(builder, iterator, crate::JIT_VALUE_RUNTIME_ITERATOR_TAG);
-    let index = builder.ins().ireduce(types::I32, iterator);
-    let direct_index = builder.ins().icmp_imm(
-        IntCC::UnsignedGreaterThanOrEqual,
-        index,
-        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
-    );
-    let direct = builder.ins().band(iterator_kind, direct_index);
-    builder.ins().brif(direct, inspect, &[], rejected, &[]);
-
-    builder.switch_to_block(inspect);
-    let slot = lower_optimizing_slot_address(builder, iterator, deopt_out);
-    let kind = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
-    );
-    let direct_iterator = builder.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_FOREACH),
-    );
-    builder
-        .ins()
-        .brif(direct_iterator, cleanup, &[], rejected, &[]);
-
-    builder.switch_to_block(cleanup);
-    let release = baseline_direct_release.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-            "compiled direct foreach release was not declared",
-        )
-    })?;
-    let call = builder.ins().call(release, &[deopt_out, iterator]);
-    let released = builder.inst_results(call)[0];
-    builder.ins().brif(released, done, &[], rejected, &[]);
-
-    builder.switch_to_block(rejected);
-    let helper = baseline_helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-            "native foreach-cleanup helper was not declared",
-        )
-    })?;
-    let call = call_native_helper(module, builder, helper, &[iterator]);
-    require_native_operation_ok(
-        builder,
-        builder.inst_results(call)[0],
-        helper.terminal_exit()?,
-    )?;
-    builder.ins().jump(done, &[]);
-
-    builder.switch_to_block(done);
-    Ok(())
+        .call(value_release_commit, &[runtime, deopt_out, iterator]);
 }
 
 fn lower_optimizing_retain(
@@ -5704,25 +5358,6 @@ fn lower_optimizing_retain_if(
     builder.switch_to_block(done);
 }
 
-/// Tests the one representation invariant required by compiled-to-compiled
-/// calls: an operand is immediate/unit-local or indexes the authoritative
-/// direct arena. Old request-value handles are rejected before the callee
-/// observes any binding effect.
-fn lower_optimizing_call_value_is_authoritative(
-    builder: &mut FunctionBuilder<'_>,
-    value: ir::Value,
-) -> ir::Value {
-    let runtime = lower_is_runtime_handle(builder, value);
-    let immediate = builder.ins().icmp_imm(IntCC::Equal, runtime, 0);
-    let index = builder.ins().ireduce(types::I32, value);
-    let direct = builder.ins().icmp_imm(
-        IntCC::UnsignedGreaterThanOrEqual,
-        index,
-        i64::from(crate::JIT_NATIVE_DIRECT_VALUE_INDEX_BASE),
-    );
-    builder.ins().bor(immediate, direct)
-}
-
 /// Release an owner that was retained immediately before a compiled call.
 /// The source SSA/local owner remains live, so every runtime handle is known
 /// to be shared and this post-call cleanup cannot require a cold last-owner
@@ -5754,6 +5389,25 @@ fn lower_optimizing_release_call_owner(
     );
     builder.ins().jump(done, &[]);
 
+    builder.switch_to_block(done);
+}
+
+/// Replace one caller-owned packed slot after typed binding. An unchanged
+/// native encoding transfers the existing packed owner in place; only a
+/// genuinely new coerced encoding releases the superseded owner.
+fn lower_optimizing_release_replaced_call_owner(
+    builder: &mut FunctionBuilder<'_>,
+    original: ir::Value,
+    replacement: ir::Value,
+    deopt_out: ir::Value,
+) {
+    let release = builder.create_block();
+    let done = builder.create_block();
+    let unchanged = builder.ins().icmp(IntCC::Equal, original, replacement);
+    builder.ins().brif(unchanged, done, &[], release, &[]);
+    builder.switch_to_block(release);
+    lower_optimizing_release_call_owner(builder, original, deopt_out);
+    builder.ins().jump(done, &[]);
     builder.switch_to_block(done);
 }
 
@@ -5842,6 +5496,63 @@ fn lower_optimizing_pack_variadic_arguments(
     Ok(array)
 }
 
+/// Pack a statically bound variadic tail while preserving PHP named-argument
+/// keys. Fixed parameter binding is already complete in Region IR; only the
+/// unknown names assigned to the variadic parameter reach this routine.
+fn lower_optimizing_pack_bound_variadic_arguments(
+    builder: &mut FunctionBuilder<'_>,
+    values: &[ir::Value],
+    source_arguments: &[usize],
+    call_arguments: &[php_ir::instruction::IrCallArg],
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    if source_arguments.len() != values.len() {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_VARIADIC_BINDING_PLAN",
+            "prepared variadic source plan does not match the native value tail",
+        ));
+    }
+    if source_arguments.iter().all(|source| {
+        call_arguments
+            .get(*source)
+            .is_some_and(|argument| argument.name.is_none())
+    }) {
+        return lower_optimizing_pack_variadic_arguments(builder, values, transition);
+    }
+    let count = builder
+        .ins()
+        .iconst(types::I64, i64::try_from(values.len()).unwrap_or(i64::MAX));
+    let mut array = lower_optimizing_allocate_direct_array(builder, count, false, transition)?;
+    let mut positional = 0_i64;
+    for (value, source) in values.iter().copied().zip(source_arguments.iter().copied()) {
+        let argument = call_arguments.get(source).ok_or_else(|| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_VARIADIC_BINDING_PLAN",
+                "prepared variadic source index is unavailable",
+            )
+        })?;
+        if let Some(name) = argument.name.as_deref() {
+            let key = lower_optimizing_static_string(builder, name.as_bytes(), transition)?;
+            array =
+                lower_total_native_array_insert(builder, array, key, value, true, true, transition);
+            lower_optimizing_commit_owned_value(builder, key, transition);
+        } else {
+            let key = builder.ins().iconst(types::I64, positional);
+            array = lower_total_native_array_insert_integer(
+                builder,
+                array,
+                key,
+                value,
+                true,
+                true,
+                transition.deopt_out,
+            );
+            positional = positional.saturating_add(1);
+        }
+    }
+    Ok(array)
+}
+
 /// Pack a runtime-sized positional unpack tail into the callee's one
 /// authoritative variadic array. Integer unpack keys are positional and are
 /// deliberately reindexed; string/named keys take the single exact baseline
@@ -5861,11 +5572,10 @@ fn lower_optimizing_admit_variadic_unpack_tail(
     Ok(())
 }
 
-/// Dereference a value whose direct-reference representation was admitted by
-/// `lower_optimizing_admit_variadic_unpack_tail`. PHP execution is
-/// single-threaded across this call boundary, so the representation cannot
-/// change between the admission and copy passes.
-fn lower_optimizing_admitted_reference_scalar(
+/// Shared direct CLIF used by baseline argument binding and by the witnessed
+/// optimizing wrapper below. Optimizing consumers cannot call it indirectly:
+/// they must carry `NativeReferencePayloadProof` through the wrapper.
+fn lower_direct_reference_payload_unchecked(
     builder: &mut FunctionBuilder<'_>,
     value: ir::Value,
     deopt_out: ir::Value,
@@ -5894,6 +5604,17 @@ fn lower_optimizing_admitted_reference_scalar(
     builder.block_params(merge)[0]
 }
 
+fn lower_optimizing_admitted_reference_scalar(
+    builder: &mut FunctionBuilder<'_>,
+    value: ir::Value,
+    deopt_out: ir::Value,
+    _proof: NativeReferencePayloadProof,
+) -> ir::Value {
+    lower_direct_reference_payload_unchecked(builder, value, deopt_out)
+}
+
+// architecture: direct CLIF variadic-array constructor boundary
+#[allow(clippy::too_many_arguments)]
 fn lower_optimizing_pack_variadic_unpack_arguments(
     builder: &mut FunctionBuilder<'_>,
     prefix: &[ir::Value],
@@ -5971,7 +5692,12 @@ fn lower_optimizing_pack_variadic_unpack_arguments(
     let value = if source_by_reference {
         value
     } else {
-        lower_optimizing_admitted_reference_scalar(builder, value, transition.deopt_out)
+        lower_optimizing_admitted_reference_scalar(
+            builder,
+            value,
+            transition.deopt_out,
+            transition.reference_payload_proof,
+        )
     };
     lower_optimizing_retain(builder, value, transition.deopt_out);
     let output_index = builder.ins().iadd(prefix_count, index);
@@ -6027,7 +5753,7 @@ fn lower_optimizing_commit_owned_value(
 ) {
     let _ = builder.ins().call(
         transition.value_release_commit,
-        &[transition.deopt_out, value],
+        &[transition.runtime, transition.deopt_out, value],
     );
 }
 
@@ -6064,15 +5790,31 @@ fn lower_optimizing_release(
     value: ir::Value,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<(), CraneliftLoweringError> {
+    lower_direct_release_with_commit(
+        builder,
+        value,
+        transition.runtime,
+        transition.deopt_out,
+        transition.value_release_commit,
+    )
+}
+
+fn lower_direct_release_with_commit(
+    builder: &mut FunctionBuilder<'_>,
+    value: ir::Value,
+    runtime: ir::Value,
+    deopt_out: ir::Value,
+    value_release_commit: ir::FuncRef,
+) -> Result<(), CraneliftLoweringError> {
     let inspect = builder.create_block();
     let release = builder.create_block();
     let last = builder.create_block();
     let done = builder.create_block();
-    let runtime = lower_is_runtime_handle(builder, value);
-    builder.ins().brif(runtime, inspect, &[], done, &[]);
+    let is_runtime = lower_is_runtime_handle(builder, value);
+    builder.ins().brif(is_runtime, inspect, &[], done, &[]);
 
     builder.switch_to_block(inspect);
-    let slot = lower_optimizing_slot_address(builder, value, transition.deopt_out);
+    let slot = lower_optimizing_slot_address(builder, value, deopt_out);
     let refcount = builder.ins().load(
         types::I32,
         MemFlagsData::new(),
@@ -6096,10 +5838,9 @@ fn lower_optimizing_release(
     // Publication rejects non-direct final owners. The commit function is the
     // total native release ABI for the admitted direct scalar/reference/array
     // family and recursively consumes its authoritative children.
-    let _ = builder.ins().call(
-        transition.value_release_commit,
-        &[transition.deopt_out, value],
-    );
+    let _ = builder
+        .ins()
+        .call(value_release_commit, &[runtime, deopt_out, value]);
     builder.ins().jump(done, &[]);
 
     builder.switch_to_block(done);
@@ -6555,7 +6296,7 @@ fn lower_optimizing_error_reporting(
 // outcomes: a native value, a PHP-visible throw/runtime diagnostic, or an ABI
 // contract violation. Unknown statuses are converted to ABI_MISMATCH locally;
 // they never enter the generic continuation adapter.
-macro_rules! emit_total_exact_native_value {
+macro_rules! emit_total_exact_runtime_value {
     ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr, $missing:expr $(,)?) => {{
         let helper = ($helper).ok_or_else(|| {
             CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_NATIVE_OPERATION", $missing)
@@ -6568,7 +6309,8 @@ macro_rules! emit_total_exact_native_value {
         let detail = $builder.ins().ireduce(types::I32, detail);
         let returned = $builder.create_block();
         let classify_control = $builder.create_block();
-        let semantic_control = $builder.create_block();
+        let throw_control = $builder.create_block();
+        let runtime_error_control = $builder.create_block();
         let contract_violation = $builder.create_block();
         let is_return = $builder.ins().icmp_imm(
             IntCC::Equal,
@@ -6585,35 +6327,181 @@ macro_rules! emit_total_exact_native_value {
             status,
             i64::from(crate::JitCallStatus::THROW.0),
         );
+        $builder
+            .ins()
+            .brif(is_throw, throw_control, &[], runtime_error_control, &[]);
+
+        $builder.switch_to_block(throw_control);
+        $transition.emit_exact_throw($builder, detail, value)?;
+
+        $builder.switch_to_block(runtime_error_control);
         let is_runtime_error = $builder.ins().icmp_imm(
             IntCC::Equal,
             status,
             i64::from(crate::JitCallStatus::RUNTIME_ERROR.0),
         );
-        let is_semantic_control = $builder.ins().bor(is_throw, is_runtime_error);
+        let publish_runtime_error = $builder.create_block();
         $builder.ins().brif(
-            is_semantic_control,
-            semantic_control,
+            is_runtime_error,
+            publish_runtime_error,
             &[],
             contract_violation,
             &[],
         );
-
-        $builder.switch_to_block(semantic_control);
-        $transition.emit_control($builder, status, detail, value)?;
+        $builder.switch_to_block(publish_runtime_error);
+        $transition.emit_exact_runtime_error($builder, detail, value)?;
 
         $builder.switch_to_block(contract_violation);
         let abi_mismatch = $builder
             .ins()
             .iconst(types::I32, i64::from(crate::JitCallStatus::ABI_MISMATCH.0));
-        $builder.ins().return_(&[abi_mismatch]);
+        let continuation = $builder
+            .ins()
+            .iconst(types::I32, i64::from($transition.continuation_id));
+        let source_status = $builder.ins().uextend(types::I64, status);
+        $transition.emit_control($builder, abi_mismatch, continuation, source_status)?;
 
         $builder.switch_to_block(returned);
         Ok::<ir::Value, CraneliftLoweringError>(value)
     }};
 }
 
-macro_rules! emit_total_exact_native_value_with_cleanup {
+// Scalar/string exact handlers have a closed publication contract. Keeping
+// their classifier separate prevents later object/array status additions from
+// silently widening this family.
+macro_rules! emit_total_exact_scalar_value {
+    ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr, $missing:expr $(,)?) => {{
+        let helper = ($helper).ok_or_else(|| {
+            CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_NATIVE_OPERATION", $missing)
+        })?;
+        let call = call_native_helper($module, $builder, helper, $arguments);
+        let control = $builder.inst_results(call)[0];
+        let value = $builder.inst_results(call)[1];
+        let status = $builder.ins().ireduce(types::I32, control);
+        let detail = $builder.ins().ushr_imm(control, 32);
+        let detail = $builder.ins().ireduce(types::I32, detail);
+        let returned = $builder.create_block();
+        let classify_control = $builder.create_block();
+        let throw_control = $builder.create_block();
+        let runtime_error_control = $builder.create_block();
+        let contract_violation = $builder.create_block();
+        let is_return = $builder.ins().icmp_imm(
+            IntCC::Equal,
+            status,
+            i64::from(crate::JitCallStatus::RETURN.0),
+        );
+        $builder
+            .ins()
+            .brif(is_return, returned, &[], classify_control, &[]);
+        $builder.switch_to_block(classify_control);
+        let is_throw = $builder.ins().icmp_imm(
+            IntCC::Equal,
+            status,
+            i64::from(crate::JitCallStatus::THROW.0),
+        );
+        $builder
+            .ins()
+            .brif(is_throw, throw_control, &[], runtime_error_control, &[]);
+        $builder.switch_to_block(throw_control);
+        $transition.emit_exact_throw($builder, detail, value)?;
+        $builder.switch_to_block(runtime_error_control);
+        let is_runtime_error = $builder.ins().icmp_imm(
+            IntCC::Equal,
+            status,
+            i64::from(crate::JitCallStatus::RUNTIME_ERROR.0),
+        );
+        let publish_runtime_error = $builder.create_block();
+        $builder.ins().brif(
+            is_runtime_error,
+            publish_runtime_error,
+            &[],
+            contract_violation,
+            &[],
+        );
+        $builder.switch_to_block(publish_runtime_error);
+        $transition.emit_exact_runtime_error($builder, detail, value)?;
+        $builder.switch_to_block(contract_violation);
+        let abi_mismatch = $builder
+            .ins()
+            .iconst(types::I32, i64::from(crate::JitCallStatus::ABI_MISMATCH.0));
+        let continuation = $builder
+            .ins()
+            .iconst(types::I32, i64::from($transition.continuation_id));
+        let source_status = $builder.ins().uextend(types::I64, status);
+        $transition.emit_control($builder, abi_mismatch, continuation, source_status)?;
+        $builder.switch_to_block(returned);
+        Ok::<ir::Value, CraneliftLoweringError>(value)
+    }};
+}
+
+// Fixed builtins likewise own a closed outcome classifier. It is deliberately
+// not shared with object/call runtime families.
+macro_rules! emit_total_exact_builtin_value {
+    ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr, $missing:expr $(,)?) => {{
+        let helper = ($helper).ok_or_else(|| {
+            CraneliftLoweringError::new("JIT_CRANELIFT_REJECT_NATIVE_OPERATION", $missing)
+        })?;
+        let call = call_native_helper($module, $builder, helper, $arguments);
+        let control = $builder.inst_results(call)[0];
+        let value = $builder.inst_results(call)[1];
+        let status = $builder.ins().ireduce(types::I32, control);
+        let detail = $builder.ins().ushr_imm(control, 32);
+        let detail = $builder.ins().ireduce(types::I32, detail);
+        let returned = $builder.create_block();
+        let classify_control = $builder.create_block();
+        let throw_control = $builder.create_block();
+        let runtime_error_control = $builder.create_block();
+        let contract_violation = $builder.create_block();
+        let is_return = $builder.ins().icmp_imm(
+            IntCC::Equal,
+            status,
+            i64::from(crate::JitCallStatus::RETURN.0),
+        );
+        $builder
+            .ins()
+            .brif(is_return, returned, &[], classify_control, &[]);
+        $builder.switch_to_block(classify_control);
+        let is_throw = $builder.ins().icmp_imm(
+            IntCC::Equal,
+            status,
+            i64::from(crate::JitCallStatus::THROW.0),
+        );
+        $builder
+            .ins()
+            .brif(is_throw, throw_control, &[], runtime_error_control, &[]);
+        $builder.switch_to_block(throw_control);
+        $transition.emit_exact_throw($builder, detail, value)?;
+        $builder.switch_to_block(runtime_error_control);
+        let is_runtime_error = $builder.ins().icmp_imm(
+            IntCC::Equal,
+            status,
+            i64::from(crate::JitCallStatus::RUNTIME_ERROR.0),
+        );
+        let publish_runtime_error = $builder.create_block();
+        $builder.ins().brif(
+            is_runtime_error,
+            publish_runtime_error,
+            &[],
+            contract_violation,
+            &[],
+        );
+        $builder.switch_to_block(publish_runtime_error);
+        $transition.emit_exact_runtime_error($builder, detail, value)?;
+        $builder.switch_to_block(contract_violation);
+        let abi_mismatch = $builder
+            .ins()
+            .iconst(types::I32, i64::from(crate::JitCallStatus::ABI_MISMATCH.0));
+        let continuation = $builder
+            .ins()
+            .iconst(types::I32, i64::from($transition.continuation_id));
+        let source_status = $builder.ins().uextend(types::I64, status);
+        $transition.emit_control($builder, abi_mismatch, continuation, source_status)?;
+        $builder.switch_to_block(returned);
+        Ok::<ir::Value, CraneliftLoweringError>(value)
+    }};
+}
+
+macro_rules! emit_total_exact_owned_runtime_value {
     (
         $module:expr,
         $builder:expr,
@@ -6635,7 +6523,8 @@ macro_rules! emit_total_exact_native_value_with_cleanup {
         let detail = $builder.ins().ireduce(types::I32, detail);
         let returned = $builder.create_block();
         let classify_control = $builder.create_block();
-        let semantic_control = $builder.create_block();
+        let throw_control = $builder.create_block();
+        let runtime_error_control = $builder.create_block();
         let contract_violation = $builder.create_block();
         let is_return = $builder.ins().icmp_imm(
             IntCC::Equal,
@@ -6652,41 +6541,58 @@ macro_rules! emit_total_exact_native_value_with_cleanup {
             status,
             i64::from(crate::JitCallStatus::THROW.0),
         );
+        $builder
+            .ins()
+            .brif(is_throw, throw_control, &[], runtime_error_control, &[]);
+
+        $builder.switch_to_block(throw_control);
+        for cleanup in $cleanup_values {
+            lower_optimizing_commit_owned_value($builder, *cleanup, $transition);
+        }
+        $transition.emit_exact_throw($builder, detail, value)?;
+
+        $builder.switch_to_block(runtime_error_control);
         let is_runtime_error = $builder.ins().icmp_imm(
             IntCC::Equal,
             status,
             i64::from(crate::JitCallStatus::RUNTIME_ERROR.0),
         );
-        let is_semantic_control = $builder.ins().bor(is_throw, is_runtime_error);
+        let publish_runtime_error = $builder.create_block();
         $builder.ins().brif(
-            is_semantic_control,
-            semantic_control,
+            is_runtime_error,
+            publish_runtime_error,
             &[],
             contract_violation,
             &[],
         );
-
-        $builder.switch_to_block(semantic_control);
+        $builder.switch_to_block(publish_runtime_error);
         for cleanup in $cleanup_values {
             lower_optimizing_commit_owned_value($builder, *cleanup, $transition);
         }
-        $transition.emit_control($builder, status, detail, value)?;
+        $transition.emit_exact_runtime_error($builder, detail, value)?;
 
         $builder.switch_to_block(contract_violation);
         let abi_mismatch = $builder
             .ins()
             .iconst(types::I32, i64::from(crate::JitCallStatus::ABI_MISMATCH.0));
-        $builder.ins().return_(&[abi_mismatch]);
+        let continuation = $builder
+            .ins()
+            .iconst(types::I32, i64::from($transition.continuation_id));
+        let source_status = $builder.ins().uextend(types::I64, status);
+        $transition.emit_control($builder, abi_mismatch, continuation, source_status)?;
 
         $builder.switch_to_block(returned);
         Ok::<ir::Value, CraneliftLoweringError>(value)
     }};
 }
 
+mod call_user_func_lowering;
+
 fn lower_total_optimizing_instruction_frame_cleanup(
     builder: &mut FunctionBuilder<'_>,
     locals: &NativeLocalMap,
     value_flow: &ExecutableValueFlow,
+    runtime: ir::Value,
     deopt_out: ir::Value,
     value_release_commit: ir::FuncRef,
 ) -> Result<(), CraneliftLoweringError> {
@@ -6709,7 +6615,7 @@ fn lower_total_optimizing_instruction_frame_cleanup(
     for value in cleanup {
         let _ = builder
             .ins()
-            .call(value_release_commit, &[deopt_out, value]);
+            .call(value_release_commit, &[runtime, deopt_out, value]);
     }
     Ok(())
 }
@@ -6862,7 +6768,7 @@ fn lower_optimizing_prepared_exception_pointer(
 // There is no shared fixed-arity control-flow adapter or local fallback CFG.
 macro_rules! emit_total_exact_zero {
     ($module:expr, $builder:expr, $helper:expr, $transition:expr $(,)?) => {
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -6875,7 +6781,7 @@ macro_rules! emit_total_exact_zero {
 
 macro_rules! emit_total_exact_unary {
     ($module:expr, $builder:expr, $helper:expr, $argument:expr, $transition:expr $(,)?) => {
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -6896,7 +6802,7 @@ macro_rules! emit_fixed_two_argument_control {
         $transition:expr
         $(,)?
     ) => {
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -6918,7 +6824,7 @@ macro_rules! emit_total_exact_ternary {
         $transition:expr
         $(,)?
     ) => {
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -6932,7 +6838,7 @@ macro_rules! emit_total_exact_ternary {
 macro_rules! emit_total_exact_quaternary {
     ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr $(,)?) => {{
         let arguments: [ir::Value; 4] = $arguments;
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -6945,8 +6851,8 @@ macro_rules! emit_total_exact_quaternary {
 
 macro_rules! emit_total_exact_compact {
     ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr $(,)?) => {{
-        let arguments: [ir::Value; 5] = $arguments;
-        emit_total_exact_native_value!(
+        let arguments: [ir::Value; 4] = $arguments;
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -6960,7 +6866,7 @@ macro_rules! emit_total_exact_compact {
 macro_rules! emit_total_exact_five {
     ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr $(,)?) => {{
         let arguments: [ir::Value; 5] = $arguments;
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -6974,7 +6880,7 @@ macro_rules! emit_total_exact_five {
 macro_rules! emit_total_exact_six {
     ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr $(,)?) => {{
         let arguments: [ir::Value; 6] = $arguments;
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -7029,7 +6935,7 @@ fn lower_optimizing_exact_argument_slice(
 macro_rules! emit_total_exact_seven {
     ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr $(,)?) => {{
         let arguments: [ir::Value; 7] = $arguments;
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -7043,7 +6949,7 @@ macro_rules! emit_total_exact_seven {
 macro_rules! emit_total_exact_nine {
     ($module:expr, $builder:expr, $helper:expr, $arguments:expr, $transition:expr $(,)?) => {{
         let arguments: [ir::Value; 9] = $arguments;
-        emit_total_exact_native_value!(
+        emit_total_exact_builtin_value!(
             $module,
             $builder,
             $helper,
@@ -7066,14 +6972,22 @@ fn lower_optimizing_reference_scalar(
     // native re-entry. Rechecking kind, ABI version, and publication state on
     // every read recreated a warm validation/fallback path in virtually every
     // optimizing consumer.
-    let value =
-        lower_optimizing_admitted_reference_scalar(builder, reference, transition.deopt_out);
+    let value = lower_optimizing_admitted_reference_scalar(
+        builder,
+        reference,
+        transition.deopt_out,
+        transition.reference_payload_proof,
+    );
     if retain_value {
         lower_optimizing_retain(builder, value, transition.deopt_out);
     }
     Ok(value)
 }
 
+/// Materializes the PHP array created by assigning a dimension through an
+/// uninitialized or null reference payload. The fresh direct-array owner is
+/// transferred into the canonical reference slot before the caller mutates
+/// it, so later global/reference reads observe the same authoritative array.
 /// Converts an owned PHP value read into an owned by-value result.
 ///
 /// A direct-array entry can itself contain a reference handle. Array reads
@@ -7094,7 +7008,12 @@ fn lower_optimizing_dereference_owned_value(
     builder.ins().brif(reference, dereference, &[], plain, &[]);
 
     builder.switch_to_block(dereference);
-    let payload = lower_optimizing_admitted_reference_scalar(builder, owned, transition.deopt_out);
+    let payload = lower_optimizing_admitted_reference_scalar(
+        builder,
+        owned,
+        transition.deopt_out,
+        transition.reference_payload_proof,
+    );
     lower_optimizing_retain(builder, payload, transition.deopt_out);
     lower_optimizing_release_call_owner(builder, owned, transition.deopt_out);
     builder.ins().jump(merge, &[payload.into()]);
@@ -7112,16 +7031,20 @@ fn lower_optimizing_dereference_owned_value(
 /// the prior owner in place. Materialized compatibility views take the one
 /// exact baseline continuation and are republished before native re-entry.
 fn lower_optimizing_store_reference_scalar(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
     current: ir::Value,
     replacement: ir::Value,
     release_plain: bool,
     retain_plain: bool,
+    operations: NativeOptimizingOperations,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
     let literal_borrowed = builder.ins().iconst(types::I8, 0);
     let inspect_reference = builder.create_block();
+    let inspect_direct = builder.create_block();
+    let typed_write = builder.create_block();
     let direct_write = builder.create_block();
     let direct_changed = builder.create_block();
     let direct_retain = builder.create_block();
@@ -7208,9 +7131,13 @@ fn lower_optimizing_store_reference_scalar(
     );
     let direct_admitted = builder.ins().band(direct_kind_ok, flags_ok);
     let direct_admitted = builder.ins().band(direct_admitted, direct_published);
-    let direct_admitted = builder.ins().band(direct_admitted, untyped);
+    builder
+        .ins()
+        .brif(direct_admitted, inspect_direct, &[], plain, &[]);
+
+    builder.switch_to_block(inspect_direct);
     builder.ins().brif(
-        direct_admitted,
+        untyped,
         direct_write,
         &[
             slot.into(),
@@ -7218,9 +7145,20 @@ fn lower_optimizing_store_reference_scalar(
             replacement.into(),
             literal_borrowed.into(),
         ],
-        plain,
+        typed_write,
         &[],
     );
+
+    builder.switch_to_block(typed_write);
+    let stored = emit_total_exact_runtime_value!(
+        module,
+        builder,
+        operations.typed_reference_store,
+        &[current, replacement],
+        transition,
+        "exact typed-reference store was not declared",
+    )?;
+    builder.ins().jump(merge, &[stored.into()]);
 
     builder.switch_to_block(direct_write);
     let direct_slot = builder.block_params(direct_write)[0];
@@ -7353,8 +7291,12 @@ fn lower_optimizing_total_request_reference_store(
     let slot = lower_optimizing_slot_address(builder, current, transition.deopt_out);
     let replacement_reference =
         lower_value_has_tag(builder, replacement, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    let replacement =
-        lower_optimizing_admitted_reference_scalar(builder, replacement, transition.deopt_out);
+    let replacement = lower_optimizing_admitted_reference_scalar(
+        builder,
+        replacement,
+        transition.deopt_out,
+        transition.reference_payload_proof,
+    );
     let previous = builder.ins().load(
         types::I64,
         MemFlagsData::new(),
@@ -7412,6 +7354,36 @@ fn lower_optimizing_total_request_reference_store(
 
     builder.switch_to_block(done);
     current
+}
+
+/// Removes a top-level or superglobal value through its authoritative native
+/// request reference. The request-local binding itself remains the stable
+/// numeric plan used by later generated loads and stores; PHP visibility is
+/// represented by the uninitialized payload. Any previous payload is
+/// committed before publication so destructors and final-owner retirement
+/// retain their exact lifecycle boundary.
+fn lower_total_native_request_reference_unset(
+    builder: &mut FunctionBuilder<'_>,
+    current: ir::Value,
+    uninitialized: ir::Value,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let slot = lower_optimizing_slot_address(builder, current, transition.deopt_out);
+    let previous = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    lower_optimizing_release(builder, previous, transition)?;
+    builder.ins().store(
+        MemFlagsData::new(),
+        uninitialized,
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    lower_mark_native_roots_dirty(builder, transition.deopt_out);
+    Ok(current)
 }
 
 fn lower_optimizing_truthy(
@@ -7609,6 +7581,66 @@ fn lower_optimizing_authoritative_truthy(
     builder.block_params(merge)[0]
 }
 
+/// Dereference a published scalar reference directly from the authoritative
+/// native value plane. ABI/layout validity is a publication invariant; no
+/// per-invocation selector or compatibility helper participates.
+fn lower_published_reference_payload(
+    builder: &mut FunctionBuilder<'_>,
+    value: ir::Value,
+    deopt_out: ir::Value,
+) -> ir::Value {
+    let inspect = builder.create_block();
+    let indirect = builder.create_block();
+    let merge = builder.create_block();
+    builder.append_block_param(merge, types::I64);
+
+    let is_reference = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
+    builder
+        .ins()
+        .brif(is_reference, inspect, &[], merge, &[value.into()]);
+
+    builder.switch_to_block(inspect);
+    let slot = lower_optimizing_slot_address(builder, value, deopt_out);
+    let kind = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+    );
+    let payload = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let direct = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR),
+    );
+    builder
+        .ins()
+        .brif(direct, merge, &[payload.into()], indirect, &[]);
+
+    builder.switch_to_block(indirect);
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
+    let view = if pointer_type == types::I64 {
+        payload
+    } else {
+        builder.ins().ireduce(pointer_type, payload)
+    };
+    let encoded = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        view,
+        std::mem::offset_of!(crate::JitNativeReferenceScalarView, encoded) as i32,
+    );
+    builder.ins().jump(merge, &[encoded.into()]);
+
+    builder.switch_to_block(merge);
+    builder.block_params(merge)[0]
+}
+
 fn lower_optimizing_value_slot(
     builder: &mut FunctionBuilder<'_>,
     value: ir::Value,
@@ -7621,25 +7653,6 @@ fn lower_optimizing_value_slot(
         builder,
         value,
         transition.deopt_out,
-    ))
-}
-
-fn lower_optimizing_length(
-    builder: &mut FunctionBuilder<'_>,
-    value: ir::Value,
-    transition: NativeOptimizingTransition<'_>,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let slot = lower_optimizing_value_slot(
-        builder,
-        value,
-        crate::JIT_VALUE_RUNTIME_STRING_TAG,
-        transition,
-    )?;
-    Ok(builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
     ))
 }
 
@@ -8474,6 +8487,136 @@ fn lower_optimizing_publish_mutable_array_local(
     Ok(())
 }
 
+fn lower_optimizing_publish_mutable_array_property(
+    builder: &mut FunctionBuilder<'_>,
+    property_slot: ir::Value,
+    array: ir::Value,
+    reference_slot: ir::Value,
+    deopt_out: ir::Value,
+) {
+    let store_reference = builder.create_block();
+    let store_property = builder.create_block();
+    let done = builder.create_block();
+    let referenced = builder.ins().icmp_imm(IntCC::NotEqual, reference_slot, 0);
+    builder
+        .ins()
+        .brif(referenced, store_reference, &[], store_property, &[]);
+
+    builder.switch_to_block(store_reference);
+    builder.ins().store(
+        MemFlagsData::new(),
+        array,
+        reference_slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    builder.ins().jump(done, &[]);
+
+    builder.switch_to_block(store_property);
+    builder.ins().store(
+        MemFlagsData::new(),
+        array,
+        property_slot,
+        std::mem::offset_of!(php_runtime::api::NativeDeclaredPropertySlot, value) as i32,
+    );
+    builder.ins().jump(done, &[]);
+
+    builder.switch_to_block(done);
+    lower_mark_native_roots_dirty(builder, deopt_out);
+}
+
+/// Resolves the authoritative array owner for a mutable local from the live
+/// encoded value rather than from its conservative storage class. A local
+/// classified as reference-capable may still hold a plain array on a
+/// particular control-flow edge; treating that array slot as a reference
+/// cell would overwrite its length with the replacement handle.
+fn lower_optimizing_mutable_array_assignment_root(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    locals: &NativeLocalMap,
+    local: LocalId,
+    stored: ir::Value,
+    operations: NativeOptimizingOperations,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
+    let (payload, reference_slot) =
+        lower_optimizing_mutable_array_reference(builder, stored, transition)?;
+    let materialize = builder.create_block();
+    let existing = builder.create_block();
+    let ready = builder.create_block();
+    builder.append_block_param(ready, types::I64);
+
+    let uninitialized = builder.ins().icmp_imm(
+        IntCC::Equal,
+        payload,
+        crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
+    );
+    let null = builder
+        .ins()
+        .icmp_imm(IntCC::Equal, payload, crate::jit_encode_constant(u32::MAX));
+    let needs_array = builder.ins().bor(uninitialized, null);
+    builder
+        .ins()
+        .brif(needs_array, materialize, &[], existing, &[]);
+
+    builder.switch_to_block(materialize);
+    let inspect_reference = builder.create_block();
+    let allocate_plain = builder.create_block();
+    let typed_init = builder.create_block();
+    let referenced = builder.ins().icmp_imm(IntCC::NotEqual, reference_slot, 0);
+    builder
+        .ins()
+        .brif(referenced, inspect_reference, &[], allocate_plain, &[]);
+
+    builder.switch_to_block(inspect_reference);
+    let state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        reference_slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
+    );
+    let typed = builder.ins().band_imm(
+        state,
+        i64::from(crate::JIT_NATIVE_REFERENCE_TYPED_PROPERTY_GUARD),
+    );
+    let typed = builder.ins().icmp_imm(IntCC::NotEqual, typed, 0);
+    builder
+        .ins()
+        .brif(typed, typed_init, &[], allocate_plain, &[]);
+
+    builder.switch_to_block(typed_init);
+    let array = emit_total_exact_runtime_value!(
+        module,
+        builder,
+        operations.typed_reference_array_init,
+        &[stored],
+        transition,
+        "exact typed-reference array initialization was not declared",
+    )?;
+    builder.ins().jump(ready, &[array.into()]);
+
+    builder.switch_to_block(allocate_plain);
+    let capacity = builder.ins().iconst(
+        types::I64,
+        i64::from(crate::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY),
+    );
+    let array = lower_optimizing_allocate_direct_array(builder, capacity, true, transition)?;
+    lower_optimizing_publish_mutable_array_local(
+        builder,
+        locals,
+        local,
+        array,
+        reference_slot,
+        transition.deopt_out,
+    )?;
+    builder.ins().jump(ready, &[array.into()]);
+
+    builder.switch_to_block(existing);
+    builder.ins().jump(ready, &[payload.into()]);
+
+    builder.switch_to_block(ready);
+    Ok((builder.block_params(ready)[0], reference_slot))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_optimizing_array_pointer_mutation(
     module: &mut JITModule,
@@ -8507,6 +8650,15 @@ fn lower_optimizing_array_pointer_mutation(
         transition.deopt_out,
     )?;
 
+    lower_optimizing_array_pointer_mutation_ready(builder, operation, array, transition)
+}
+
+fn lower_optimizing_array_pointer_mutation_ready(
+    builder: &mut FunctionBuilder<'_>,
+    operation: StableArrayPointerBuiltin,
+    array: ir::Value,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
     let (slot, length, entries) =
         lower_optimizing_direct_array_descriptor(builder, array, transition)?;
     let flags = builder.ins().load(
@@ -9064,6 +9216,7 @@ fn lower_optimizing_array_push(
             key,
             value,
             true,
+            true,
             transition.deopt_out,
         );
     }
@@ -9293,13 +9446,13 @@ fn lower_optimizing_array_unshift(
 /// Allocate one direct array with its final power-of-two entry range in a
 /// single admitted sequence. No partially initialized array is visible if
 /// either arena lacks room.
-fn lower_optimizing_allocate_direct_array(
+fn lower_optimizing_allocate_direct_array_with_deopt(
     builder: &mut FunctionBuilder<'_>,
     required: ir::Value,
     _total: bool,
-    transition: NativeOptimizingTransition<'_>,
+    deopt_out: ir::Value,
 ) -> Result<ir::Value, CraneliftLoweringError> {
-    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
     let sizing = builder.create_block();
     let resources = builder.create_block();
     let allocate = builder.create_block();
@@ -9335,7 +9488,7 @@ fn lower_optimizing_allocate_direct_array(
 
     builder.switch_to_block(resources);
     let capacity = builder.block_params(resources)[0];
-    let view = lower_active_runtime_view(builder, transition.deopt_out);
+    let view = lower_active_runtime_view(builder, deopt_out);
     let arena = builder.ins().load(
         pointer_type,
         MemFlagsData::new(),
@@ -9382,7 +9535,7 @@ fn lower_optimizing_allocate_direct_array(
 
     builder.switch_to_block(allocate);
     let capacity = builder.block_params(allocate)[0];
-    let slot_index = lower_reserve_direct_value_index(builder, transition.deopt_out, None);
+    let slot_index = lower_reserve_direct_value_index(builder, deopt_out, None);
     builder.ins().brif(
         has_free,
         reuse,
@@ -9495,7 +9648,7 @@ fn lower_optimizing_allocate_direct_array(
     let array = builder
         .ins()
         .bor_imm(encoded_index, crate::JIT_VALUE_RUNTIME_ARRAY_TAG as i64);
-    let state = lower_direct_array_state_address(builder, array, transition.deopt_out);
+    let state = lower_direct_array_state_address(builder, array, deopt_out);
     builder.ins().store(
         MemFlagsData::new(),
         zero,
@@ -9510,6 +9663,20 @@ fn lower_optimizing_allocate_direct_array(
         std::mem::offset_of!(crate::JitNativeDirectArrayState, has_next_append_key) as i32,
     );
     Ok(array)
+}
+
+fn lower_optimizing_allocate_direct_array(
+    builder: &mut FunctionBuilder<'_>,
+    required: ir::Value,
+    total: bool,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    lower_optimizing_allocate_direct_array_with_deopt(
+        builder,
+        required,
+        total,
+        transition.deopt_out,
+    )
 }
 
 fn lower_optimizing_require_direct_value_capacity(
@@ -9649,6 +9816,7 @@ fn lower_optimizing_array_fill(
         result,
         key,
         value,
+        true,
         true,
         transition.deopt_out,
     );
@@ -11766,6 +11934,118 @@ fn lower_optimizing_array_projection(
     Ok(result)
 }
 
+fn lower_optimizing_array_change_key_case(
+    builder: &mut FunctionBuilder<'_>,
+    array: ir::Value,
+    uppercase: ir::Value,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let (_, length, source_entries) =
+        lower_optimizing_direct_array_descriptor(builder, array, transition)?;
+    let result = lower_optimizing_allocate_direct_array(builder, length, true, transition)?;
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    let scan = builder.create_block();
+    let inspect = builder.create_block();
+    let string_key = builder.create_block();
+    let integer_key = builder.create_block();
+    let next = builder.create_block();
+    let finished = builder.create_block();
+    builder.append_block_param(scan, types::I64);
+    builder.append_block_param(next, types::I64);
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(scan, &[zero.into()]);
+
+    builder.switch_to_block(scan);
+    let index = builder.block_params(scan)[0];
+    let exhausted = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, index, length);
+    builder.ins().brif(exhausted, finished, &[], inspect, &[]);
+
+    builder.switch_to_block(inspect);
+    let source =
+        lower_optimizing_direct_array_entry_address(builder, source_entries, index, pointer_type);
+    let key = builder
+        .ins()
+        .load(types::I64, MemFlagsData::new(), source, 0);
+    let value = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        source,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    let (is_string, key_length, key_bytes) =
+        lower_native_string_key_descriptor(builder, key, transition.deopt_out);
+    builder
+        .ins()
+        .brif(is_string, string_key, &[], integer_key, &[]);
+
+    builder.switch_to_block(string_key);
+    let allocation = lower_optimizing_allocate_string(builder, key_length, transition)?;
+    let copy = builder.create_block();
+    let copy_byte = builder.create_block();
+    let string_ready = builder.create_block();
+    builder.append_block_param(copy, types::I64);
+    builder.ins().jump(copy, &[zero.into()]);
+
+    builder.switch_to_block(copy);
+    let byte_index = builder.block_params(copy)[0];
+    let copied = builder.ins().icmp(IntCC::Equal, byte_index, key_length);
+    builder
+        .ins()
+        .brif(copied, string_ready, &[], copy_byte, &[]);
+
+    builder.switch_to_block(copy_byte);
+    let source_byte = builder.ins().iadd(key_bytes, byte_index);
+    let byte = builder
+        .ins()
+        .load(types::I8, MemFlagsData::new(), source_byte, 0);
+    let lowercase = lower_ascii_fold_byte(builder, byte);
+    let at_least_lower =
+        builder
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, byte, i64::from(b'a'));
+    let at_most_lower =
+        builder
+            .ins()
+            .icmp_imm(IntCC::UnsignedLessThanOrEqual, byte, i64::from(b'z'));
+    let is_lower = builder.ins().band(at_least_lower, at_most_lower);
+    let upper_candidate = builder.ins().iadd_imm(byte, -32);
+    let upper = builder.ins().select(is_lower, upper_candidate, byte);
+    let folded = builder.ins().select(uppercase, upper, lowercase);
+    let destination = builder.ins().iadd(allocation.output, byte_index);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), folded, destination, 0);
+    let next_byte = builder.ins().iadd_imm(byte_index, 1);
+    builder.ins().jump(copy, &[next_byte.into()]);
+
+    builder.switch_to_block(string_ready);
+    lower_optimizing_finish_string(builder, allocation, key_length);
+    let _ = lower_total_native_array_insert(
+        builder,
+        result,
+        allocation.value,
+        value,
+        false,
+        true,
+        transition,
+    );
+    builder.ins().jump(next, &[index.into()]);
+
+    builder.switch_to_block(integer_key);
+    let _ = lower_total_native_array_insert(builder, result, key, value, true, true, transition);
+    builder.ins().jump(next, &[index.into()]);
+
+    builder.switch_to_block(next);
+    let index = builder.block_params(next)[0];
+    let next_index = builder.ins().iadd_imm(index, 1);
+    builder.ins().jump(scan, &[next_index.into()]);
+
+    builder.switch_to_block(finished);
+    Ok(result)
+}
+
 fn lower_optimizing_require_null(
     builder: &mut FunctionBuilder<'_>,
     value: ir::Value,
@@ -12153,7 +12433,7 @@ fn lower_optimizing_preg_replace_callback_step(
     let effects_committed = builder
         .ins()
         .iconst(types::I64, i64::from(effects_committed));
-    let plan = emit_total_exact_native_value_with_cleanup!(
+    let plan = emit_total_exact_owned_runtime_value!(
         module,
         builder,
         operations.preg_callback_plan,
@@ -12281,7 +12561,7 @@ fn lower_optimizing_preg_replace_callback_step(
             coercion_cleanup.push(owner);
         }
         coercion_cleanup.push(callback_result);
-        let coerced = emit_total_exact_native_value_with_cleanup!(
+        let coerced = emit_total_exact_owned_runtime_value!(
             module,
             builder,
             operations.callback_return_string,
@@ -12320,7 +12600,7 @@ fn lower_optimizing_preg_replace_callback_step(
     if let Some(owner) = callback.owner() {
         assembly_cleanup.push(owner);
     }
-    let result = emit_total_exact_native_value_with_cleanup!(
+    let result = emit_total_exact_owned_runtime_value!(
         module,
         builder,
         operations.preg_callback_assemble,
@@ -12398,7 +12678,7 @@ fn lower_optimizing_preg_replace_callback(
         builder.switch_to_block(store);
         let count = lower_optimizing_encode_int(builder, step.match_count, transition)?;
         let stored = lower_optimizing_store_reference_scalar(
-            builder, current, count, true, false, transition,
+            module, builder, current, count, true, false, operations, transition,
         )?;
         builder.ins().jump(complete, &[stored.into()]);
 
@@ -13526,8 +13806,9 @@ fn lower_optimizing_direct_array_candidate(
     builder: &mut FunctionBuilder<'_>,
     value: ir::Value,
     deopt_out: ir::Value,
+    proof: NativeReferencePayloadProof,
 ) -> (ir::Value, ir::Value) {
-    let payload = lower_optimizing_admitted_reference_scalar(builder, value, deopt_out);
+    let payload = lower_optimizing_admitted_reference_scalar(builder, value, deopt_out, proof);
     let array_tag = lower_value_has_tag(builder, payload, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
     let index = builder.ins().ireduce(types::I32, payload);
     let direct_index = builder.ins().icmp_imm(
@@ -13818,7 +14099,12 @@ fn lower_optimizing_array_walk_recursive_callback(
         entry,
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
-    let (child, child_value) = lower_optimizing_direct_array_candidate(builder, value, deopt_out);
+    let (child, child_value) = lower_optimizing_direct_array_candidate(
+        builder,
+        value,
+        deopt_out,
+        transition.reference_payload_proof,
+    );
     builder.ins().brif(
         child,
         inspect_child,
@@ -14100,7 +14386,12 @@ fn lower_optimizing_array_walk_recursive_callback(
         entry,
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
-    let (child, child_value) = lower_optimizing_direct_array_candidate(builder, value, deopt_out);
+    let (child, child_value) = lower_optimizing_direct_array_candidate(
+        builder,
+        value,
+        deopt_out,
+        transition.reference_payload_proof,
+    );
     builder.ins().brif(
         child,
         transform_child,
@@ -14237,7 +14528,12 @@ fn lower_optimizing_array_walk_recursive_callback(
         entry,
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
-    let (child, child_value) = lower_optimizing_direct_array_candidate(builder, value, deopt_out);
+    let (child, child_value) = lower_optimizing_direct_array_candidate(
+        builder,
+        value,
+        deopt_out,
+        transition.reference_payload_proof,
+    );
     builder.ins().brif(
         child,
         walk_child,
@@ -15090,6 +15386,7 @@ fn lower_optimizing_array_merge(
             integer_key,
             value,
             true,
+            true,
             transition.deopt_out,
         );
         let next_key = builder.ins().iadd_imm(integer_key, 1);
@@ -15156,6 +15453,25 @@ fn lower_total_native_trusted_property_slot(
         object_slot,
         std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
     );
+    let plan = lower_total_native_trusted_property_plan(builder, function, continuation, deopt_out);
+    let property_index = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedPropertySlot, slot_index) as i32,
+    );
+    let wide_property_index = builder.ins().uextend(pointer_type, property_index);
+    let property_offset = builder.ins().ishl_imm(wide_property_index, 4);
+    builder.ins().iadd(property_slots, property_offset)
+}
+
+fn lower_total_native_trusted_property_plan(
+    builder: &mut FunctionBuilder<'_>,
+    function: FunctionId,
+    continuation: u32,
+    deopt_out: ir::Value,
+) -> ir::Value {
+    let pointer_type = builder.func.dfg.value_type(deopt_out);
     let view = lower_active_runtime_view(builder, deopt_out);
     let offsets = builder.ins().load(
         pointer_type,
@@ -15181,17 +15497,46 @@ fn lower_total_native_trusted_property_slot(
         .load(types::I32, MemFlagsData::new(), function_entry, 0);
     let plan_index = builder.ins().iadd_imm(plan_base, i64::from(continuation));
     let wide_plan_index = builder.ins().uextend(pointer_type, plan_index);
-    let plan_offset = builder.ins().ishl_imm(wide_plan_index, 4);
+    let plan_offset = builder.ins().ishl_imm(wide_plan_index, 5);
     let plan = builder.ins().iadd(plans, plan_offset);
-    let property_index = builder.ins().load(
-        types::I32,
+    plan
+}
+
+fn lower_optimizing_named_dynamic_property_slot(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    object: ir::Value,
+    function: FunctionId,
+    continuation: u32,
+    operations: NativeOptimizingOperations,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let plan = lower_total_native_trusted_property_plan(
+        builder,
+        function,
+        continuation,
+        transition.deopt_out,
+    );
+    let name_bytes = builder.ins().load(
+        types::I64,
         MemFlagsData::new(),
         plan,
-        std::mem::offset_of!(crate::JitNativeTrustedPropertySlot, slot_index) as i32,
+        std::mem::offset_of!(crate::JitNativeTrustedPropertySlot, property_name_bytes) as i32,
     );
-    let wide_property_index = builder.ins().uextend(pointer_type, property_index);
-    let property_offset = builder.ins().ishl_imm(wide_property_index, 4);
-    builder.ins().iadd(property_slots, property_offset)
+    let name_length = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedPropertySlot, property_name_length) as i32,
+    );
+    emit_total_exact_runtime_value!(
+        module,
+        builder,
+        operations.named_dynamic_property_slot,
+        &[object, name_bytes, name_length],
+        transition,
+        "fixed-name dynamic-property slot resolver was not declared",
+    )
 }
 
 fn lower_optimizing_require_object_layout(
@@ -15208,19 +15553,35 @@ fn lower_optimizing_require_object_layout(
 fn lower_total_native_static_instanceof(
     builder: &mut FunctionBuilder<'_>,
     object: ir::Value,
-    function: FunctionId,
-    continuation: u32,
-    deopt_out: ir::Value,
-) -> ir::Value {
-    let slot = lower_optimizing_slot_address(builder, object, deopt_out);
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let object = lower_direct_reference_payload_unchecked(builder, object, transition.deopt_out);
+    let inspect_object = builder.create_block();
+    let not_object = builder.create_block();
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+    let is_object = lower_value_has_tag(builder, object, crate::JIT_VALUE_RUNTIME_OBJECT_TAG);
+    builder
+        .ins()
+        .brif(is_object, inspect_object, &[], not_object, &[]);
+
+    builder.switch_to_block(not_object);
+    let no = builder.ins().iconst(
+        types::I64,
+        crate::jit_encode_constant(crate::JIT_VALUE_FALSE),
+    );
+    builder.ins().jump(done, &[no.into()]);
+
+    builder.switch_to_block(inspect_object);
+    let slot = lower_optimizing_slot_address(builder, object, transition.deopt_out);
     let layout_id = builder.ins().load(
         types::I64,
         MemFlagsData::new(),
         slot,
         std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
     );
-    let pointer_type = builder.func.dfg.value_type(deopt_out);
-    let view = lower_active_runtime_view(builder, deopt_out);
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    let view = lower_active_runtime_view(builder, transition.deopt_out);
     let offsets = builder.ins().load(
         pointer_type,
         MemFlagsData::new(),
@@ -15244,12 +15605,14 @@ fn lower_total_native_static_instanceof(
     );
     let function_entry = builder.ins().iadd_imm(
         offsets,
-        i64::try_from(function.index().saturating_mul(4)).unwrap_or(i64::MAX),
+        i64::try_from(transition.function.index().saturating_mul(4)).unwrap_or(i64::MAX),
     );
     let plan_base = builder
         .ins()
         .load(types::I32, MemFlagsData::new(), function_entry, 0);
-    let plan_index = builder.ins().iadd_imm(plan_base, i64::from(continuation));
+    let plan_index = builder
+        .ins()
+        .iadd_imm(plan_base, i64::from(transition.continuation_id));
     let wide_plan_index = builder.ins().uextend(pointer_type, plan_index);
     let plan_offset = builder.ins().ishl_imm(wide_plan_index, 4);
     let plan = builder.ins().iadd(plans, plan_offset);
@@ -15280,8 +15643,12 @@ fn lower_total_native_static_instanceof(
     let hash = builder.ins().ireduce(types::I32, hash);
     let bucket = builder.ins().band(hash, mask);
     let lookup = builder.create_block();
+    let unmatched = builder.create_block();
+    let missing = builder.create_block();
     let matched = builder.create_block();
     builder.append_block_param(lookup, types::I32);
+    builder.append_block_param(unmatched, types::I32);
+    builder.append_block_param(unmatched, types::I64);
     builder.append_block_param(matched, types::I32);
     builder.ins().jump(lookup, &[bucket.into()]);
     builder.switch_to_block(lookup);
@@ -15303,19 +15670,43 @@ fn lower_total_native_static_instanceof(
         std::mem::offset_of!(crate::JitNativeInstanceOfEntry, result) as i32,
     );
     let hit = builder.ins().icmp(IntCC::Equal, candidate, layout_id);
-    let next_bucket = builder.ins().iadd_imm(bucket, 1);
-    let next_bucket = builder.ins().band(next_bucket, mask);
     builder.ins().brif(
         hit,
         matched,
         &[result.into()],
-        lookup,
-        &[next_bucket.into()],
+        unmatched,
+        &[bucket.into(), candidate.into()],
     );
+
+    builder.switch_to_block(unmatched);
+    let bucket = builder.block_params(unmatched)[0];
+    let candidate = builder.block_params(unmatched)[1];
+    let empty = builder.ins().icmp_imm(IntCC::Equal, candidate, 0);
+    let next_bucket = builder.ins().iadd_imm(bucket, 1);
+    let next_bucket = builder.ins().band(next_bucket, mask);
+    builder
+        .ins()
+        .brif(empty, missing, &[], lookup, &[next_bucket.into()]);
+
+    builder.switch_to_block(missing);
+    let status = builder.ins().iconst(
+        types::I32,
+        i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
+    );
+    let detail = builder
+        .ins()
+        .iconst(types::I32, i64::from(transition.continuation_id));
+    let value = builder.ins().iconst(types::I64, 0);
+    transition.emit_control(builder, status, detail, value)?;
+
     builder.switch_to_block(matched);
     let result = builder.block_params(matched)[0];
     let result = builder.ins().icmp_imm(IntCC::NotEqual, result, 0);
-    encode_native_bool(builder, result)
+    let result = encode_native_bool(builder, result);
+    builder.ins().jump(done, &[result.into()]);
+
+    builder.switch_to_block(done);
+    Ok(builder.block_params(done)[0])
 }
 
 /// Select an already-published catch/finally entry for one throwable returned
@@ -15535,9 +15926,11 @@ fn lower_native_exception_route(
 }
 
 fn lower_optimizing_constant_fetch(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
     function: FunctionId,
     continuation: u32,
+    operations: NativeOptimizingOperations,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
@@ -15572,8 +15965,37 @@ fn lower_optimizing_constant_fetch(
         plan,
         std::mem::offset_of!(crate::JitNativeTrustedConstantSlot, value) as i32,
     );
+    let state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedConstantSlot, state) as i32,
+    );
+    let error = builder.ins().icmp_imm(
+        IntCC::Equal,
+        state,
+        i64::from(crate::JIT_NATIVE_TRUSTED_CONSTANT_ERROR),
+    );
+    let fail = builder.create_block();
+    let published = builder.create_block();
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+    builder.ins().brif(error, fail, &[], published, &[]);
+    builder.switch_to_block(fail);
+    let failed = emit_total_exact_runtime_value!(
+        module,
+        builder,
+        operations.undefined_constant,
+        &[value],
+        transition,
+        "exact undefined-constant Error was not declared",
+    )?;
+    builder.ins().jump(done, &[failed.into()]);
+    builder.switch_to_block(published);
     lower_optimizing_retain(builder, value, transition.deopt_out);
-    Ok(value)
+    builder.ins().jump(done, &[value.into()]);
+    builder.switch_to_block(done);
+    Ok(builder.block_params(done)[0])
 }
 
 fn lower_total_native_trusted_static_property_slot(
@@ -15581,7 +16003,7 @@ fn lower_total_native_trusted_static_property_slot(
     function: FunctionId,
     continuation: u32,
     deopt_out: ir::Value,
-) -> ir::Value {
+) -> (ir::Value, ir::Value) {
     // Publication established visibility, initialization, the numeric slot
     // index and its direct-array payload. Optimizing execution consumes only
     // that stable numeric plan.
@@ -15617,7 +16039,7 @@ fn lower_total_native_trusted_static_property_slot(
         .load(types::I32, MemFlagsData::new(), function_entry, 0);
     let plan_index = builder.ins().iadd_imm(plan_base, i64::from(continuation));
     let wide_plan_index = builder.ins().uextend(pointer_type, plan_index);
-    let plan_offset = builder.ins().ishl_imm(wide_plan_index, 3);
+    let plan_offset = builder.ins().ishl_imm(wide_plan_index, 4);
     let plan = builder.ins().iadd(plans, plan_offset);
     let slot_index = builder.ins().load(
         types::I32,
@@ -15627,21 +16049,73 @@ fn lower_total_native_trusted_static_property_slot(
     );
     let wide_slot_index = builder.ins().uextend(pointer_type, slot_index);
     let slot_offset = builder.ins().ishl_imm(wide_slot_index, 4);
-    builder.ins().iadd(slots, slot_offset)
+    (plan, builder.ins().iadd(slots, slot_offset))
 }
 
 fn lower_optimizing_static_property_fetch(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
     function: FunctionId,
     continuation: u32,
+    operations: NativeOptimizingOperations,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
-    let slot = lower_total_native_trusted_static_property_slot(
+    let (plan, slot) = lower_total_native_trusted_static_property_slot(
         builder,
         function,
         continuation,
         transition.deopt_out,
     );
+    let state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticPropertySlot, state) as i32,
+    );
+    let semantic_error = builder.ins().icmp_imm(
+        IntCC::Equal,
+        state,
+        i64::from(crate::JIT_NATIVE_TRUSTED_STATIC_PROPERTY_ERROR),
+    );
+    let initialized = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, initialized) as i32,
+    );
+    let uninitialized = builder.ins().icmp_imm(IntCC::Equal, initialized, 0);
+    let contract = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticPropertySlot, contract) as i32,
+    );
+    let has_contract = builder.ins().icmp_imm(IntCC::NotEqual, contract, 0);
+    let uninitialized_typed = builder.ins().band(uninitialized, has_contract);
+    let semantic_error = builder.ins().bor(semantic_error, uninitialized_typed);
+    let fail = builder.create_block();
+    let read = builder.create_block();
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+    builder.ins().brif(semantic_error, fail, &[], read, &[]);
+    builder.switch_to_block(fail);
+    let current = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
+    );
+    let failure = emit_total_exact_runtime_value!(
+        module,
+        builder,
+        operations.static_property_contract,
+        &[contract, current],
+        transition,
+        "exact static-property contract was not declared",
+    )?;
+    builder.ins().jump(done, &[failure.into()]);
+
+    builder.switch_to_block(read);
     let value = builder.ins().load(
         types::I64,
         MemFlagsData::new(),
@@ -15649,25 +16123,73 @@ fn lower_optimizing_static_property_fetch(
         std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
     );
     let value = lower_optimizing_reference_scalar(builder, value, true, transition)?;
-    Ok(value)
+    builder.ins().jump(done, &[value.into()]);
+    builder.switch_to_block(done);
+    Ok(builder.block_params(done)[0])
 }
 
 fn lower_optimizing_static_property_assign(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
     value: ir::Value,
     function: FunctionId,
     continuation: u32,
+    operations: NativeOptimizingOperations,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let merge = builder.create_block();
     builder.append_block_param(merge, types::I64);
-    let slot = lower_total_native_trusted_static_property_slot(
+    let (plan, slot) = lower_total_native_trusted_static_property_slot(
         builder,
         function,
         continuation,
         transition.deopt_out,
     );
     let value = lower_optimizing_reference_scalar(builder, value, false, transition)?;
+    let state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticPropertySlot, state) as i32,
+    );
+    let typed = builder.ins().icmp_imm(
+        IntCC::Equal,
+        state,
+        i64::from(crate::JIT_NATIVE_TRUSTED_STATIC_PROPERTY_TYPED),
+    );
+    let semantic_error = builder.ins().icmp_imm(
+        IntCC::Equal,
+        state,
+        i64::from(crate::JIT_NATIVE_TRUSTED_STATIC_PROPERTY_ERROR),
+    );
+    let needs_contract = builder.ins().bor(typed, semantic_error);
+    let enforce = builder.create_block();
+    let direct = builder.create_block();
+    let checked = builder.create_block();
+    builder.append_block_param(checked, types::I64);
+    builder
+        .ins()
+        .brif(needs_contract, enforce, &[], direct, &[]);
+    builder.switch_to_block(enforce);
+    let contract = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticPropertySlot, contract) as i32,
+    );
+    let enforced = emit_total_exact_runtime_value!(
+        module,
+        builder,
+        operations.static_property_contract,
+        &[contract, value],
+        transition,
+        "exact static-property contract was not declared",
+    )?;
+    builder.ins().jump(checked, &[enforced.into()]);
+    builder.switch_to_block(direct);
+    builder.ins().jump(checked, &[value.into()]);
+    builder.switch_to_block(checked);
+    let value = builder.block_params(checked)[0];
     let old = builder.ins().load(
         types::I64,
         MemFlagsData::new(),
@@ -15689,13 +16211,20 @@ fn lower_optimizing_static_property_assign(
         slot,
         std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
     );
+    let initialized = builder.ins().iconst(types::I32, 1);
+    builder.ins().store(
+        MemFlagsData::new(),
+        initialized,
+        slot,
+        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, initialized) as i32,
+    );
     lower_mark_native_roots_dirty(builder, transition.deopt_out);
     builder.ins().jump(release, &[]);
 
     builder.switch_to_block(release);
     let _ = builder.ins().call(
         transition.value_release_commit,
-        &[transition.deopt_out, old],
+        &[transition.runtime, transition.deopt_out, old],
     );
     builder.ins().jump(merge, &[value.into()]);
 
@@ -15710,12 +16239,38 @@ fn lower_optimizing_static_property_test(
     continuation: u32,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
-    let slot = lower_total_native_trusted_static_property_slot(
+    let (plan, slot) = lower_total_native_trusted_static_property_slot(
         builder,
         function,
         continuation,
         transition.deopt_out,
     );
+    let state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticPropertySlot, state) as i32,
+    );
+    let absent = builder.ins().icmp_imm(
+        IntCC::Equal,
+        state,
+        i64::from(crate::JIT_NATIVE_TRUSTED_STATIC_PROPERTY_ABSENT),
+    );
+    let inspect = builder.create_block();
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+    let absent_result = builder.ins().iconst(
+        types::I64,
+        crate::jit_encode_constant(if empty {
+            crate::JIT_VALUE_TRUE
+        } else {
+            crate::JIT_VALUE_FALSE
+        }),
+    );
+    builder
+        .ins()
+        .brif(absent, done, &[absent_result.into()], inspect, &[]);
+    builder.switch_to_block(inspect);
     let value = builder.ins().load(
         types::I64,
         MemFlagsData::new(),
@@ -15741,7 +16296,45 @@ fn lower_optimizing_static_property_test(
         let present = builder.ins().icmp_imm(IntCC::Equal, absent, 0);
         encode_native_bool(builder, present)
     };
-    Ok(result)
+    builder.ins().jump(done, &[result.into()]);
+    builder.switch_to_block(done);
+    Ok(builder.block_params(done)[0])
+}
+
+fn lower_optimizing_typed_static_reference_bind(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    plan: ir::Value,
+    reference: ir::Value,
+    operations: NativeOptimizingOperations,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let contract = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticPropertySlot, contract) as i32,
+    );
+    let typed = builder.ins().icmp_imm(IntCC::NotEqual, contract, 0);
+    let enforce = builder.create_block();
+    let direct = builder.create_block();
+    let done = builder.create_block();
+    builder.append_block_param(done, types::I64);
+    builder.ins().brif(typed, enforce, &[], direct, &[]);
+    builder.switch_to_block(enforce);
+    let enforced = emit_total_exact_runtime_value!(
+        module,
+        builder,
+        operations.typed_static_reference_bind,
+        &[contract, reference],
+        transition,
+        "exact typed-static reference binding was not declared",
+    )?;
+    builder.ins().jump(done, &[enforced.into()]);
+    builder.switch_to_block(direct);
+    builder.ins().jump(done, &[reference.into()]);
+    builder.switch_to_block(done);
+    Ok(builder.block_params(done)[0])
 }
 
 fn lower_optimizing_property_fetch(
@@ -16006,20 +16599,7 @@ fn lower_optimizing_property_assign(
     let done = builder.create_block();
     builder.ins().brif(release, release_old, &[], done, &[]);
     builder.switch_to_block(release_old);
-    let old_slot = lower_optimizing_slot_address(builder, old, transition.deopt_out);
-    let refcount = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        old_slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, refcount) as i32,
-    );
-    let released = builder.ins().iadd_imm(refcount, -1);
-    builder.ins().store(
-        MemFlagsData::new(),
-        released,
-        old_slot,
-        std::mem::offset_of!(crate::JitNativeValueSlot, refcount) as i32,
-    );
+    lower_optimizing_release(builder, old, transition)?;
     builder.ins().jump(done, &[]);
     builder.switch_to_block(done);
     Ok(value)
@@ -16080,7 +16660,7 @@ fn lower_optimizing_property_assign_to_slot(
     builder.switch_to_block(release_old);
     let _ = builder.ins().call(
         transition.value_release_commit,
-        &[transition.deopt_out, old],
+        &[transition.runtime, transition.deopt_out, old],
     );
     builder.ins().jump(merge, &[value.into()]);
 
@@ -16140,7 +16720,7 @@ fn lower_optimizing_dynamic_property_unset(
     builder.switch_to_block(release);
     let _ = builder.ins().call(
         transition.value_release_commit,
-        &[transition.deopt_out, old],
+        &[transition.runtime, transition.deopt_out, old],
     );
     builder.ins().jump(done, &[]);
 
@@ -16188,6 +16768,136 @@ fn lower_optimizing_admit_integer_result(
     builder.switch_to_block(rejected);
     let value = lower_optimizing_encode_int(builder, value, transition)?;
     builder.ins().jump(merge, &[value.into()]);
+
+    builder.switch_to_block(merge);
+    Ok(builder.block_params(merge)[0])
+}
+
+fn lower_total_native_integer_arithmetic(
+    builder: &mut FunctionBuilder<'_>,
+    lhs: ir::Value,
+    rhs: ir::Value,
+    operation: RegionBinaryOp,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let (integer, overflow) = match operation {
+        RegionBinaryOp::Add => builder.ins().sadd_overflow(lhs, rhs),
+        RegionBinaryOp::Mul => builder.ins().smul_overflow(lhs, rhs),
+        RegionBinaryOp::Sub => {
+            let result = builder.ins().isub(lhs, rhs);
+            let signs_differ = builder.ins().bxor(lhs, rhs);
+            let result_differs = builder.ins().bxor(lhs, result);
+            let overflow_bits = builder.ins().band(signs_differ, result_differs);
+            let overflow = builder
+                .ins()
+                .icmp_imm(IntCC::SignedLessThan, overflow_bits, 0);
+            (result, overflow)
+        }
+        _ => unreachable!("total integer arithmetic is add, subtract, or multiply"),
+    };
+    let integer_result = builder.create_block();
+    let floating_result = builder.create_block();
+    let merge = builder.create_block();
+    builder.append_block_param(merge, types::I64);
+    builder
+        .ins()
+        .brif(overflow, floating_result, &[], integer_result, &[]);
+
+    builder.switch_to_block(integer_result);
+    let integer = lower_optimizing_admit_integer_result(builder, integer, transition)?;
+    builder.ins().jump(merge, &[integer.into()]);
+
+    builder.switch_to_block(floating_result);
+    let lhs = builder.ins().fcvt_from_sint(types::F64, lhs);
+    let rhs = builder.ins().fcvt_from_sint(types::F64, rhs);
+    let floating = match operation {
+        RegionBinaryOp::Add => builder.ins().fadd(lhs, rhs),
+        RegionBinaryOp::Sub => builder.ins().fsub(lhs, rhs),
+        RegionBinaryOp::Mul => builder.ins().fmul(lhs, rhs),
+        _ => unreachable!("total integer arithmetic is add, subtract, or multiply"),
+    };
+    let floating = lower_optimizing_encode_float(builder, floating, transition)?;
+    builder.ins().jump(merge, &[floating.into()]);
+
+    builder.switch_to_block(merge);
+    Ok(builder.block_params(merge)[0])
+}
+
+fn lower_total_native_numeric_float(
+    builder: &mut FunctionBuilder<'_>,
+    encoded: ir::Value,
+    deopt_out: ir::Value,
+) -> ir::Value {
+    let floating = builder.create_block();
+    let integer = builder.create_block();
+    let merge = builder.create_block();
+    builder.append_block_param(merge, types::F64);
+    let is_float = lower_value_has_tag(builder, encoded, crate::JIT_VALUE_RUNTIME_FLOAT_TAG);
+    builder.ins().brif(is_float, floating, &[], integer, &[]);
+
+    builder.switch_to_block(floating);
+    let slot = lower_optimizing_slot_address(builder, encoded, deopt_out);
+    let bits = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let value = builder.ins().bitcast(types::F64, MemFlagsData::new(), bits);
+    builder.ins().jump(merge, &[value.into()]);
+
+    builder.switch_to_block(integer);
+    let value = lower_optimizing_authoritative_integer(builder, encoded, deopt_out);
+    let value = builder.ins().fcvt_from_sint(types::F64, value);
+    builder.ins().jump(merge, &[value.into()]);
+
+    builder.switch_to_block(merge);
+    builder.block_params(merge)[0]
+}
+
+fn lower_total_native_numeric_arithmetic(
+    builder: &mut FunctionBuilder<'_>,
+    lhs: ir::Value,
+    rhs: ir::Value,
+    operation: RegionBinaryOp,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    debug_assert!(matches!(
+        operation,
+        RegionBinaryOp::Add | RegionBinaryOp::Sub | RegionBinaryOp::Mul
+    ));
+    let lhs_float = lower_value_has_tag(builder, lhs, crate::JIT_VALUE_RUNTIME_FLOAT_TAG);
+    let rhs_float = lower_value_has_tag(builder, rhs, crate::JIT_VALUE_RUNTIME_FLOAT_TAG);
+    let has_float = builder.ins().bor(lhs_float, rhs_float);
+    let integer = builder.create_block();
+    let floating = builder.create_block();
+    let merge = builder.create_block();
+    builder.append_block_param(merge, types::I64);
+    builder.ins().brif(has_float, floating, &[], integer, &[]);
+
+    builder.switch_to_block(integer);
+    let integer_lhs = lower_optimizing_authoritative_integer(builder, lhs, transition.deopt_out);
+    let integer_rhs = lower_optimizing_authoritative_integer(builder, rhs, transition.deopt_out);
+    let result = lower_total_native_integer_arithmetic(
+        builder,
+        integer_lhs,
+        integer_rhs,
+        operation,
+        transition,
+    )?;
+    builder.ins().jump(merge, &[result.into()]);
+
+    builder.switch_to_block(floating);
+    let floating_lhs = lower_total_native_numeric_float(builder, lhs, transition.deopt_out);
+    let floating_rhs = lower_total_native_numeric_float(builder, rhs, transition.deopt_out);
+    let result = match operation {
+        RegionBinaryOp::Add => builder.ins().fadd(floating_lhs, floating_rhs),
+        RegionBinaryOp::Sub => builder.ins().fsub(floating_lhs, floating_rhs),
+        RegionBinaryOp::Mul => builder.ins().fmul(floating_lhs, floating_rhs),
+        _ => unreachable!("publication-total numeric arithmetic operation"),
+    };
+    let result = lower_optimizing_encode_float(builder, result, transition)?;
+    builder.ins().jump(merge, &[result.into()]);
 
     builder.switch_to_block(merge);
     Ok(builder.block_params(merge)[0])
@@ -16853,20 +17563,34 @@ fn lower_optimizing_power(
 
 #[allow(clippy::too_many_arguments)]
 fn lower_total_native_array_fetch(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
+    array_lookup: FuncId,
+    undefined_array_key_warning: Option<NativeHelper>,
+    array_offset_warning: Option<NativeHelper>,
     array: ir::Value,
     key: ir::Value,
     missing_is_null: bool,
     retain_result: bool,
     dereference_result: bool,
+    file: u32,
+    start: u32,
     transition: NativeOptimizingTransition<'_>,
-) -> ir::Value {
-    let (_, length, entries) =
-        lower_total_native_array_descriptor(builder, array, transition.deopt_out);
-    let (found, value) = lower_optimizing_direct_array_lookup_optional(
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let key = lower_normalize_native_array_key(builder, key, transition.deopt_out);
+    let direct = builder.create_block();
+    let non_array = builder.create_block();
+    let resolved = builder.create_block();
+    builder.append_block_param(resolved, types::I64);
+    let is_array = lower_value_has_tag(builder, array, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
+    builder.ins().brif(is_array, direct, &[], non_array, &[]);
+
+    builder.switch_to_block(direct);
+    let (found, value) = lower_total_native_array_lookup(
+        module,
         builder,
-        length,
-        entries,
+        array_lookup,
+        array,
         key,
         transition.deopt_out,
     );
@@ -16876,19 +17600,102 @@ fn lower_total_native_array_fetch(
             .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
         builder.ins().select(found, value, null)
     } else {
-        // Entry admission proved this normalized key exists. The lookup is
-        // total and its value result is authoritative; no local missing-key
-        // warning or baseline merge remains here.
-        value
+        let present = builder.create_block();
+        let missing = builder.create_block();
+        let complete = builder.create_block();
+        builder.append_block_param(complete, types::I64);
+        builder.ins().brif(found, present, &[], missing, &[]);
+
+        builder.switch_to_block(present);
+        builder.ins().jump(complete, &[value.into()]);
+
+        builder.switch_to_block(missing);
+        let helper = undefined_array_key_warning.ok_or_else(|| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_UNDEFINED_ARRAY_KEY_WARNING",
+                "generated non-quiet array read has no exact warning service",
+            )
+        })?;
+        let file = builder.ins().iconst(types::I64, i64::from(file));
+        let start = builder.ins().iconst(types::I64, i64::from(start));
+        let call = call_native_helper(module, builder, helper, &[key, file, start]);
+        let status = builder.inst_results(call)[0];
+        let warning_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+        let warning_complete = builder.create_block();
+        let warning_failed = builder.create_block();
+        builder
+            .ins()
+            .brif(warning_ok, warning_complete, &[], warning_failed, &[]);
+        builder.switch_to_block(warning_failed);
+        let zero = builder.ins().iconst(types::I32, 0);
+        let no_value = builder.ins().iconst(types::I64, 0);
+        transition.emit_exact_runtime_error(builder, zero, no_value)?;
+        builder.switch_to_block(warning_complete);
+        let null = builder
+            .ins()
+            .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+        builder.ins().jump(complete, &[null.into()]);
+
+        builder.switch_to_block(complete);
+        builder.block_params(complete)[0]
     };
+    builder.ins().jump(resolved, &[value.into()]);
+
+    builder.switch_to_block(non_array);
+    if !missing_is_null {
+        let helper = array_offset_warning.ok_or_else(|| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_ARRAY_OFFSET_WARNING",
+                "generated non-array dimension read has no exact warning service",
+            )
+        })?;
+        let file = builder.ins().iconst(types::I64, i64::from(file));
+        let start = builder.ins().iconst(types::I64, i64::from(start));
+        let call = call_native_helper(module, builder, helper, &[array, file, start]);
+        let status = builder.inst_results(call)[0];
+        let warning_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+        let warning_complete = builder.create_block();
+        let warning_failed = builder.create_block();
+        builder
+            .ins()
+            .brif(warning_ok, warning_complete, &[], warning_failed, &[]);
+        builder.switch_to_block(warning_failed);
+        let zero = builder.ins().iconst(types::I32, 0);
+        let no_value = builder.ins().iconst(types::I64, 0);
+        transition.emit_exact_runtime_error(builder, zero, no_value)?;
+        builder.switch_to_block(warning_complete);
+    }
+    let null = builder
+        .ins()
+        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+    builder.ins().jump(resolved, &[null.into()]);
+
+    builder.switch_to_block(resolved);
+    let value = builder.block_params(resolved)[0];
     if retain_result {
         lower_optimizing_retain(builder, value, transition.deopt_out);
     }
     if retain_result && dereference_result {
-        lower_optimizing_dereference_owned_value(builder, value, transition)
+        Ok(lower_optimizing_dereference_owned_value(
+            builder, value, transition,
+        ))
     } else {
-        value
+        Ok(value)
     }
+}
+
+fn lower_total_native_array_lookup(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    array_lookup: FuncId,
+    array: ir::Value,
+    key: ir::Value,
+    deopt_out: ir::Value,
+) -> (ir::Value, ir::Value) {
+    let callee = module.declare_func_in_func(array_lookup, builder.func);
+    let call = builder.ins().call(callee, &[deopt_out, array, key]);
+    let results = builder.inst_results(call);
+    (results[0], results[1])
 }
 
 fn lower_optimizing_require_direct_value(
@@ -16900,7 +17707,9 @@ fn lower_optimizing_require_direct_value(
 }
 
 fn lower_total_native_array_probe_path(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
+    array_lookup: FuncId,
     root: ir::Value,
     keys: &[ir::Value],
     deopt_out: ir::Value,
@@ -16916,10 +17725,8 @@ fn lower_total_native_array_probe_path(
         builder.ins().brif(present, lookup, &[], missing, &[]);
 
         builder.switch_to_block(lookup);
-        let (_, length, entries) = lower_total_native_array_descriptor(builder, value, deopt_out);
-        let (found, candidate) = lower_optimizing_direct_array_lookup_optional(
-            builder, length, entries, *key, deopt_out,
-        );
+        let (found, candidate) =
+            lower_total_native_array_lookup(module, builder, array_lookup, value, *key, deopt_out);
         builder
             .ins()
             .brif(found, done, &[found.into(), candidate.into()], missing, &[]);
@@ -17026,6 +17833,7 @@ fn lower_total_native_array_insert_integer(
     key: ir::Value,
     value: ir::Value,
     retain_value: bool,
+    release_replaced: bool,
     deopt_out: ir::Value,
 ) -> ir::Value {
     let (slot, length, entries) = lower_total_native_array_descriptor(builder, array, deopt_out);
@@ -17033,6 +17841,7 @@ fn lower_total_native_array_insert_integer(
     let scan = builder.create_block();
     let inspect = builder.create_block();
     let found = builder.create_block();
+    let replace = builder.create_block();
     let next = builder.create_block();
     let missing = builder.create_block();
     let done = builder.create_block();
@@ -17053,17 +17862,26 @@ fn lower_total_native_array_insert_integer(
     let candidate = builder
         .ins()
         .load(types::I64, MemFlagsData::new(), entry, 0);
-    let matches = builder.ins().icmp(IntCC::Equal, candidate, key);
+    let matches = lower_native_array_key_equal(builder, candidate, key, deopt_out);
     builder
         .ins()
         .brif(matches, found, &[], next, &[index.into()]);
 
     builder.switch_to_block(next);
-    let index = builder.block_params(next)[0];
-    let next_index = builder.ins().iadd_imm(index, 1);
+    let scanned_index = builder.block_params(next)[0];
+    let next_index = builder.ins().iadd_imm(scanned_index, 1);
     builder.ins().jump(scan, &[next_index.into()]);
 
     builder.switch_to_block(found);
+    let replaced = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        entry,
+        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+    );
+    let unchanged = builder.ins().icmp(IntCC::Equal, replaced, value);
+    builder.ins().brif(unchanged, done, &[], replace, &[]);
+    builder.switch_to_block(replace);
     if retain_value {
         lower_optimizing_retain(builder, value, deopt_out);
     }
@@ -17073,6 +17891,9 @@ fn lower_total_native_array_insert_integer(
         entry,
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
+    if release_replaced {
+        lower_optimizing_release_call_owner(builder, replaced, deopt_out);
+    }
     builder.ins().jump(done, &[]);
 
     builder.switch_to_block(missing);
@@ -17157,6 +17978,7 @@ fn lower_total_native_array_insert_integer(
     builder.ins().jump(done, &[]);
 
     builder.switch_to_block(done);
+    lower_mark_native_roots_dirty(builder, deopt_out);
     array
 }
 
@@ -17176,12 +17998,14 @@ fn lower_total_native_array_insert(
     retain_value: bool,
     transition: NativeOptimizingTransition<'_>,
 ) -> ir::Value {
+    let key = lower_normalize_native_array_key(builder, key, transition.deopt_out);
     let (slot, length, entries) =
         lower_total_native_array_descriptor(builder, array, transition.deopt_out);
     let pointer_type = builder.func.dfg.value_type(entries);
     let scan = builder.create_block();
     let inspect = builder.create_block();
     let found = builder.create_block();
+    let unchanged = builder.create_block();
     let replace = builder.create_block();
     let replace_reference = builder.create_block();
     let replace_plain = builder.create_block();
@@ -17221,14 +18045,35 @@ fn lower_total_native_array_insert(
 
     builder.switch_to_block(found);
     let entry = builder.block_params(found)[0];
+    if !retain_key {
+        let _ = lower_direct_release_with_commit(
+            builder,
+            key,
+            transition.runtime,
+            transition.deopt_out,
+            transition.value_release_commit,
+        );
+    }
     let previous = builder.ins().load(
         types::I64,
         MemFlagsData::new(),
         entry,
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
-    let unchanged = builder.ins().icmp(IntCC::Equal, previous, value);
-    builder.ins().brif(unchanged, done, &[], replace, &[]);
+    let same_value = builder.ins().icmp(IntCC::Equal, previous, value);
+    builder.ins().brif(same_value, unchanged, &[], replace, &[]);
+
+    builder.switch_to_block(unchanged);
+    if !retain_value {
+        let _ = lower_direct_release_with_commit(
+            builder,
+            value,
+            transition.runtime,
+            transition.deopt_out,
+            transition.value_release_commit,
+        );
+    }
+    builder.ins().jump(done, &[]);
 
     builder.switch_to_block(replace);
     let reference = lower_value_has_tag(builder, previous, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
@@ -17247,9 +18092,13 @@ fn lower_total_native_array_insert(
     if retain_value {
         lower_optimizing_retain(builder, value, transition.deopt_out);
     }
-    let _ = builder.ins().call(
+    lower_mark_native_roots_dirty(builder, transition.deopt_out);
+    let _ = lower_direct_release_with_commit(
+        builder,
+        previous_payload,
+        transition.runtime,
+        transition.deopt_out,
         transition.value_release_commit,
-        &[transition.deopt_out, previous_payload],
     );
     builder.ins().store(
         MemFlagsData::new(),
@@ -17257,16 +18106,19 @@ fn lower_total_native_array_insert(
         reference_slot,
         std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
     );
-    lower_mark_native_roots_dirty(builder, transition.deopt_out);
     builder.ins().jump(done, &[]);
 
     builder.switch_to_block(replace_plain);
     if retain_value {
         lower_optimizing_retain(builder, value, transition.deopt_out);
     }
-    let _ = builder.ins().call(
+    lower_mark_native_roots_dirty(builder, transition.deopt_out);
+    let _ = lower_direct_release_with_commit(
+        builder,
+        previous,
+        transition.runtime,
+        transition.deopt_out,
         transition.value_release_commit,
-        &[transition.deopt_out, previous],
     );
     builder.ins().store(
         MemFlagsData::new(),
@@ -17414,14 +18266,14 @@ fn lower_total_native_array_unset_integer(
     let candidate = builder
         .ins()
         .load(types::I64, MemFlagsData::new(), entry, 0);
-    let matches = builder.ins().icmp(IntCC::Equal, candidate, key);
+    let matches = lower_native_array_key_equal(builder, candidate, key, deopt_out);
     builder
         .ins()
         .brif(matches, found, &[], next, &[index.into()]);
 
     builder.switch_to_block(next);
-    let index = builder.block_params(next)[0];
-    let next_index = builder.ins().iadd_imm(index, 1);
+    let scanned_index = builder.block_params(next)[0];
+    let next_index = builder.ins().iadd_imm(scanned_index, 1);
     builder.ins().jump(scan, &[next_index.into()]);
 
     builder.switch_to_block(found);
@@ -17549,14 +18401,8 @@ fn lower_total_native_create_array_path(
     for key in keys {
         let zero = builder.ins().iconst(types::I64, 0);
         let child = lower_optimizing_allocate_direct_array(builder, zero, true, transition)?;
-        let _ = lower_total_native_array_insert_integer(
-            builder,
-            current,
-            *key,
-            child,
-            false,
-            transition.deopt_out,
-        );
+        let _ =
+            lower_total_native_array_insert(builder, current, *key, child, true, false, transition);
         current = child;
     }
     Ok(current)
@@ -17579,6 +18425,106 @@ fn lower_total_native_existing_array_path(
     current
 }
 
+fn lower_total_native_mutable_array_path(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    array_ensure_unique: FuncId,
+    root: ir::Value,
+    keys: &[ir::Value],
+    reserve_leaf_entry: bool,
+    consume_root_owner: bool,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
+    // The root is the parent mutated by the first path component. Reserve
+    // that possible child entry here, while `root` is still the value that
+    // will be published back to its authoritative local/property owner.
+    // Growing it again inside the loop can return a new COW handle while the
+    // saved `root` still names the consumed predecessor.
+    let root_additional = builder.ins().iconst(
+        types::I64,
+        i64::from(!keys.is_empty() || reserve_leaf_entry),
+    );
+    let root = lower_total_direct_array_ensure_unique_capacity(
+        module,
+        builder,
+        array_ensure_unique,
+        root,
+        root_additional,
+        consume_root_owner,
+        transition.deopt_out,
+    );
+    let mut current = root;
+    for (index, key) in keys.iter().enumerate() {
+        let (_, length, entries) =
+            lower_total_native_array_descriptor(builder, current, transition.deopt_out);
+        let (found, child) = lower_optimizing_direct_array_lookup_optional(
+            builder,
+            length,
+            entries,
+            *key,
+            transition.deopt_out,
+        );
+        let existing = builder.create_block();
+        let missing = builder.create_block();
+        let publish_child = builder.create_block();
+        let child_ready = builder.create_block();
+        builder.append_block_param(publish_child, types::I64);
+        builder.append_block_param(child_ready, types::I64);
+        // The selected child becomes the next parent unless this is the leaf
+        // boundary. Reserve its possible path insertion before wiring the
+        // unique handle into `current`; on the leaf, assignment/append needs
+        // one entry while unset needs none.
+        let child_additional = builder.ins().iconst(
+            types::I64,
+            i64::from(index + 1 < keys.len() || reserve_leaf_entry),
+        );
+        builder.ins().brif(found, existing, &[], missing, &[]);
+
+        builder.switch_to_block(existing);
+        let child = lower_optimizing_reference_scalar(builder, child, false, transition)?;
+        let unique = lower_total_direct_array_ensure_unique_capacity(
+            module,
+            builder,
+            array_ensure_unique,
+            child,
+            child_additional,
+            false,
+            transition.deopt_out,
+        );
+        let changed = builder.ins().icmp(IntCC::NotEqual, unique, child);
+        builder.ins().brif(
+            changed,
+            publish_child,
+            &[unique.into()],
+            child_ready,
+            &[unique.into()],
+        );
+
+        builder.switch_to_block(missing);
+        let child =
+            lower_optimizing_allocate_direct_array(builder, child_additional, true, transition)?;
+        builder.ins().jump(publish_child, &[child.into()]);
+
+        builder.switch_to_block(publish_child);
+        let unique = builder.block_params(publish_child)[0];
+        // `ensure_unique(..., consume_owner=false)` borrows an unchanged
+        // child directly from the parent, but returns an owned handle when it
+        // actually clones. Re-inserting the unchanged borrowed handle with a
+        // transfer contract would release the parent's sole owner in the
+        // same-value branch and leave a dangling array entry. Only publish a
+        // genuinely new child; that insertion consumes its fresh owner.
+        let _ = lower_total_native_array_insert(
+            builder, current, *key, unique, true, false, transition,
+        );
+        builder.ins().jump(child_ready, &[unique.into()]);
+
+        builder.switch_to_block(child_ready);
+        let unique = builder.block_params(child_ready)[0];
+        current = unique;
+    }
+    Ok((root, current))
+}
+
 fn lower_total_native_array_dimension_reference(
     builder: &mut FunctionBuilder<'_>,
     root: ir::Value,
@@ -17598,759 +18544,66 @@ fn lower_total_native_array_dimension_reference(
         .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
     let current = builder.ins().select(found, current, null);
     let reference = lower_total_native_bind_reference(builder, current, deopt_out);
+    // The new reference adopts the array entry's existing value owner. Do not
+    // release that owner while replacing the entry with the reference itself.
     let _ = lower_total_native_array_insert_integer(
-        builder, leaf, *leaf_key, reference, false, deopt_out,
+        builder, leaf, *leaf_key, reference, false, false, deopt_out,
     );
     reference
 }
 
-#[allow(clippy::too_many_arguments)]
-fn lower_baseline_array_fetch(
+fn lower_total_native_cow_array_dimension_reference(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    lifecycle: Option<NativeHelper>,
-    operation: u32,
-    array: ir::Value,
-    key: ir::Value,
-    constant_string_key: bool,
-    unit_identity: u64,
-    result_out: ir::Value,
+    array_ensure_unique: FuncId,
+    root: ir::Value,
+    keys: &[ir::Value],
     deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    lower_baseline_array_fetch_inner(
-        module,
-        builder,
-        helper,
-        lifecycle,
-        operation,
-        array,
-        key,
-        constant_string_key,
-        unit_identity,
-        result_out,
-        deopt_out,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_baseline_array_fetch_inner(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    lifecycle: Option<NativeHelper>,
-    operation: u32,
-    array: ir::Value,
-    key: ir::Value,
-    _constant_string_key: bool,
-    _unit_identity: u64,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    if !helper.is_some_and(|helper| helper.inline_runtime_view) {
-        return lower_native_value_operation(
-            module,
-            builder,
-            helper,
-            operation,
-            &[array, key],
-            result_out,
-        );
-    }
-    let inspect_runtime = builder.create_block();
-    let inspect_descriptor = builder.create_block();
-    let entry_loop = builder.create_block();
-    let entry_compare = builder.create_block();
-    let entry_next = builder.create_block();
-    let entry_missing = builder.create_block();
-    let cached = builder.create_block();
-    let slow_not_tagged = builder.create_block();
-    let slow_view_missing = builder.create_block();
-    let slow_key_unsupported = builder.create_block();
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(inspect_descriptor, module.target_config().pointer_type());
-    builder.append_block_param(cached, types::I64);
-    builder.append_block_param(entry_loop, types::I64);
-    builder.append_block_param(entry_next, types::I64);
-    builder.append_block_param(merge, types::I64);
-
-    let is_array = lower_value_has_tag(builder, array, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
-    builder
-        .ins()
-        .brif(is_array, inspect_runtime, &[], slow_not_tagged, &[]);
-
-    let pointer_type = module.target_config().pointer_type();
-    builder.switch_to_block(inspect_runtime);
-    let descriptor = lower_optimizing_slot_address(builder, array, deopt_out);
-    builder.ins().jump(inspect_descriptor, &[descriptor.into()]);
-
-    builder.switch_to_block(inspect_descriptor);
-    let descriptor = builder.block_params(inspect_descriptor)[0];
-    let kind = builder.ins().load(
+) -> (ir::Value, ir::Value) {
+    let slot = lower_optimizing_slot_address(builder, root, deopt_out);
+    let refcount = builder.ins().load(
         types::I32,
         MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
+        slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, refcount) as i32,
     );
-    let runtime_kind = builder.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        i64::from(crate::JIT_NATIVE_VALUE_VIEW_ARRAY),
-    );
-    let arena_kind = builder.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_ARRAY),
-    );
-    let array_kind = builder.ins().bor(runtime_kind, arena_kind);
-    let key_runtime = lower_is_runtime_handle(builder, key);
-    let key_constant = lower_value_has_namespace_tag(builder, key, crate::JIT_VALUE_CONSTANT_TAG);
-    let namespaced = builder.ins().bor(key_runtime, key_constant);
-    let supported_key = builder.ins().icmp_imm(IntCC::Equal, namespaced, 0);
-    let length = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
-    );
-    let entries = builder.ins().load(
-        pointer_type,
-        MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
-    );
+    let shared = builder
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThan, refcount, 1);
+    let clone = builder.create_block();
+    let unique = builder.create_block();
+    let ready = builder.create_block();
+    builder.append_block_param(ready, types::I64);
+    builder.ins().brif(shared, clone, &[], unique, &[]);
+    builder.switch_to_block(clone);
     let zero = builder.ins().iconst(types::I64, 0);
-    let inspect_key = builder.create_block();
-    builder
-        .ins()
-        .brif(array_kind, inspect_key, &[], slow_view_missing, &[]);
-
-    builder.switch_to_block(inspect_key);
-    builder.ins().brif(
-        supported_key,
-        entry_loop,
-        &[zero.into()],
-        slow_key_unsupported,
-        &[],
-    );
-
-    builder.switch_to_block(entry_loop);
-    let index = builder.block_params(entry_loop)[0];
-    let exhausted = builder
-        .ins()
-        .icmp(IntCC::UnsignedGreaterThanOrEqual, index, length);
-    builder
-        .ins()
-        .brif(exhausted, entry_missing, &[], entry_compare, &[]);
-
-    builder.switch_to_block(entry_compare);
-    let entry_index = if pointer_type == types::I64 {
-        index
-    } else {
-        builder.ins().ireduce(pointer_type, index)
-    };
-    let entry_offset = builder.ins().ishl_imm(entry_index, 4);
-    let entry = builder.ins().iadd(entries, entry_offset);
-    let candidate = builder
-        .ins()
-        .load(types::I64, MemFlagsData::new(), entry, 0);
-    let matches = builder.ins().icmp(IntCC::Equal, candidate, key);
-    let found = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        entry,
-        std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
-    );
-    builder.ins().brif(
-        matches,
-        cached,
-        &[found.into()],
-        entry_next,
-        &[index.into()],
-    );
-
-    builder.switch_to_block(entry_next);
-    let index = builder.block_params(entry_next)[0];
-    let next = builder.ins().iadd_imm(index, 1);
-    builder.ins().jump(entry_loop, &[next.into()]);
-
-    builder.switch_to_block(entry_missing);
-    if operation & 1 == 1 {
-        let missing = builder
-            .ins()
-            .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-        builder.ins().jump(cached, &[missing.into()]);
-    } else {
-        builder.ins().jump(slow, &[]);
-    }
-
-    builder.switch_to_block(cached);
-    let value = builder.block_params(cached)[0];
-    let value =
-        lower_guarded_value_release(module, builder, lifecycle, 0, value, result_out, deopt_out)?;
-    builder.ins().jump(merge, &[value.into()]);
-
-    builder.switch_to_block(slow);
-    let value = lower_native_value_operation(
+    let cloned = lower_total_direct_array_ensure_unique_capacity(
         module,
         builder,
-        helper,
-        operation,
-        &[array, key],
-        result_out,
-    )?;
-    builder.ins().jump(merge, &[value.into()]);
-
-    for block in [slow_not_tagged, slow_view_missing, slow_key_unsupported] {
-        builder.switch_to_block(block);
-        builder.ins().jump(slow, &[]);
-    }
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_direct_foreach_next(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    lifecycle: Option<NativeHelper>,
-    iterator: ir::Value,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    suspension: Option<NativeForeachSuspension<'_>>,
-) -> Result<(ir::Value, ir::Value, ir::Value), CraneliftLoweringError> {
-    let pointer_type = module.target_config().pointer_type();
-    let helper = helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-            "native foreach-next helper was not declared",
-        )
-    })?;
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-    builder.append_block_param(merge, types::I64);
-    builder.append_block_param(merge, types::I64);
-
-    if let Some(suspension) = suspension {
-        let invoke = builder.create_block();
-        let resumed = builder.create_block();
-        let propagate = builder.create_block();
-        let status = builder.use_var(suspension.pending_status);
-        let normal = builder.ins().icmp_imm(
-            IntCC::Equal,
-            status,
-            i64::from(crate::JitCallStatus::CONTINUE.0),
-        );
-        builder.ins().brif(normal, invoke, &[], resumed, &[]);
-
-        builder.switch_to_block(resumed);
-        let value = builder.use_var(suspension.pending_value);
-        let clear = builder
-            .ins()
-            .iconst(types::I32, i64::from(crate::JitCallStatus::CONTINUE.0));
-        builder.def_var(suspension.pending_status, clear);
-        let returned = builder.ins().icmp_imm(
-            IntCC::Equal,
-            status,
-            i64::from(crate::JitCallStatus::RETURN.0),
-        );
-        let completed = builder.create_block();
-        builder.ins().brif(returned, completed, &[], propagate, &[]);
-
-        builder.switch_to_block(completed);
-        let key = builder.ins().load(
-            types::I64,
-            MemFlagsData::new(),
-            suspension.resume_state,
-            std::mem::offset_of!(crate::JitDeoptState, yielded_key) as i32,
-        );
-        let has = builder.ins().load(
-            types::I32,
-            MemFlagsData::new(),
-            suspension.resume_state,
-            std::mem::offset_of!(crate::JitDeoptState, suspend_flags) as i32,
-        );
-        let has = builder.ins().uextend(types::I64, has);
-        builder
-            .ins()
-            .jump(merge, &[key.into(), value.into(), has.into()]);
-
-        builder.switch_to_block(propagate);
-        copy_native_deopt_state(builder, pointer_type, deopt_out, suspension.resume_state);
-        builder
-            .ins()
-            .store(MemFlagsData::new(), value, result_out, 0);
-        builder.ins().return_(&[status]);
-
-        builder.switch_to_block(invoke);
-    }
-
-    if helper.inline_runtime_view {
-        let inspect_runtime = builder.create_block();
-        let inspect_descriptor = builder.create_block();
-        let inspect_cursor = builder.create_block();
-        let present = builder.create_block();
-        let exhausted = builder.create_block();
-
-        let is_iterator =
-            lower_value_has_tag(builder, iterator, crate::JIT_VALUE_RUNTIME_ITERATOR_TAG);
-        builder
-            .ins()
-            .brif(is_iterator, inspect_runtime, &[], slow, &[]);
-
-        builder.switch_to_block(inspect_runtime);
-        let descriptor = lower_optimizing_slot_address(builder, iterator, deopt_out);
-        builder.ins().jump(inspect_descriptor, &[]);
-
-        builder.switch_to_block(inspect_descriptor);
-        let kind = builder.ins().load(
-            types::I32,
-            MemFlagsData::new(),
-            descriptor,
-            std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
-        );
-        let flags = builder.ins().load(
-            types::I32,
-            MemFlagsData::new(),
-            descriptor,
-            std::mem::offset_of!(crate::JitNativeValueSlot, flags) as i32,
-        );
-        let payload = builder.ins().load(
-            types::I64,
-            MemFlagsData::new(),
-            descriptor,
-            std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
-        );
-        let kind_ok = builder.ins().icmp_imm(
-            IntCC::Equal,
-            kind,
-            i64::from(crate::JIT_NATIVE_VALUE_VIEW_FOREACH_DIRECT),
-        );
-        let flags_ok = builder.ins().icmp_imm(
-            IntCC::Equal,
-            flags,
-            i64::from(crate::JIT_NATIVE_FOREACH_VIEW_ABI_VERSION),
-        );
-        let payload_ok = builder.ins().icmp_imm(IntCC::NotEqual, payload, 0);
-        let descriptor_ok = builder.ins().band(kind_ok, flags_ok);
-        let descriptor_ok = builder.ins().band(descriptor_ok, payload_ok);
-        builder
-            .ins()
-            .brif(descriptor_ok, inspect_cursor, &[], slow, &[]);
-
-        builder.switch_to_block(inspect_cursor);
-        let foreach_view = if pointer_type == types::I64 {
-            payload
-        } else {
-            builder.ins().ireduce(pointer_type, payload)
-        };
-        let cursor = builder.ins().load(
-            types::I64,
-            MemFlagsData::new(),
-            foreach_view,
-            std::mem::offset_of!(crate::JitNativeForeachView, cursor) as i32,
-        );
-        let length = builder.ins().load(
-            types::I64,
-            MemFlagsData::new(),
-            foreach_view,
-            std::mem::offset_of!(crate::JitNativeForeachView, length) as i32,
-        );
-        let has_value = builder.ins().icmp(IntCC::UnsignedLessThan, cursor, length);
-        builder.ins().brif(has_value, present, &[], exhausted, &[]);
-
-        builder.switch_to_block(present);
-        let entries = builder.ins().load(
-            pointer_type,
-            MemFlagsData::new(),
-            foreach_view,
-            std::mem::offset_of!(crate::JitNativeForeachView, entries) as i32,
-        );
-        let entry_offset = builder.ins().ishl_imm(cursor, 4);
-        let entry_offset = if pointer_type == types::I64 {
-            entry_offset
-        } else {
-            builder.ins().ireduce(pointer_type, entry_offset)
-        };
-        let entry = builder.ins().iadd(entries, entry_offset);
-        let key = builder.ins().load(
-            types::I64,
-            MemFlagsData::new(),
-            entry,
-            std::mem::offset_of!(crate::JitNativeForeachEntry, key) as i32,
-        );
-        let value = builder.ins().load(
-            types::I64,
-            MemFlagsData::new(),
-            entry,
-            std::mem::offset_of!(crate::JitNativeForeachEntry, value) as i32,
-        );
-        let next = builder.ins().iadd_imm(cursor, 1);
-        builder.ins().store(
-            MemFlagsData::new(),
-            next,
-            foreach_view,
-            std::mem::offset_of!(crate::JitNativeForeachView, cursor) as i32,
-        );
-        let key =
-            lower_guarded_value_release(module, builder, lifecycle, 0, key, result_out, deopt_out)?;
-        let value = lower_guarded_value_release(
-            module, builder, lifecycle, 0, value, result_out, deopt_out,
-        )?;
-        let one = builder.ins().iconst(types::I64, 1);
-        builder
-            .ins()
-            .jump(merge, &[key.into(), value.into(), one.into()]);
-
-        builder.switch_to_block(exhausted);
-        let null = builder
-            .ins()
-            .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-        let zero = builder.ins().iconst(types::I64, 0);
-        builder
-            .ins()
-            .jump(merge, &[null.into(), null.into(), zero.into()]);
-    } else {
-        builder.ins().jump(slow, &[]);
-    }
-
-    builder.switch_to_block(slow);
-    let key_slot =
-        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
-    let value_slot =
-        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
-    let has_slot =
-        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
-    let key_out = builder.ins().stack_addr(pointer_type, key_slot, 0);
-    let value_out = builder.ins().stack_addr(pointer_type, value_slot, 0);
-    let has_out = builder.ins().stack_addr(pointer_type, has_slot, 0);
-    let call = call_native_helper(
-        module,
-        builder,
-        helper,
-        &[iterator, key_out, value_out, has_out, deopt_out],
-    );
-    let status = builder.inst_results(call)[0];
-    if let Some(suspension) = suspension {
-        let ok = builder.create_block();
-        let suspended = builder.create_block();
-        let rejected = builder.create_block();
-        let is_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-        let is_suspended = builder.ins().icmp_imm(
-            IntCC::Equal,
-            status,
-            i64::from(crate::JitCallStatus::SUSPEND_FIBER.0),
-        );
-        builder.ins().brif(is_ok, ok, &[], suspended, &[]);
-        builder.switch_to_block(suspended);
-        let empty = builder.ins().iconst(types::I64, 0);
-        builder.ins().brif(
-            is_suspended,
-            rejected,
-            &[],
-            helper.terminal_exit()?.block,
-            &[status.into(), empty.into()],
-        );
-        builder.switch_to_block(rejected);
-        let link = capture_native_fiber_callee_if_suspended(
-            module, builder, status, deopt_out, result_out,
-        );
-        publish_native_call_state(
-            builder,
-            deopt_out,
-            suspension.function,
-            suspension.local_count,
-            suspension.instruction,
-            suspension.locals,
-            suspension.native_version,
-        )?;
-        publish_native_register_state(
-            builder,
-            deopt_out,
-            suspension.registers,
-            suspension.live_registers,
-        )?;
-        publish_native_fiber_suspension_link(builder, deopt_out, link);
-        let value = builder.ins().stack_load(types::I64, value_slot, 0);
-        builder
-            .ins()
-            .store(MemFlagsData::new(), value, result_out, 0);
-        builder.ins().return_(&[status]);
-        builder.switch_to_block(ok);
-    } else {
-        require_native_operation_ok(builder, status, helper.terminal_exit()?)?;
-    }
-    let key = builder.ins().stack_load(types::I64, key_slot, 0);
-    let value = builder.ins().stack_load(types::I64, value_slot, 0);
-    let has = builder.ins().stack_load(types::I64, has_slot, 0);
-    builder
-        .ins()
-        .jump(merge, &[key.into(), value.into(), has.into()]);
-
-    builder.switch_to_block(merge);
-    let params = builder.block_params(merge);
-    Ok((params[0], params[1], params[2]))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_guarded_empty_condition(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    truthy: Option<NativeHelper>,
-    stable_length: Option<NativeHelper>,
-    value: ir::Value,
-    function: FunctionId,
-    continuation_id: u32,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let array = builder.create_block();
-    let generic = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I8);
-
-    let is_array = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_ARRAY_TAG);
-    builder.ins().brif(is_array, array, &[], generic, &[]);
-
-    builder.switch_to_block(array);
-    let length = lower_stable_builtin_length(
-        module,
-        builder,
-        stable_length,
-        1,
-        value,
-        function,
-        continuation_id,
-        result_out,
+        array_ensure_unique,
+        root,
+        zero,
+        true,
         deopt_out,
-    )?;
-    let array_truthy = builder.ins().icmp_imm(IntCC::NotEqual, length, 0);
-    builder.ins().jump(merge, &[array_truthy.into()]);
-
-    builder.switch_to_block(generic);
-    let generic_truthy = terminators::lower_baseline_unknown_condition(
-        module,
-        builder,
-        truthy.ok_or_else(|| {
-            CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-                "native empty truthiness helper was not declared",
-            )
-        })?,
-        value,
-        deopt_out,
-    )?;
-    builder.ins().jump(merge, &[generic_truthy.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
+    );
+    builder.ins().jump(ready, &[cloned.into()]);
+    builder.switch_to_block(unique);
+    builder.ins().jump(ready, &[root.into()]);
+    builder.switch_to_block(ready);
+    let root = builder.block_params(ready)[0];
+    let reference = lower_total_native_array_dimension_reference(builder, root, keys, deopt_out);
+    (root, reference)
 }
 
-fn lower_guarded_strict_identity(
-    module: &mut JITModule,
+fn lower_guarded_value_owner_change(
     builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    op: RegionCompareOpCode,
-    lhs: ir::Value,
-    rhs: ir::Value,
-    result_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    if !helper.is_some_and(|helper| helper.inline_runtime_view) {
-        return lower_native_value_operation(
-            module,
-            builder,
-            helper,
-            native_compare_opcode(op),
-            &[lhs, rhs],
-            result_out,
-        );
-    }
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let values_equal = builder.ins().icmp(IntCC::Equal, lhs, rhs);
-    let lhs_runtime = lower_is_runtime_handle(builder, lhs);
-    let rhs_runtime = lower_is_runtime_handle(builder, rhs);
-    let lhs_constant = lower_value_has_namespace_tag(builder, lhs, crate::JIT_VALUE_CONSTANT_TAG);
-    let rhs_constant = lower_value_has_namespace_tag(builder, rhs, crate::JIT_VALUE_CONSTANT_TAG);
-    let lhs_constant_index = builder.ins().ireduce(types::I32, lhs);
-    let rhs_constant_index = builder.ins().ireduce(types::I32, rhs);
-    let lhs_reserved = builder.ins().icmp_imm(
-        IntCC::UnsignedGreaterThanOrEqual,
-        lhs_constant_index,
-        i64::from(crate::JIT_VALUE_TRUE),
-    );
-    let rhs_reserved = builder.ins().icmp_imm(
-        IntCC::UnsignedGreaterThanOrEqual,
-        rhs_constant_index,
-        i64::from(crate::JIT_VALUE_TRUE),
-    );
-    let lhs_not_reserved = lower_not_bool(builder, lhs_reserved);
-    let rhs_not_reserved = lower_not_bool(builder, rhs_reserved);
-    let lhs_opaque_constant = builder.ins().band(lhs_constant, lhs_not_reserved);
-    let rhs_opaque_constant = builder.ins().band(rhs_constant, rhs_not_reserved);
-    let needs_slow = builder.ins().bor(lhs_runtime, rhs_runtime);
-    let needs_slow = builder.ins().bor(needs_slow, lhs_opaque_constant);
-    let needs_slow = builder.ins().bor(needs_slow, rhs_opaque_constant);
-    let values_different = builder.ins().icmp_imm(IntCC::Equal, values_equal, 0);
-    let needs_slow = builder.ins().band(values_different, needs_slow);
-    let direct_result = if op == RegionCompareOpCode::NotIdentical {
-        values_different
-    } else {
-        values_equal
-    };
-    let direct_result = encode_native_bool(builder, direct_result);
-    builder
-        .ins()
-        .brif(needs_slow, slow, &[], merge, &[direct_result.into()]);
-
-    builder.switch_to_block(slow);
-    let value = lower_native_value_operation(
-        module,
-        builder,
-        helper,
-        native_compare_opcode(op),
-        &[lhs, rhs],
-        result_out,
-    )?;
-    builder.ins().jump(merge, &[value.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-fn lower_guarded_isset_value(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
+    retain: bool,
     value: ir::Value,
-    result_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let null = builder
-        .ins()
-        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-    if !helper.is_some_and(|helper| helper.inline_runtime_view) {
-        return lower_native_value_operation(
-            module,
-            builder,
-            helper,
-            native_compare_opcode(RegionCompareOpCode::NotIdentical),
-            &[value, null],
-            result_out,
-        );
-    }
-
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let kind = builder
-        .ins()
-        .band_imm(value, crate::JIT_VALUE_RUNTIME_KIND_MASK as i64);
-    let is_reference = builder.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        crate::JIT_VALUE_RUNTIME_REFERENCE_TAG as i64,
-    );
-    let is_boxed_scalar =
-        builder
-            .ins()
-            .icmp_imm(IntCC::Equal, kind, crate::JIT_VALUE_RUNTIME_TAG as i64);
-    let is_constant = lower_value_has_namespace_tag(builder, value, crate::JIT_VALUE_CONSTANT_TAG);
-    let constant_index = builder.ins().ireduce(types::I32, value);
-    let is_reserved = builder.ins().icmp_imm(
-        IntCC::UnsignedGreaterThanOrEqual,
-        constant_index,
-        i64::from(crate::JIT_VALUE_TRUE),
-    );
-    let is_not_reserved = lower_not_bool(builder, is_reserved);
-    let is_opaque_constant = builder.ins().band(is_constant, is_not_reserved);
-    let needs_decode = builder.ins().bor(is_reference, is_boxed_scalar);
-    let needs_decode = builder.ins().bor(needs_decode, is_opaque_constant);
-    let is_set = builder.ins().icmp(IntCC::NotEqual, value, null);
-    let is_set = encode_native_bool(builder, is_set);
-    builder
-        .ins()
-        .brif(needs_decode, slow, &[], merge, &[is_set.into()]);
-
-    builder.switch_to_block(slow);
-    let is_set = lower_native_value_operation(
-        module,
-        builder,
-        helper,
-        native_compare_opcode(RegionCompareOpCode::NotIdentical),
-        &[value, null],
-        result_out,
-    )?;
-    builder.ins().jump(merge, &[is_set.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-fn lower_guarded_integer_compare(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    op: RegionCompareOpCode,
-    lhs: ir::Value,
-    rhs: ir::Value,
-    result_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let direct = builder.create_block();
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let lhs_constant = lower_value_has_namespace_tag(builder, lhs, crate::JIT_VALUE_CONSTANT_TAG);
-    let rhs_constant = lower_value_has_namespace_tag(builder, rhs, crate::JIT_VALUE_CONSTANT_TAG);
-    let lhs_int = lower_is_immediate_int(builder, lhs, lhs_constant);
-    let rhs_int = lower_is_immediate_int(builder, rhs, rhs_constant);
-    let both_int = builder.ins().band(lhs_int, rhs_int);
-    builder.ins().brif(both_int, direct, &[], slow, &[]);
-
-    builder.switch_to_block(direct);
-    let value = lower_direct_compare(
-        builder,
-        op,
-        lhs,
-        rhs,
-        SsaValueClass::Int,
-        SsaValueClass::Int,
-    )
-    .expect("integer comparisons have direct CLIF lowering");
-    builder.ins().jump(merge, &[value.into()]);
-
-    builder.switch_to_block(slow);
-    let value = lower_native_value_operation(
-        module,
-        builder,
-        helper,
-        native_compare_opcode(op),
-        &[lhs, rhs],
-        result_out,
-    )?;
-    builder.ins().jump(merge, &[value.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-fn lower_guarded_value_release(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    operation: u32,
-    value: ir::Value,
-    _result_out: ir::Value,
     deopt_out: ir::Value,
+    runtime: ir::Value,
+    value_release_commit: ir::FuncRef,
 ) -> Result<ir::Value, CraneliftLoweringError> {
-    if operation & 1 == 0 {
+    if retain {
         let retain = builder.create_block();
         let done = builder.create_block();
         let is_runtime = lower_is_runtime_handle(builder, value);
@@ -18387,593 +18640,57 @@ fn lower_guarded_value_release(
     builder.ins().jump(done, &[]);
 
     builder.switch_to_block(slow);
-    let helper = helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-            "cold final-release helper was not declared",
-        )
-    })?;
-    let call = call_native_helper(module, builder, helper, &[value]);
-    let status = builder.inst_results(call)[0];
-    require_native_operation_ok(builder, status, helper.terminal_exit()?)?;
+    let _ = builder
+        .ins()
+        .call(value_release_commit, &[runtime, deopt_out, value]);
     builder.ins().jump(done, &[]);
 
     builder.switch_to_block(done);
     Ok(value)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn lower_guarded_native_local_store(
-    module: &mut JITModule,
+fn select_generated_release_control(
     builder: &mut FunctionBuilder<'_>,
-    local_store: Option<NativeHelper>,
-    lifecycle: Option<NativeHelper>,
-    current: ir::Value,
-    value: ir::Value,
-    operation: u32,
-    move_input: bool,
-    release_current: bool,
-    function: FunctionId,
-    local: LocalId,
-    continuation_id: u32,
-    result_out: ir::Value,
     deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    if local_store.is_some_and(|helper| !helper.inline_runtime_view)
-        || operation & crate::JIT_LOCAL_STORE_PLAIN_LOCAL == 0
-    {
-        let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-        let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-        let operation = if move_input {
-            operation | crate::JIT_LOCAL_STORE_MOVE_INPUT
-        } else {
-            operation
-        };
-        return lower_native_value_operation(
-            module,
-            builder,
-            local_store,
-            operation,
-            &[current, value, function_value, local_value],
-            result_out,
-        );
-    }
-    let direct = builder.create_block();
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let current_is_reference =
-        lower_value_has_tag(builder, current, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    let value_is_reference =
-        lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    let needs_slow = builder.ins().bor(current_is_reference, value_is_reference);
-    builder.ins().brif(needs_slow, slow, &[], direct, &[]);
-
-    builder.switch_to_block(direct);
-    let stored = if move_input {
-        value
-    } else {
-        lower_guarded_value_release(
-            module,
-            builder,
-            lifecycle,
-            native_dim_operation(0, function, continuation_id),
-            value,
-            result_out,
-            deopt_out,
-        )?
-    };
-    if release_current {
-        let _ = lower_guarded_value_release(
-            module,
-            builder,
-            lifecycle,
-            native_dim_operation(1, function, continuation_id),
-            current,
-            result_out,
-            deopt_out,
-        )?;
-    }
-    builder.ins().jump(merge, &[stored.into()]);
-
-    builder.switch_to_block(slow);
-    let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-    let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-    let operation = if move_input {
-        operation | crate::JIT_LOCAL_STORE_MOVE_INPUT
-    } else {
-        operation
-    };
-    let stored = lower_native_value_operation(
-        module,
-        builder,
-        local_store,
-        operation,
-        &[current, value, function_value, local_value],
-        result_out,
-    )?;
-    builder.ins().jump(merge, &[stored.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_guarded_native_local_fetch(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    lifecycle: Option<NativeHelper>,
-    value: ir::Value,
-    borrowed: bool,
-    quiet: bool,
-    method_local_fast_path: bool,
-    function: FunctionId,
-    local: LocalId,
-    span: IrSpan,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    if helper.is_some_and(|helper| !helper.inline_runtime_view) || !method_local_fast_path {
-        return lower_native_local_fetch(
-            module,
-            builder,
-            helper,
-            value,
-            quiet,
-            method_local_fast_path,
-            function,
-            local,
-            span,
-            result_out,
-        );
-    }
-    let non_reference = builder.create_block();
-    let inspect_reference = builder.create_block();
-    let inspect_descriptor = builder.create_block();
-    let inspect_direct_reference = builder.create_block();
-    let load_reference = builder.create_block();
-    let load_direct_reference = builder.create_block();
-    let cached_reference = builder.create_block();
-    let direct = builder.create_block();
-    let slow = builder.create_block();
-    let merge = builder.create_block();
-    let pointer_type = module.target_config().pointer_type();
-    builder.append_block_param(inspect_descriptor, pointer_type);
-    builder.append_block_param(cached_reference, types::I64);
-    builder.append_block_param(merge, types::I64);
-
-    let is_reference = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    builder
-        .ins()
-        .brif(is_reference, inspect_reference, &[], non_reference, &[]);
-
-    builder.switch_to_block(non_reference);
-    let is_uninitialized = builder.ins().icmp_imm(
-        IntCC::Equal,
-        value,
-        crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
-    );
-    let needs_slow = if quiet {
-        builder.ins().iconst(types::I8, 0)
-    } else {
-        is_uninitialized
-    };
-    builder.ins().brif(needs_slow, slow, &[], direct, &[]);
-
-    builder.switch_to_block(inspect_reference);
-    let descriptor = lower_optimizing_slot_address(builder, value, deopt_out);
-    builder.ins().jump(inspect_descriptor, &[descriptor.into()]);
-
-    builder.switch_to_block(inspect_descriptor);
-    let descriptor = builder.block_params(inspect_descriptor)[0];
-    let kind = builder.ins().load(
+    intended_status: ir::Value,
+    intended_value: ir::Value,
+) -> (ir::Value, ir::Value) {
+    let detail = builder.ins().load(
         types::I32,
         MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, kind) as i32,
-    );
-    let flags = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, flags) as i32,
-    );
-    let address = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
-    );
-    let kind_ok = builder.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        i64::from(crate::JIT_NATIVE_VALUE_VIEW_REFERENCE_SCALAR),
-    );
-    let direct_kind_ok = builder.ins().icmp_imm(
-        IntCC::Equal,
-        kind,
-        i64::from(crate::JIT_NATIVE_VALUE_VIEW_DIRECT_REFERENCE_SCALAR),
-    );
-    let flags_ok = builder.ins().icmp_imm(
-        IntCC::Equal,
-        flags,
-        i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION),
-    );
-    let address_ok = builder.ins().icmp_imm(IntCC::NotEqual, address, 0);
-    let reference_ok = builder.ins().band(kind_ok, flags_ok);
-    let reference_ok = builder.ins().band(reference_ok, address_ok);
-    builder.ins().brif(
-        reference_ok,
-        load_reference,
-        &[],
-        inspect_direct_reference,
-        &[],
-    );
-
-    builder.switch_to_block(inspect_direct_reference);
-    let direct_state = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, reserved) as i32,
-    );
-    let direct_published = builder.ins().icmp_imm(
-        IntCC::NotEqual,
-        direct_state,
-        i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY),
-    );
-    let direct_ok = builder.ins().band(direct_kind_ok, flags_ok);
-    let direct_ok = builder.ins().band(direct_ok, direct_published);
-    builder
-        .ins()
-        .brif(direct_ok, load_direct_reference, &[], slow, &[]);
-
-    builder.switch_to_block(load_direct_reference);
-    let direct_encoded = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        descriptor,
-        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
-    );
-    builder
-        .ins()
-        .jump(cached_reference, &[direct_encoded.into()]);
-
-    builder.switch_to_block(load_reference);
-    let reference_view = if pointer_type == types::I64 {
-        address
-    } else {
-        builder.ins().ireduce(pointer_type, address)
-    };
-    let reference_version = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        reference_view,
-        std::mem::offset_of!(crate::JitNativeReferenceScalarView, abi_version) as i32,
-    );
-    let reference_state = builder.ins().load(
-        types::I32,
-        MemFlagsData::new(),
-        reference_view,
-        std::mem::offset_of!(crate::JitNativeReferenceScalarView, state) as i32,
-    );
-    let encoded = builder.ins().load(
-        types::I64,
-        MemFlagsData::new(),
-        reference_view,
-        std::mem::offset_of!(crate::JitNativeReferenceScalarView, encoded) as i32,
-    );
-    let reference_version_ok = builder.ins().icmp_imm(
-        IntCC::Equal,
-        reference_version,
-        i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_ABI_VERSION),
-    );
-    let published = builder.ins().icmp_imm(
-        IntCC::NotEqual,
-        reference_state,
-        i64::from(crate::JIT_NATIVE_REFERENCE_SCALAR_VIEW_EMPTY),
-    );
-    let mut cached_ok = builder.ins().band(reference_version_ok, published);
-    if !quiet {
-        let initialized = builder.ins().icmp_imm(
-            IntCC::NotEqual,
-            encoded,
-            crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
-        );
-        cached_ok = builder.ins().band(cached_ok, initialized);
-    }
-    builder
-        .ins()
-        .brif(cached_ok, cached_reference, &[encoded.into()], slow, &[]);
-
-    builder.switch_to_block(cached_reference);
-    let encoded = builder.block_params(cached_reference)[0];
-    let cached = if quiet {
-        let cached_is_uninitialized = builder.ins().icmp_imm(
-            IntCC::Equal,
-            encoded,
-            crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
-        );
-        let null = builder
-            .ins()
-            .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-        builder.ins().select(cached_is_uninitialized, null, encoded)
-    } else {
-        encoded
-    };
-    let cached = if borrowed {
-        cached
-    } else {
-        lower_guarded_value_release(module, builder, lifecycle, 0, cached, result_out, deopt_out)?
-    };
-    builder.ins().jump(merge, &[cached.into()]);
-
-    builder.switch_to_block(direct);
-    let direct_value = if quiet {
-        let null = builder
-            .ins()
-            .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-        builder.ins().select(is_uninitialized, null, value)
-    } else {
-        value
-    };
-    let direct_value = if borrowed {
-        direct_value
-    } else {
-        lower_guarded_value_release(
-            module,
-            builder,
-            lifecycle,
-            0,
-            direct_value,
-            result_out,
-            deopt_out,
-        )?
-    };
-    builder.ins().jump(merge, &[direct_value.into()]);
-
-    builder.switch_to_block(slow);
-    let slow_value = lower_native_local_fetch(
-        module,
-        builder,
-        helper,
-        value,
-        quiet,
-        method_local_fast_path,
-        function,
-        local,
-        span,
-        result_out,
-    )?;
-    builder.ins().jump(merge, &[slow_value.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_baseline_by_value_array_operand(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    local_fetch: Option<NativeHelper>,
-    lifecycle: Option<NativeHelper>,
-    operand: RegionOperand,
-    value: ir::Value,
-    function: FunctionId,
-    local_count: u32,
-    span: IrSpan,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    // Baseline can resume after a dynamic operation that changed an ordinary
-    // local into a reference binding. Every by-value array write observes the
-    // payload at this one shared language boundary. Published reference views
-    // are read directly; only a compatibility reference reaches local_fetch.
-    let source_local = match operand {
-        RegionOperand::Local(local) => local,
-        _ => LocalId::new(local_count),
-    };
-    lower_guarded_native_local_fetch(
-        module,
-        builder,
-        local_fetch,
-        lifecycle,
-        value,
-        true,
-        true,
-        true,
-        function,
-        source_local,
-        span,
-        result_out,
         deopt_out,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_guarded_reference_dimension_load(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    lifecycle: Option<NativeHelper>,
-    value: ir::Value,
-    quiet: bool,
-    method_local_fast_path: bool,
-    function: FunctionId,
-    local: LocalId,
-    span: IrSpan,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let reference = builder.create_block();
-    let generic = builder.create_block();
-    let merge = builder.create_block();
-    builder.append_block_param(merge, types::I64);
-
-    let is_reference = lower_value_has_tag(builder, value, crate::JIT_VALUE_RUNTIME_REFERENCE_TAG);
-    builder
-        .ins()
-        .brif(is_reference, reference, &[], generic, &[]);
-
-    builder.switch_to_block(reference);
-    builder.ins().jump(merge, &[value.into()]);
-
-    builder.switch_to_block(generic);
-    let value = lower_guarded_native_local_fetch(
-        module,
-        builder,
-        helper,
-        lifecycle,
-        value,
-        false,
-        quiet,
-        method_local_fast_path,
-        function,
-        local,
-        span,
-        result_out,
+        std::mem::offset_of!(crate::JitDeoptState, control_reserved) as i32,
+    );
+    let pending = builder.ins().icmp_imm(
+        IntCC::Equal,
+        detail,
+        i64::from(crate::JIT_NATIVE_GENERATED_RELEASE_CONTROL_DETAIL),
+    );
+    let release_status = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
         deopt_out,
-    )?;
-    builder.ins().jump(merge, &[value.into()]);
-
-    builder.switch_to_block(merge);
-    Ok(builder.block_params(merge)[0])
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_native_local_fetch(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    value: ir::Value,
-    quiet: bool,
-    method_local_fast_path: bool,
-    function: FunctionId,
-    local: LocalId,
-    span: IrSpan,
-    result_out: ir::Value,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let function = builder.ins().iconst(types::I64, i64::from(function.raw()));
-    let local = builder.ins().iconst(types::I64, i64::from(local.raw()));
-    let file = builder.ins().iconst(types::I64, i64::from(span.file.raw()));
-    let start = builder.ins().iconst(types::I64, i64::from(span.start));
-    lower_native_value_operation(
-        module,
-        builder,
-        helper,
-        u32::from(quiet)
-            | if method_local_fast_path {
-                crate::JIT_LOCAL_FETCH_PLAIN_LOCAL
-            } else {
-                0
-            },
-        &[value, function, local, file, start],
-        result_out,
-    )
-}
-
-fn ordinary_local_fast_path(
-    function_is_top_level: bool,
-    local_names: &[String],
-    local: LocalId,
-) -> bool {
-    local_names.get(local.index()).is_none_or(|name| {
-        (!function_is_top_level || php_ir::is_compiler_generated_local_name(name))
-            && !matches!(
-                name.as_str(),
-                "GLOBALS"
-                    | "_SERVER"
-                    | "_GET"
-                    | "_POST"
-                    | "_FILES"
-                    | "_COOKIE"
-                    | "_SESSION"
-                    | "_REQUEST"
-                    | "_ENV"
-            )
-    })
-}
-
-fn native_local_store_operation(
-    function_is_top_level: bool,
-    local_names: &[String],
-    local: LocalId,
-) -> u32 {
-    if ordinary_local_fast_path(function_is_top_level, local_names, local) {
-        crate::JIT_LOCAL_STORE_PLAIN_LOCAL
-    } else {
-        0
-    }
-}
-
-const fn native_unary_opcode(op: RegionUnaryOp) -> u32 {
-    match op {
-        RegionUnaryOp::Plus => 0,
-        RegionUnaryOp::Minus => 1,
-        RegionUnaryOp::Not => 2,
-        RegionUnaryOp::BitNot => 3,
-    }
-}
-
-const fn baseline_binary_opcode(op: RegionBinaryOp) -> u32 {
-    match op {
-        RegionBinaryOp::Add => 0,
-        RegionBinaryOp::Sub => 1,
-        RegionBinaryOp::Mul => 2,
-        RegionBinaryOp::Div => 3,
-        RegionBinaryOp::Mod => 4,
-        RegionBinaryOp::Concat => 5,
-        RegionBinaryOp::Pow => 6,
-        RegionBinaryOp::BitAnd => 7,
-        RegionBinaryOp::BitOr => 8,
-        RegionBinaryOp::BitXor => 9,
-        RegionBinaryOp::ShiftLeft => 10,
-        RegionBinaryOp::ShiftRight => 11,
-    }
-}
-
-const fn native_compare_opcode(op: RegionCompareOpCode) -> u32 {
-    match op {
-        RegionCompareOpCode::Equal => 0,
-        RegionCompareOpCode::NotEqual => 1,
-        RegionCompareOpCode::Identical => 2,
-        RegionCompareOpCode::NotIdentical => 3,
-        RegionCompareOpCode::Less => 4,
-        RegionCompareOpCode::LessEqual => 5,
-        RegionCompareOpCode::Greater => 6,
-        RegionCompareOpCode::GreaterEqual => 7,
-        RegionCompareOpCode::Spaceship => 8,
-    }
-}
-
-const fn native_cast_opcode(op: RegionCastOp) -> u32 {
-    match op {
-        RegionCastOp::Bool => 0,
-        RegionCastOp::Int => 1,
-        RegionCastOp::Float => 2,
-        RegionCastOp::String => 3,
-        RegionCastOp::Array => 4,
-        RegionCastOp::Object => 5,
-        RegionCastOp::Void => 6,
-    }
-}
-
-const fn native_dim_operation(low_bits: u32, function: FunctionId, continuation: u32) -> u32 {
-    if function.raw() <= 0x3ff && continuation < 0x0f_ffff {
-        0x8000_0000 | low_bits | (function.raw() << 1) | (continuation << 11)
-    } else {
-        low_bits
-    }
-}
-
-const fn native_frame_cleanup_operation(function: FunctionId) -> u32 {
-    if function.raw() <= 0x3ff {
-        0x8000_0001 | (function.raw() << 1) | (0x0f_ffff << 11)
-    } else {
-        1
-    }
+        std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
+    );
+    let release_value = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        deopt_out,
+        std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
+    );
+    let status = builder
+        .ins()
+        .select(pending, release_status, intended_status);
+    let value = builder.ins().select(pending, release_value, intended_value);
+    let zero = builder.ins().iconst(types::I32, 0);
+    let detail = builder.ins().select(pending, zero, detail);
+    builder.ins().store(
+        MemFlagsData::new(),
+        detail,
+        deopt_out,
+        std::mem::offset_of!(crate::JitDeoptState, control_reserved) as i32,
+    );
+    (status, value)
 }
 
 fn lowering_operand_fact(
@@ -19065,17 +18782,6 @@ fn lower_optimizing_array_key_operand(
     lower_array_key_operand(builder, locals, registers, constants, operand)
 }
 
-fn array_key_is_string_constant(constants: &[IrConstant], operand: RegionOperand) -> bool {
-    matches!(
-        operand,
-        RegionOperand::Constant(index)
-            if matches!(
-                constants.get(index as usize),
-                Some(IrConstant::String(_) | IrConstant::StringBytes(_))
-            )
-    )
-}
-
 fn optimizing_cast_is_direct(op: RegionCastOp, fact: crate::region_ir::SsaValueFact) -> bool {
     if fact.certainty == crate::region_ir::SsaCertainty::Unknown {
         return false;
@@ -19113,49 +18819,7 @@ fn optimizing_fact_satisfies_type(
     fact: crate::region_ir::SsaValueFact,
     type_: &php_ir::IrReturnType,
 ) -> bool {
-    if fact.certainty == crate::region_ir::SsaCertainty::Unknown {
-        return matches!(type_, php_ir::IrReturnType::Mixed);
-    }
-    match type_ {
-        php_ir::IrReturnType::Int => fact.class == SsaValueClass::Int,
-        php_ir::IrReturnType::Float => fact.class == SsaValueClass::Float,
-        php_ir::IrReturnType::String => fact.class == SsaValueClass::StringHandle,
-        php_ir::IrReturnType::Array => fact.class == SsaValueClass::ArrayHandle,
-        php_ir::IrReturnType::Callable => fact.class == SsaValueClass::CallableHandle,
-        php_ir::IrReturnType::Object => fact.class == SsaValueClass::ObjectHandle,
-        php_ir::IrReturnType::Bool => fact.class == SsaValueClass::Bool,
-        php_ir::IrReturnType::Null | php_ir::IrReturnType::Void => {
-            fact.class == SsaValueClass::Null
-        }
-        // A general boolean fact does not prove either literal singleton
-        // type.  Treating it as proof allowed `true` to enter a `false`
-        // parameter (and vice versa) without the PHP-visible type check.
-        php_ir::IrReturnType::False | php_ir::IrReturnType::True => false,
-        php_ir::IrReturnType::Mixed => true,
-        php_ir::IrReturnType::Nullable { inner } => {
-            fact.class == SsaValueClass::Null || optimizing_fact_satisfies_type(fact, inner)
-        }
-        php_ir::IrReturnType::Union { members } => members
-            .iter()
-            .any(|member| optimizing_fact_satisfies_type(fact, member)),
-        php_ir::IrReturnType::Iterable => matches!(
-            fact.class,
-            SsaValueClass::ArrayHandle | SsaValueClass::ObjectHandle
-        ),
-        php_ir::IrReturnType::Class { name, .. } => match name.trim_start_matches('\\') {
-            name if name.eq_ignore_ascii_case("Closure") => {
-                fact.class == SsaValueClass::CallableHandle
-            }
-            name if name.eq_ignore_ascii_case("Generator") => {
-                fact.class == SsaValueClass::GeneratorHandle
-            }
-            name if name.eq_ignore_ascii_case("Fiber") => fact.class == SsaValueClass::FiberHandle,
-            _ => false,
-        },
-        php_ir::IrReturnType::Never
-        | php_ir::IrReturnType::Intersection { .. }
-        | php_ir::IrReturnType::Dnf { .. } => false,
-    }
+    crate::region_ir::generated_fact_satisfies_type(fact, type_)
 }
 
 /// Whether an unknown value has a sound, helper-free admission lane for this
@@ -19315,9 +18979,7 @@ fn optimizing_stable_callback_target<'a>(
         .map(|signature| OptimizingCompiledCallTarget {
             address: OptimizingCompiledCallAddress::Linked(signature.link_index),
             params: &signature.native_params,
-            requires_trampoline: signature.requires_non_reference_trampoline
-                || signature.params.iter().any(|parameter| parameter.by_ref)
-                || signature.returns_by_reference,
+            requires_trampoline: signature.requires_non_reference_trampoline,
             arity: signature.native_arity as usize,
             reference_only_trampoline: !signature.requires_non_reference_trampoline
                 && (signature.params.iter().any(|parameter| parameter.by_ref)
@@ -19458,7 +19120,8 @@ fn lower_optimizing_prepare_stable_callback(
 ) -> OptimizingPreparedCallback {
     let pointer_type = module.target_config().pointer_type();
     let caller_runtime_view = lower_active_runtime_view(builder, deopt_out);
-    let (preferred_entry, baseline_entry, linked_runtime_view) = match target.address {
+    let (preferred_entry, generic_entry, linked_runtime_view, trace_function) = match target.address
+    {
         OptimizingCompiledCallAddress::Local(function) => {
             let preferred_entries = builder.ins().load(
                 pointer_type,
@@ -19473,7 +19136,10 @@ fn lower_optimizing_prepare_stable_callback(
                 pointer_type,
                 MemFlagsData::new(),
                 caller_runtime_view,
-                std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_function_entries) as i32,
+                std::mem::offset_of!(
+                    crate::JitNativeRuntimeView,
+                    trusted_generic_function_entries
+                ) as i32,
             );
             let entry_offset = i64::try_from(
                 function
@@ -19481,10 +19147,12 @@ fn lower_optimizing_prepare_stable_callback(
                     .saturating_mul(pointer_type.bytes() as usize),
             )
             .unwrap_or(i64::MAX);
+            let trace_function = builder.ins().iconst(types::I32, i64::from(function.raw()));
             (
                 builder.ins().iadd_imm(preferred_entries, entry_offset),
                 builder.ins().iadd_imm(baseline_entries, entry_offset),
                 None,
+                trace_function,
             )
         }
         OptimizingCompiledCallAddress::Linked(link_index) => {
@@ -19506,11 +19174,11 @@ fn lower_optimizing_prepare_stable_callback(
                 link,
                 std::mem::offset_of!(crate::JitNativeLinkedFunction, preferred_entry) as i32,
             );
-            let baseline_entry = builder.ins().load(
+            let generic_entry = builder.ins().load(
                 pointer_type,
                 MemFlagsData::new(),
                 link,
-                std::mem::offset_of!(crate::JitNativeLinkedFunction, baseline_entry) as i32,
+                std::mem::offset_of!(crate::JitNativeLinkedFunction, generic_entry) as i32,
             );
             let runtime_view = builder.ins().load(
                 pointer_type,
@@ -19518,9 +19186,27 @@ fn lower_optimizing_prepare_stable_callback(
                 link,
                 std::mem::offset_of!(crate::JitNativeLinkedFunction, runtime_view) as i32,
             );
-            (preferred_entry, baseline_entry, Some(runtime_view))
+            let trace_function = builder.ins().load(
+                types::I32,
+                MemFlagsData::new(),
+                link,
+                std::mem::offset_of!(crate::JitNativeLinkedFunction, function_id) as i32,
+            );
+            (
+                preferred_entry,
+                generic_entry,
+                Some(runtime_view),
+                trace_function,
+            )
         }
     };
+    let trace_runtime_view = linked_runtime_view.unwrap_or(caller_runtime_view);
+    let trace_metadata = lower_native_function_trace_metadata(
+        builder,
+        pointer_type,
+        trace_runtime_view,
+        trace_function,
+    );
     OptimizingPreparedCallback {
         preferred_address: builder.ins().atomic_load(
             pointer_type,
@@ -19530,17 +19216,20 @@ fn lower_optimizing_prepare_stable_callback(
         baseline_address: builder.ins().atomic_load(
             pointer_type,
             MemFlagsData::new(),
-            baseline_entry,
+            generic_entry,
         ),
         linked_runtime_view,
         initial_resume_id: -1,
+        trace_metadata,
     }
 }
 
-/// Resolves one already-acquired same-unit callable to its immutable baseline
-/// native entry. Acquisition publishes the fixed by-value binding contract in
-/// the callable view, so this operation performs one semantic admission before
-/// the call and never enters the dynamic Rust dispatcher.
+/// Resolves one already-acquired same-unit callable to its published native
+/// entries. Acquisition publishes the fixed binding contract in the callable
+/// view, so this operation performs one semantic admission before the call and
+/// never enters the dynamic Rust dispatcher.
+// architecture: typed callable-admission boundary
+#[allow(clippy::too_many_arguments)]
 fn lower_optimizing_prepare_dynamic_callable(
     builder: &mut FunctionBuilder<'_>,
     callable: ir::Value,
@@ -19549,6 +19238,57 @@ fn lower_optimizing_prepare_dynamic_callable(
     requires_int_return: bool,
     requires_releasable_scalar_return: bool,
     allow_first_parameter_by_reference: bool,
+    cleanup_values: &[ir::Value],
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<OptimizingPreparedDynamicCallable, CraneliftLoweringError> {
+    lower_optimizing_prepare_dynamic_callable_return(
+        builder,
+        callable,
+        visible_arity,
+        caller_strict_types,
+        requires_int_return,
+        requires_releasable_scalar_return,
+        allow_first_parameter_by_reference,
+        false,
+        cleanup_values,
+        transition,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_optimizing_prepare_dynamic_reference_callable(
+    builder: &mut FunctionBuilder<'_>,
+    callable: ir::Value,
+    visible_arity: OptimizingDynamicCallableArity,
+    caller_strict_types: bool,
+    allow_first_parameter_by_reference: bool,
+    cleanup_values: &[ir::Value],
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<OptimizingPreparedDynamicCallable, CraneliftLoweringError> {
+    lower_optimizing_prepare_dynamic_callable_return(
+        builder,
+        callable,
+        visible_arity,
+        caller_strict_types,
+        false,
+        false,
+        allow_first_parameter_by_reference,
+        true,
+        cleanup_values,
+        transition,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_optimizing_prepare_dynamic_callable_return(
+    builder: &mut FunctionBuilder<'_>,
+    callable: ir::Value,
+    visible_arity: OptimizingDynamicCallableArity,
+    caller_strict_types: bool,
+    requires_int_return: bool,
+    requires_releasable_scalar_return: bool,
+    allow_first_parameter_by_reference: bool,
+    requires_reference_return: bool,
     cleanup_values: &[ir::Value],
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<OptimizingPreparedDynamicCallable, CraneliftLoweringError> {
@@ -19591,6 +19331,12 @@ fn lower_optimizing_prepare_dynamic_callable(
     let supported_kind = builder.ins().bor(user_function, closure);
     let supported_kind = builder.ins().bor(supported_kind, bound_object);
     let supported_kind = builder.ins().bor(supported_kind, bound_class);
+    let internal_builtin = builder.ins().icmp_imm(
+        IntCC::Equal,
+        kind,
+        i64::from(crate::JIT_NATIVE_CALLABLE_KIND_INTERNAL_BUILTIN),
+    );
+    let supported_kind = builder.ins().bor(supported_kind, internal_builtin);
     let flags = builder.ins().load(
         types::I32,
         MemFlagsData::new(),
@@ -19624,12 +19370,21 @@ fn lower_optimizing_prepare_dynamic_callable(
     let hidden_argument_count = builder
         .ins()
         .select(closure, closure_hidden_count, receiver_count);
-    let _ = supported_kind;
     let fixed = builder.ins().band_imm(
         flags,
         i64::from(crate::JIT_NATIVE_PREPARED_CALLABLE_FIXED_BINDING),
     );
     let fixed = builder.ins().icmp_imm(IntCC::NotEqual, fixed, 0);
+    let magic_dispatch = builder.ins().band_imm(
+        flags,
+        i64::from(crate::JIT_NATIVE_PREPARED_CALLABLE_MAGIC_DISPATCH),
+    );
+    let magic_dispatch = builder.ins().icmp_imm(IntCC::NotEqual, magic_dispatch, 0);
+    let variadic = builder.ins().band_imm(
+        flags,
+        i64::from(crate::JIT_NATIVE_PREPARED_CALLABLE_VARIADIC),
+    );
+    let variadic = builder.ins().icmp_imm(IntCC::NotEqual, variadic, 0);
     let arity = builder.ins().load(
         types::I32,
         MemFlagsData::new(),
@@ -19643,14 +19398,259 @@ fn lower_optimizing_prepare_dynamic_callable(
         OptimizingDynamicCallableArity::Native(visible_arity) => visible_arity,
     };
     let arity = builder.ins().uextend(types::I64, arity);
-    let arity_matches = builder.ins().icmp(IntCC::Equal, arity, visible_arity);
-    let total_arity = builder.ins().iadd(hidden_argument_count, visible_arity);
+    let variadic_fixed_parameter_count = builder.ins().iadd_imm(arity, -1);
+    let fixed_parameter_count =
+        builder
+            .ins()
+            .select(variadic, variadic_fixed_parameter_count, arity);
+    let binding_plan = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        view,
+        std::mem::offset_of!(crate::JitNativePreparedCallableView, binding_plan) as i32,
+    );
+    let published_runtime_view = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        view,
+        std::mem::offset_of!(crate::JitNativePreparedCallableView, runtime_view) as i32,
+    );
+    let active_runtime_view = lower_active_runtime_view(builder, transition.deopt_out);
+    let has_published_runtime_view =
+        builder
+            .ins()
+            .icmp_imm(IntCC::NotEqual, published_runtime_view, 0);
+    let runtime_view = builder.ins().select(
+        has_published_runtime_view,
+        published_runtime_view,
+        active_runtime_view,
+    );
+
+    // Exact arity remains the direct hot case. A shorter non-variadic call is
+    // also admissible when every omitted declaration has a published default
+    // in the callee view. The scan is entirely generated and consumes only
+    // immutable ABI metadata; Rust does not bind or execute the call.
+    let exact_arity = builder.ins().icmp(IntCC::Equal, arity, visible_arity);
+    let defaults_plan = builder.create_block();
+    let defaults_header = builder.create_block();
+    let defaults_scan = builder.create_block();
+    let defaults_parameter = builder.create_block();
+    let defaults_literal = builder.create_block();
+    let defaults_slot = builder.create_block();
+    let defaults_done = builder.create_block();
+    builder.append_block_param(defaults_scan, types::I64);
+    builder.append_block_param(defaults_parameter, types::I64);
+    builder.append_block_param(defaults_literal, types::I64);
+    builder.append_block_param(defaults_literal, types::I32);
+    builder.append_block_param(defaults_slot, types::I64);
+    builder.append_block_param(defaults_slot, types::I32);
+    builder.append_block_param(defaults_done, types::I8);
+    let missing_defaults = builder
+        .ins()
+        .icmp(IntCC::UnsignedLessThan, visible_arity, arity);
+    let non_variadic = builder.ins().icmp_imm(IntCC::Equal, variadic, 0);
+    let inspect_defaults = builder.ins().band(missing_defaults, non_variadic);
+    let no = builder.ins().iconst(types::I8, 0);
+    let yes = builder.ins().iconst(types::I8, 1);
+    builder.ins().brif(
+        inspect_defaults,
+        defaults_plan,
+        &[],
+        defaults_done,
+        &[no.into()],
+    );
+
+    builder.switch_to_block(defaults_plan);
+    let has_binding_plan = builder.ins().icmp_imm(IntCC::NotEqual, binding_plan, 0);
+    builder.ins().brif(
+        has_binding_plan,
+        defaults_header,
+        &[],
+        defaults_done,
+        &[no.into()],
+    );
+
+    builder.switch_to_block(defaults_header);
+    let parameter_count = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        binding_plan,
+        std::mem::offset_of!(crate::JitNativeFunctionBindingPlan, parameter_count) as i32,
+    );
+    let parameter_count = builder.ins().uextend(types::I64, parameter_count);
+    let required_count = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        binding_plan,
+        std::mem::offset_of!(crate::JitNativeFunctionBindingPlan, required_count) as i32,
+    );
+    let required_count = builder.ins().uextend(types::I64, required_count);
+    let declaration_matches = builder.ins().icmp(IntCC::Equal, parameter_count, arity);
+    let enough = builder.ins().icmp(
+        IntCC::UnsignedGreaterThanOrEqual,
+        visible_arity,
+        required_count,
+    );
+    let valid_range = builder.ins().band(declaration_matches, enough);
+    builder.ins().brif(
+        valid_range,
+        defaults_scan,
+        &[visible_arity.into()],
+        defaults_done,
+        &[no.into()],
+    );
+
+    builder.switch_to_block(defaults_scan);
+    let default_index = builder.block_params(defaults_scan)[0];
+    let complete = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, default_index, arity);
+    builder.ins().brif(
+        complete,
+        defaults_done,
+        &[yes.into()],
+        defaults_parameter,
+        &[default_index.into()],
+    );
+
+    builder.switch_to_block(defaults_parameter);
+    let default_index = builder.block_params(defaults_parameter)[0];
+    let parameters = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        binding_plan,
+        std::mem::offset_of!(crate::JitNativeFunctionBindingPlan, parameters) as i32,
+    );
+    let pointer_index = if pointer_type == types::I64 {
+        default_index
+    } else {
+        builder.ins().ireduce(pointer_type, default_index)
+    };
+    let parameter_offset = builder.ins().imul_imm(
+        pointer_index,
+        i64::try_from(std::mem::size_of::<crate::JitNativeParameterBinding>()).unwrap_or(i64::MAX),
+    );
+    let parameter = builder.ins().iadd(parameters, parameter_offset);
+    let parameter_flags = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        parameter,
+        std::mem::offset_of!(crate::JitNativeParameterBinding, flags) as i32,
+    );
+    let has_default = builder.ins().band_imm(
+        parameter_flags,
+        i64::from(crate::JIT_NATIVE_PARAMETER_BINDING_HAS_DEFAULT),
+    );
+    let has_default = builder.ins().icmp_imm(IntCC::NotEqual, has_default, 0);
+    let constant_index = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        parameter,
+        std::mem::offset_of!(crate::JitNativeParameterBinding, default_constant_index) as i32,
+    );
+    let has_literal = builder.ins().icmp_imm(
+        IntCC::NotEqual,
+        constant_index,
+        i64::from(crate::JIT_NATIVE_PARAMETER_DEFAULT_NONE),
+    );
+    let has_default_literal = builder.ins().band(has_default, has_literal);
+    builder.ins().brif(
+        has_default_literal,
+        defaults_literal,
+        &[default_index.into(), constant_index.into()],
+        defaults_done,
+        &[no.into()],
+    );
+
+    builder.switch_to_block(defaults_literal);
+    let default_index = builder.block_params(defaults_literal)[0];
+    let constant_index = builder.block_params(defaults_literal)[1];
+    let literal_count = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        runtime_view,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_literal_slot_count) as i32,
+    );
+    let in_literal_table =
+        builder
+            .ins()
+            .icmp(IntCC::UnsignedLessThan, constant_index, literal_count);
+    builder.ins().brif(
+        in_literal_table,
+        defaults_slot,
+        &[default_index.into(), constant_index.into()],
+        defaults_done,
+        &[no.into()],
+    );
+
+    builder.switch_to_block(defaults_slot);
+    let default_index = builder.block_params(defaults_slot)[0];
+    let constant_index = builder.block_params(defaults_slot)[1];
+    let literal_slots = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        runtime_view,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_literal_slots) as i32,
+    );
+    let constant_index = builder.ins().uextend(pointer_type, constant_index);
+    let literal_offset = builder.ins().imul_imm(
+        constant_index,
+        i64::try_from(std::mem::size_of::<crate::JitNativeTrustedLiteralSlot>())
+            .unwrap_or(i64::MAX),
+    );
+    let literal = builder.ins().iadd(literal_slots, literal_offset);
+    let literal_state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        literal,
+        std::mem::offset_of!(crate::JitNativeTrustedLiteralSlot, state) as i32,
+    );
+    let literal_ready = builder.ins().icmp_imm(
+        IntCC::Equal,
+        literal_state,
+        i64::from(crate::JIT_NATIVE_TRUSTED_LITERAL_PUBLISHED),
+    );
+    let next_default = builder.ins().iadd_imm(default_index, 1);
+    builder.ins().brif(
+        literal_ready,
+        defaults_scan,
+        &[next_default.into()],
+        defaults_done,
+        &[no.into()],
+    );
+
+    builder.switch_to_block(defaults_done);
+    let defaults_ready = builder.block_params(defaults_done)[0];
+    let direct_arity_matches = builder.ins().bor(exact_arity, defaults_ready);
+    let variadic_arity_matches = builder.ins().icmp(
+        IntCC::UnsignedGreaterThanOrEqual,
+        visible_arity,
+        variadic_fixed_parameter_count,
+    );
+    let arity_matches =
+        builder
+            .ins()
+            .select(variadic, variadic_arity_matches, direct_arity_matches);
+    let arity_matches = builder.ins().bor(arity_matches, magic_dispatch);
+    let magic_visible_arity = builder.ins().iconst(types::I64, 2);
+    let variadic_physical_arity = builder.ins().iadd_imm(fixed_parameter_count, 1);
+    let direct_physical_arity = builder
+        .ins()
+        .select(variadic, variadic_physical_arity, arity);
+    let packed_visible_arity =
+        builder
+            .ins()
+            .select(magic_dispatch, magic_visible_arity, direct_physical_arity);
+    let total_arity = builder
+        .ins()
+        .iadd(hidden_argument_count, packed_visible_arity);
     let total_fits = builder.ins().icmp_imm(
         IntCC::UnsignedLessThanOrEqual,
         total_arity,
         i64::try_from(OPTIMIZING_DYNAMIC_CALL_MAX_ARITY).unwrap_or(i64::MAX),
     );
     let admitted = builder.ins().band(fixed, arity_matches);
+    let admitted = builder.ins().band(admitted, supported_kind);
     let returns_int = builder.ins().band_imm(
         flags,
         i64::from(crate::JIT_NATIVE_PREPARED_CALLABLE_RETURNS_INT),
@@ -19672,6 +19672,19 @@ fn lower_optimizing_prepare_dynamic_callable(
         builder.ins().iconst(types::I8, 1)
     };
     let admitted = builder.ins().band(admitted, return_contract);
+    let returns_reference = builder.ins().band_imm(
+        flags,
+        i64::from(crate::JIT_NATIVE_PREPARED_CALLABLE_RETURNS_REFERENCE),
+    );
+    let returns_reference = builder
+        .ins()
+        .icmp_imm(IntCC::NotEqual, returns_reference, 0);
+    let reference_return_contract = if requires_reference_return {
+        returns_reference
+    } else {
+        builder.ins().icmp_imm(IntCC::Equal, returns_reference, 0)
+    };
+    let admitted = builder.ins().band(admitted, reference_return_contract);
     let first_parameter_by_reference = builder.ins().band_imm(
         flags,
         i64::from(crate::JIT_NATIVE_PREPARED_CALLABLE_FIRST_PARAMETER_BY_REFERENCE),
@@ -19688,11 +19701,63 @@ fn lower_optimizing_prepare_dynamic_callable(
             .icmp_imm(IntCC::Equal, first_parameter_by_reference, 0)
     };
     let admitted = builder.ins().band(admitted, reference_contract);
-    let _ = builder.ins().band(admitted, total_fits);
-    let _ = cleanup_values;
-    builder.ins().jump(ready, &[]);
+    let admitted = builder.ins().band(admitted, total_fits);
+    let rejected = builder.create_block();
+    builder.ins().brif(admitted, ready, &[], rejected, &[]);
+
+    builder.switch_to_block(rejected);
+    for owner in cleanup_values.iter().copied() {
+        lower_optimizing_commit_owned_value(builder, owner, transition);
+    }
+    let zero_detail = builder.ins().iconst(types::I32, 0);
+    let kind_detail = builder.ins().iconst(types::I32, 1);
+    let fixed_detail = builder.ins().iconst(types::I32, 2);
+    let arity_detail = builder.ins().iconst(types::I32, 4);
+    let return_detail = builder.ins().iconst(types::I32, 8);
+    let reference_detail = builder.ins().iconst(types::I32, 16);
+    let size_detail = builder.ins().iconst(types::I32, 32);
+    let reference_return_detail = builder.ins().iconst(types::I32, 64);
+    let kind_detail = builder
+        .ins()
+        .select(supported_kind, zero_detail, kind_detail);
+    let fixed_detail = builder.ins().select(fixed, zero_detail, fixed_detail);
+    let arity_detail = builder
+        .ins()
+        .select(arity_matches, zero_detail, arity_detail);
+    let return_detail = builder
+        .ins()
+        .select(return_contract, zero_detail, return_detail);
+    let reference_detail = builder
+        .ins()
+        .select(reference_contract, zero_detail, reference_detail);
+    let size_detail = builder.ins().select(total_fits, zero_detail, size_detail);
+    let reference_return_detail = builder.ins().select(
+        reference_return_contract,
+        zero_detail,
+        reference_return_detail,
+    );
+    let detail = builder.ins().bor(kind_detail, fixed_detail);
+    let detail = builder.ins().bor(detail, arity_detail);
+    let detail = builder.ins().bor(detail, return_detail);
+    let detail = builder.ins().bor(detail, reference_detail);
+    let detail = builder.ins().bor(detail, size_detail);
+    let detail = builder.ins().bor(detail, reference_return_detail);
+    let continuation = builder.ins().iconst(
+        types::I32,
+        i64::from(transition.continuation_id.wrapping_shl(8)),
+    );
+    let detail = builder.ins().bor(detail, continuation);
+    let value = builder.ins().iconst(types::I64, 0);
+    transition.emit_exact_runtime_error(builder, detail, value)?;
 
     builder.switch_to_block(ready);
+    let direct_entry = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        view,
+        std::mem::offset_of!(crate::JitNativePreparedCallableView, direct_entry) as i32,
+    );
+    let has_direct_entry = builder.ins().icmp_imm(IntCC::NotEqual, direct_entry, 0);
     let function = builder.ins().load(
         types::I32,
         MemFlagsData::new(),
@@ -19700,34 +19765,96 @@ fn lower_optimizing_prepare_dynamic_callable(
         std::mem::offset_of!(crate::JitNativePreparedCallableView, function_id) as i32,
     );
     let function = builder.ins().uextend(pointer_type, function);
+    // Fixed native builtins carry no generated FunctionId. Keep the unused
+    // cell load inside the published table while the final address selects
+    // their concrete shared-ABI entry below.
+    let zero_function = builder.ins().iconst(pointer_type, 0);
+    let fixed_native_entry = builder.ins().bor(internal_builtin, has_direct_entry);
+    let function = builder
+        .ins()
+        .select(fixed_native_entry, zero_function, function);
     let entry_offset = builder
         .ins()
         .imul_imm(function, i64::from(pointer_type.bytes()));
-    let runtime_view = lower_active_runtime_view(builder, transition.deopt_out);
-    let baseline_entries = builder.ins().load(
+    let generic_entries = builder.ins().load(
         pointer_type,
         MemFlagsData::new(),
         runtime_view,
-        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_function_entries) as i32,
+        std::mem::offset_of!(
+            crate::JitNativeRuntimeView,
+            trusted_generic_function_entries
+        ) as i32,
     );
-    let entry = builder.ins().iadd(baseline_entries, entry_offset);
-    let address = builder
+    let preferred_entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        runtime_view,
+        std::mem::offset_of!(
+            crate::JitNativeRuntimeView,
+            trusted_preferred_function_entries
+        ) as i32,
+    );
+    let generic_entry = builder.ins().iadd(generic_entries, entry_offset);
+    let preferred_entry = builder.ins().iadd(preferred_entries, entry_offset);
+    let generic_address =
+        builder
+            .ins()
+            .atomic_load(pointer_type, MemFlagsData::new(), generic_entry);
+    let preferred_address =
+        builder
+            .ins()
+            .atomic_load(pointer_type, MemFlagsData::new(), preferred_entry);
+    let preferred_address = builder
         .ins()
-        .atomic_load(pointer_type, MemFlagsData::new(), entry);
+        .select(has_direct_entry, direct_entry, preferred_address);
+    let generic_address = builder
+        .ins()
+        .select(has_direct_entry, direct_entry, generic_address);
+    let direct_packed_binding = builder.ins().band_imm(
+        flags,
+        i64::from(crate::JIT_NATIVE_PREPARED_CALLABLE_DIRECT_PACKED_BINDING),
+    );
+    let direct_packed_binding = builder
+        .ins()
+        .icmp_imm(IntCC::NotEqual, direct_packed_binding, 0);
+    let packed_address =
+        builder
+            .ins()
+            .select(direct_packed_binding, preferred_address, generic_address);
+    let parameter_by_reference = std::array::from_fn(|word| {
+        builder.ins().load(
+            types::I64,
+            MemFlagsData::new(),
+            view,
+            (std::mem::offset_of!(crate::JitNativePreparedCallableView, parameter_by_reference,)
+                + word * std::mem::size_of::<u64>()) as i32,
+        )
+    });
     Ok(OptimizingPreparedDynamicCallable {
         callback: OptimizingPreparedCallback {
-            preferred_address: address,
-            baseline_address: address,
-            linked_runtime_view: None,
+            preferred_address,
+            baseline_address: packed_address,
+            linked_runtime_view: Some(runtime_view),
             initial_resume_id: if caller_strict_types {
                 crate::JIT_NATIVE_BIND_STRICT_ENTRY_RESUME_ID
             } else {
                 crate::JIT_NATIVE_BIND_WEAK_ENTRY_RESUME_ID
             },
+            trace_metadata: lower_native_function_trace_metadata(
+                builder,
+                pointer_type,
+                runtime_view,
+                function,
+            ),
         },
         view,
+        binding_plan,
         hidden_argument_count,
+        parameter_by_reference,
         first_parameter_by_reference,
+        magic_dispatch,
+        variadic,
+        fixed_parameter_count,
     })
 }
 
@@ -19809,6 +19936,11 @@ fn lower_optimizing_invoke_stable_callback(
     } else {
         Vec::new()
     };
+    // The PHP-visible frame records only arguments supplied by the caller.
+    // Hidden receiver/capture slots and compiler-inserted defaults are not
+    // observable through debug_backtrace().
+    let trace_fixed_arguments = visible_arguments.clone();
+    let trace_variadic_values = variadic_values.clone();
     let mut owned_callback_values = Vec::new();
     for parameter_index in visible_arguments.len()..binding.fixed_parameter_count {
         let default = target
@@ -19844,6 +19976,8 @@ fn lower_optimizing_invoke_stable_callback(
             ),
         ));
     }
+    let call_depth_token =
+        allocate_native_frame_storage(module, builder, transition.frame_alloc, 1, 0, result_out);
     for argument in &arguments {
         lower_optimizing_retain(builder, *argument, deopt_out);
     }
@@ -19863,6 +19997,38 @@ fn lower_optimizing_invoke_stable_callback(
             i32::try_from(index.saturating_mul(8)).unwrap_or(i32::MAX),
         );
     }
+    let caller_runtime_view = lower_active_runtime_view(builder, deopt_out);
+    let callee_runtime_view = prepared.linked_runtime_view.unwrap_or(caller_runtime_view);
+    let trace_tail = if binding.variadic {
+        let tail = *arguments.last().ok_or_else(|| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_NATIVE_CALLBACK_TRACE",
+                "variadic callback has no packed tail",
+            )
+        })?;
+        let total = builder.ins().iconst(
+            types::I64,
+            i64::try_from(
+                trace_fixed_arguments
+                    .len()
+                    .saturating_add(trace_variadic_values.len()),
+            )
+            .unwrap_or(i64::MAX),
+        );
+        Some((total, tail))
+    } else {
+        None
+    };
+    let trace_publication = publish_native_call_trace(
+        builder,
+        pointer_type,
+        runtime,
+        callee_runtime_view,
+        prepared.trace_metadata,
+        &trace_fixed_arguments,
+        trace_fixed_arguments.len(),
+        trace_tail,
+    )?;
     if prepared.initial_resume_id != -1 {
         // The bound native entry uses this caller identity only to attach a
         // PHP type error to the exact callsite. A callee side exit overwrites
@@ -19897,16 +20063,9 @@ fn lower_optimizing_invoke_stable_callback(
     let native_call = builder.ins().call_indirect(
         signature,
         address,
-        &[
-            runtime,
-            packed,
-            callee_result_out,
-            deopt_out,
-            resume_id,
-            empty_resume_state,
-        ],
+        &[runtime, packed, deopt_out, resume_id, empty_resume_state],
     );
-    let status = builder.inst_results(native_call)[0];
+    let status = unpack_native_php_control(builder, native_call, callee_result_out);
     let status_dispatch = builder.create_block();
     let returned = builder.create_block();
     let propagate = builder.create_block();
@@ -19994,16 +20153,9 @@ fn lower_optimizing_invoke_stable_callback(
         let resumed = builder.ins().call_indirect(
             signature,
             address,
-            &[
-                runtime,
-                packed,
-                callee_result_out,
-                deopt_out,
-                resume_id,
-                deopt_out,
-            ],
+            &[runtime, packed, deopt_out, resume_id, deopt_out],
         );
-        let resumed_status = builder.inst_results(resumed)[0];
+        let resumed_status = unpack_native_php_control(builder, resumed, callee_result_out);
         builder
             .ins()
             .jump(status_dispatch, &[resumed_status.into()]);
@@ -20016,6 +20168,14 @@ fn lower_optimizing_invoke_stable_callback(
     builder.switch_to_block(propagate);
     let propagated_status = builder.block_params(propagate)[0];
     let control = builder.ins().stack_load(types::I64, result_slot, 0);
+    restore_native_call_trace(builder, trace_publication);
+    release_native_frame_storage(
+        module,
+        builder,
+        transition.frame_release,
+        call_depth_token,
+        result_out,
+    )?;
     for (index, argument) in arguments.iter().copied().enumerate() {
         let owner = if prepared.initial_resume_id == -1 {
             argument
@@ -20046,6 +20206,40 @@ fn lower_optimizing_invoke_stable_callback(
         deopt_out,
         result_out,
     );
+    for cleanup in cleanup_values {
+        if total {
+            lower_optimizing_commit_owned_value(builder, *cleanup, transition);
+        } else {
+            lower_optimizing_release(builder, *cleanup, transition)?;
+        }
+    }
+    builder
+        .ins()
+        .store(MemFlagsData::new(), control, result_out, 0);
+    let publish_caller = builder.create_block();
+    let preserve_callee = builder.create_block();
+    let is_throw = builder.ins().icmp_imm(
+        IntCC::Equal,
+        propagated_status,
+        i64::from(crate::JitCallStatus::THROW.0),
+    );
+    let is_exit = builder.ins().icmp_imm(
+        IntCC::Equal,
+        propagated_status,
+        i64::from(crate::JitCallStatus::EXIT.0),
+    );
+    let is_suspend = builder.ins().icmp_imm(
+        IntCC::Equal,
+        propagated_status,
+        i64::from(crate::JitCallStatus::SUSPEND_FIBER.0),
+    );
+    let unwinds = builder.ins().bor(is_throw, is_exit);
+    let publishes = builder.ins().bor(unwinds, is_suspend);
+    builder
+        .ins()
+        .brif(publishes, publish_caller, &[], preserve_callee, &[]);
+
+    builder.switch_to_block(publish_caller);
     if let Some((deopt_view_pointer, fast_view_pointer, previous_deopt_view, previous_fast_view)) =
         linked_caller_runtime_view
     {
@@ -20062,16 +20256,6 @@ fn lower_optimizing_invoke_stable_callback(
             0,
         );
     }
-    for cleanup in cleanup_values {
-        if total {
-            lower_optimizing_commit_owned_value(builder, *cleanup, transition);
-        } else {
-            lower_optimizing_release(builder, *cleanup, transition)?;
-        }
-    }
-    builder
-        .ins()
-        .store(MemFlagsData::new(), control, result_out, 0);
     publish_native_call_state(
         builder,
         deopt_out,
@@ -20083,10 +20267,29 @@ fn lower_optimizing_invoke_stable_callback(
     )?;
     publish_native_register_values(builder, deopt_out, transition.live_values)?;
     publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
-    builder.ins().return_(&[propagated_status]);
+    return_native_or_fragment_control(builder, propagated_status, result_out);
+
+    builder.switch_to_block(preserve_callee);
+    if let Some((_, fast_view_pointer, _, previous_fast_view)) = linked_caller_runtime_view {
+        builder.ins().store(
+            MemFlagsData::new(),
+            previous_fast_view,
+            fast_view_pointer,
+            0,
+        );
+    }
+    return_native_or_fragment_control(builder, propagated_status, result_out);
 
     builder.switch_to_block(returned);
     let result = builder.ins().stack_load(types::I64, result_slot, 0);
+    restore_native_call_trace(builder, trace_publication);
+    release_native_frame_storage(
+        module,
+        builder,
+        transition.frame_release,
+        call_depth_token,
+        result_out,
+    )?;
     if let Some((deopt_view_pointer, fast_view_pointer, previous_deopt_view, previous_fast_view)) =
         linked_caller_runtime_view
     {
@@ -20229,7 +20432,7 @@ fn lower_optimizing_prepare_array_callback<'a>(
             requires_releasable_scalar_return,
             allow_first_parameter_by_reference,
         } => {
-            let owner = emit_total_exact_native_value_with_cleanup!(
+            let owner = emit_total_exact_owned_runtime_value!(
                 module,
                 builder,
                 acquire,
@@ -20258,6 +20461,379 @@ fn lower_optimizing_prepare_array_callback<'a>(
             Ok(OptimizingArrayCallbackInvoker::Runtime { prepared, owner })
         }
     }
+}
+
+/// Complete an exact resolver through a generated autoload state machine. The
+/// resolver may publish a callback action, but Rust never invokes that PHP
+/// body: this loop acquires its generated entry, calls it through the shared
+/// packed spine, discards its return, and re-enters the exact resolver.
+#[allow(clippy::too_many_arguments)]
+fn lower_optimizing_resolve_user_callback_action(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    resolver: Option<NativeHelper>,
+    resolver_arguments: &[ir::Value],
+    acquire_callable: Option<NativeHelper>,
+    callback_argument: ir::Value,
+    cleanup_values: &[ir::Value],
+    runtime: ir::Value,
+    result_out: ir::Value,
+    deopt_out: ir::Value,
+    instruction: &RegionInstruction,
+    caller_strict_types: bool,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let resolver = resolver.ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
+            "generated resolver action has no exact resolver",
+        )
+    })?;
+    let resolve = builder.create_block();
+    let classify = builder.create_block();
+    let invoke_callback = builder.create_block();
+    let throw_control = builder.create_block();
+    let runtime_error_control = builder.create_block();
+    let ready = builder.create_block();
+    builder.append_block_param(resolve, types::I64);
+    builder.append_block_param(classify, types::I32);
+    builder.append_block_param(classify, types::I32);
+    builder.append_block_param(classify, types::I64);
+    builder.append_block_param(invoke_callback, types::I64);
+    builder.append_block_param(throw_control, types::I32);
+    builder.append_block_param(throw_control, types::I64);
+    builder.append_block_param(runtime_error_control, types::I32);
+    builder.append_block_param(runtime_error_control, types::I64);
+    builder.append_block_param(ready, types::I64);
+    let initial_resolution = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(resolve, &[initial_resolution.into()]);
+
+    builder.switch_to_block(resolve);
+    let callback_completed = builder.block_params(resolve)[0];
+    let mut action_arguments = Vec::with_capacity(resolver_arguments.len() + 1);
+    action_arguments.extend_from_slice(resolver_arguments);
+    action_arguments.push(callback_completed);
+    let call = call_native_helper(module, builder, resolver, &action_arguments);
+    let control = builder.inst_results(call)[0];
+    let value = builder.inst_results(call)[1];
+    let status = builder.ins().ireduce(types::I32, control);
+    let detail = builder.ins().ushr_imm(control, 32);
+    let detail = builder.ins().ireduce(types::I32, detail);
+    let returned = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::RETURN.0),
+    );
+    builder.ins().brif(
+        returned,
+        ready,
+        &[value.into()],
+        classify,
+        &[status.into(), detail.into(), value.into()],
+    );
+
+    builder.switch_to_block(classify);
+    let classified = builder.block_params(classify);
+    let status = classified[0];
+    let detail = classified[1];
+    let value = classified[2];
+    let callback = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::INVOKE_USER_CALLBACK.0),
+    );
+    let classify_error = builder.create_block();
+    builder.append_block_param(classify_error, types::I32);
+    builder.append_block_param(classify_error, types::I32);
+    builder.append_block_param(classify_error, types::I64);
+    builder.ins().brif(
+        callback,
+        invoke_callback,
+        &[value.into()],
+        classify_error,
+        &[status.into(), detail.into(), value.into()],
+    );
+
+    builder.switch_to_block(classify_error);
+    let classified = builder.block_params(classify_error);
+    let status = classified[0];
+    let detail = classified[1];
+    let value = classified[2];
+    let throw = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::THROW.0),
+    );
+    builder.ins().brif(
+        throw,
+        throw_control,
+        &[detail.into(), value.into()],
+        runtime_error_control,
+        &[detail.into(), value.into()],
+    );
+
+    builder.switch_to_block(throw_control);
+    let detail = builder.block_params(throw_control)[0];
+    let value = builder.block_params(throw_control)[1];
+    for cleanup in cleanup_values.iter().copied() {
+        lower_optimizing_commit_owned_value(builder, cleanup, transition);
+    }
+    transition.emit_exact_throw(builder, detail, value)?;
+
+    builder.switch_to_block(runtime_error_control);
+    let detail = builder.block_params(runtime_error_control)[0];
+    let value = builder.block_params(runtime_error_control)[1];
+    for cleanup in cleanup_values.iter().copied() {
+        lower_optimizing_commit_owned_value(builder, cleanup, transition);
+    }
+    transition.emit_exact_runtime_error(builder, detail, value)?;
+
+    builder.switch_to_block(invoke_callback);
+    let callback = builder.block_params(invoke_callback)[0];
+    let owner = emit_total_exact_owned_runtime_value!(
+        module,
+        builder,
+        acquire_callable,
+        &[callback],
+        cleanup_values,
+        transition,
+        "generated autoload action has no exact callable acquisition",
+    )?;
+    let mut callback_cleanup = Vec::with_capacity(cleanup_values.len() + 1);
+    callback_cleanup.extend_from_slice(cleanup_values);
+    callback_cleanup.push(owner);
+    let prepared = lower_optimizing_prepare_dynamic_callable(
+        builder,
+        owner,
+        OptimizingDynamicCallableArity::Fixed(1),
+        caller_strict_types,
+        false,
+        false,
+        false,
+        &callback_cleanup,
+        transition,
+    )?;
+    let (packed, packed_length) = lower_optimizing_pack_dynamic_fixed_arguments(
+        builder,
+        prepared,
+        &[callback_argument],
+        transition,
+    );
+    let result = lower_optimizing_invoke_packed_dynamic(
+        module,
+        builder,
+        prepared.callback,
+        packed,
+        packed_length,
+        &callback_cleanup,
+        None,
+        runtime,
+        result_out,
+        deopt_out,
+        instruction,
+        transition,
+    )?;
+    lower_optimizing_commit_owned_value(builder, result, transition);
+    lower_optimizing_commit_owned_value(builder, owner, transition);
+    let callback_completed = builder.ins().iconst(types::I64, 1);
+    builder.ins().jump(resolve, &[callback_completed.into()]);
+
+    builder.switch_to_block(ready);
+    Ok(builder.block_params(ready)[0])
+}
+
+/// Runs `trigger_error()` as an exact diagnostic leaf and, when a registered
+/// handler matches, invokes that PHP callback through the ordinary generated
+/// packed-call spine. The leaf returns an owned seven-field action array; no
+/// Rust frame executes the handler body.
+#[allow(clippy::too_many_arguments)]
+fn lower_optimizing_trigger_error(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    helper: Option<NativeHelper>,
+    acquire_callable: Option<NativeHelper>,
+    message: ir::Value,
+    level: ir::Value,
+    file: ir::Value,
+    start: ir::Value,
+    missing: ir::Value,
+    runtime: ir::Value,
+    result_out: ir::Value,
+    deopt_out: ir::Value,
+    instruction: &RegionInstruction,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    let helper = helper.ok_or_else(|| {
+        CraneliftLoweringError::new(
+            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
+            "generated trigger_error has no exact diagnostic handler",
+        )
+    })?;
+    let call = call_native_helper(
+        module,
+        builder,
+        helper,
+        &[message, level, file, start, missing],
+    );
+    let control = builder.inst_results(call)[0];
+    let value = builder.inst_results(call)[1];
+    let status = builder.ins().ireduce(types::I32, control);
+    let detail = builder.ins().ushr_imm(control, 32);
+    let detail = builder.ins().ireduce(types::I32, detail);
+    let ready = builder.create_block();
+    let classify = builder.create_block();
+    let invoke = builder.create_block();
+    let classify_error = builder.create_block();
+    let throw_control = builder.create_block();
+    let runtime_error_control = builder.create_block();
+    let contract_violation = builder.create_block();
+    builder.append_block_param(ready, types::I64);
+    builder.append_block_param(invoke, types::I64);
+    let returned = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::RETURN.0),
+    );
+    builder
+        .ins()
+        .brif(returned, ready, &[value.into()], classify, &[]);
+
+    builder.switch_to_block(classify);
+    let callback = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::INVOKE_USER_CALLBACK.0),
+    );
+    builder
+        .ins()
+        .brif(callback, invoke, &[value.into()], classify_error, &[]);
+
+    builder.switch_to_block(classify_error);
+    let throw = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::THROW.0),
+    );
+    builder
+        .ins()
+        .brif(throw, throw_control, &[], runtime_error_control, &[]);
+
+    builder.switch_to_block(throw_control);
+    transition.emit_exact_throw(builder, detail, value)?;
+
+    builder.switch_to_block(runtime_error_control);
+    let runtime_error = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::RUNTIME_ERROR.0),
+    );
+    let publish_runtime_error = builder.create_block();
+    builder.ins().brif(
+        runtime_error,
+        publish_runtime_error,
+        &[],
+        contract_violation,
+        &[],
+    );
+    builder.switch_to_block(publish_runtime_error);
+    transition.emit_exact_runtime_error(builder, detail, value)?;
+
+    builder.switch_to_block(contract_violation);
+    let abi_mismatch = builder
+        .ins()
+        .iconst(types::I32, i64::from(crate::JitCallStatus::ABI_MISMATCH.0));
+    return_native_or_fragment_control(builder, abi_mismatch, result_out);
+
+    builder.switch_to_block(invoke);
+    let action = builder.block_params(invoke)[0];
+    let action_slot = lower_optimizing_slot_address(builder, action, deopt_out);
+    let pointer_type = module.target_config().pointer_type();
+    let entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        action_slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+    let action_value = |builder: &mut FunctionBuilder<'_>, index: usize| {
+        builder.ins().load(
+            types::I64,
+            MemFlagsData::new(),
+            entries,
+            i32::try_from(
+                index * std::mem::size_of::<crate::JitNativeDirectArrayEntry>()
+                    + std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value),
+            )
+            .unwrap_or(i32::MAX),
+        )
+    };
+    let callback = action_value(builder, 0);
+    let callback_level = action_value(builder, 1);
+    let callback_message = action_value(builder, 2);
+    let callback_file = action_value(builder, 3);
+    let callback_line = action_value(builder, 4);
+    let owner = emit_total_exact_owned_runtime_value!(
+        module,
+        builder,
+        acquire_callable,
+        &[callback],
+        &[action],
+        transition,
+        "generated error handler has no exact callable acquisition",
+    )?;
+    let callback_cleanup = [action, owner];
+    let prepared = lower_optimizing_prepare_dynamic_callable(
+        builder,
+        owner,
+        OptimizingDynamicCallableArity::Fixed(4),
+        false,
+        false,
+        false,
+        false,
+        &callback_cleanup,
+        transition,
+    )?;
+    let (packed, packed_length) = lower_optimizing_pack_dynamic_fixed_arguments(
+        builder,
+        prepared,
+        &[
+            callback_level,
+            callback_message,
+            callback_file,
+            callback_line,
+        ],
+        transition,
+    );
+    let callback_result = lower_optimizing_invoke_packed_dynamic(
+        module,
+        builder,
+        prepared.callback,
+        packed,
+        packed_length,
+        &callback_cleanup,
+        None,
+        runtime,
+        result_out,
+        deopt_out,
+        instruction,
+        transition,
+    )?;
+    let completion_cleanup = [callback_result, action, owner];
+    let completed = emit_total_exact_owned_runtime_value!(
+        module,
+        builder,
+        Some(helper),
+        &[action, missing, missing, missing, callback_result],
+        &completion_cleanup,
+        transition,
+        "generated trigger_error completion lost its exact handler",
+    )?;
+    lower_optimizing_commit_owned_value(builder, callback_result, transition);
+    lower_optimizing_commit_owned_value(builder, owner, transition);
+    lower_optimizing_commit_owned_value(builder, action, transition);
+    builder.ins().jump(ready, &[completed.into()]);
+
+    builder.switch_to_block(ready);
+    Ok(builder.block_params(ready)[0])
 }
 
 const OPTIMIZING_DYNAMIC_CALL_MAX_ARITY: usize = u8::MAX as usize;
@@ -20410,7 +20986,8 @@ fn lower_optimizing_pack_dynamic_unpack_arguments(
         source,
         std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
     );
-    let value = lower_optimizing_admitted_reference_scalar(builder, value, transition.deopt_out);
+    let value =
+        lower_optimizing_dynamic_callable_argument(builder, prepared, index, value, transition);
     lower_optimizing_retain(builder, value, transition.deopt_out);
     let packed_index = builder.ins().iadd(prepared.hidden_argument_count, index);
     let byte_offset = builder.ins().ishl_imm(packed_index, 3);
@@ -20428,6 +21005,290 @@ fn lower_optimizing_pack_dynamic_unpack_arguments(
     (packed, total)
 }
 
+/// Selects the published by-reference shape for one runtime-positioned
+/// visible argument. The four-word bitmap is immutable callable metadata;
+/// generated code either forwards the canonical reference or its direct
+/// payload without consulting a binder or dispatcher.
+fn lower_optimizing_dynamic_callable_argument(
+    builder: &mut FunctionBuilder<'_>,
+    prepared: OptimizingPreparedDynamicCallable,
+    index: ir::Value,
+    value: ir::Value,
+    transition: NativeOptimizingTransition<'_>,
+) -> ir::Value {
+    let bitmap = builder.ins().iadd_imm(
+        prepared.view,
+        i64::try_from(std::mem::offset_of!(
+            crate::JitNativePreparedCallableView,
+            parameter_by_reference,
+        ))
+        .unwrap_or(i64::MAX),
+    );
+    let word_index = builder.ins().ushr_imm(index, 6);
+    let word_offset = builder.ins().ishl_imm(word_index, 3);
+    let word_address = builder.ins().iadd(bitmap, word_offset);
+    let word = builder
+        .ins()
+        .load(types::I64, MemFlagsData::new(), word_address, 0);
+    let bit_index = builder.ins().band_imm(index, 63);
+    let one = builder.ins().iconst(types::I64, 1);
+    let bit = builder.ins().ishl(one, bit_index);
+    let selected = builder.ins().band(word, bit);
+    let by_reference = builder.ins().icmp_imm(IntCC::NotEqual, selected, 0);
+    let payload = lower_optimizing_admitted_reference_scalar(
+        builder,
+        value,
+        transition.deopt_out,
+        transition.reference_payload_proof,
+    );
+    builder.ins().select(by_reference, value, payload)
+}
+
+fn lower_optimizing_fixed_callable_argument(
+    builder: &mut FunctionBuilder<'_>,
+    prepared: OptimizingPreparedDynamicCallable,
+    index: usize,
+    value: ir::Value,
+    transition: NativeOptimizingTransition<'_>,
+) -> ir::Value {
+    let word = prepared.parameter_by_reference[index / 64];
+    let selected = builder.ins().band_imm(word, (1_u64 << (index % 64)) as i64);
+    let by_reference = builder.ins().icmp_imm(IntCC::NotEqual, selected, 0);
+    let payload = lower_optimizing_admitted_reference_scalar(
+        builder,
+        value,
+        transition.deopt_out,
+        transition.reference_payload_proof,
+    );
+    builder.ins().select(by_reference, value, payload)
+}
+
+/// Applies one late-published declaration-order binding plan entirely in
+/// generated code. The cold linker publishes only immutable parameter-name
+/// byte ranges; every invocation performs its own native slot permutation and
+/// preserves the authoritative reference handles selected by the callee plan.
+fn lower_optimizing_bind_dynamic_named_arguments(
+    builder: &mut FunctionBuilder<'_>,
+    binding_plan: ir::Value,
+    source_arguments: &[php_ir::instruction::IrCallArg],
+    source_values: &[ir::Value],
+    cleanup_values: &[ir::Value],
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<Vec<ir::Value>, CraneliftLoweringError> {
+    debug_assert_eq!(source_arguments.len(), source_values.len());
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    let plan_ready = builder.create_block();
+    let begin = builder.create_block();
+    let failed = builder.create_block();
+    let ready = builder.create_block();
+    let plan_present = builder.ins().icmp_imm(IntCC::NotEqual, binding_plan, 0);
+    builder
+        .ins()
+        .brif(plan_present, plan_ready, &[], failed, &[]);
+    builder.switch_to_block(plan_ready);
+    let count = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        binding_plan,
+        std::mem::offset_of!(crate::JitNativeFunctionBindingPlan, parameter_count) as i32,
+    );
+    let count = builder.ins().uextend(types::I64, count);
+    let expected = builder.ins().iconst(
+        types::I64,
+        i64::try_from(source_values.len()).unwrap_or(i64::MAX),
+    );
+    let count_matches = builder.ins().icmp(IntCC::Equal, count, expected);
+    builder.ins().brif(count_matches, begin, &[], failed, &[]);
+    builder.switch_to_block(begin);
+
+    let parameters = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        binding_plan,
+        std::mem::offset_of!(crate::JitNativeFunctionBindingPlan, parameters) as i32,
+    );
+    let value_bytes =
+        u32::try_from(source_values.len().max(1).saturating_mul(8)).map_err(|_| {
+            CraneliftLoweringError::new(
+                "JIT_CRANELIFT_NATIVE_NAMED_BINDING",
+                "late-bound named argument frame exceeds native stack storage",
+            )
+        })?;
+    let bound_values = allocate_native_stack_storage(builder, pointer_type, value_bytes, 3);
+    let assigned = allocate_native_stack_storage(builder, pointer_type, 32, 3);
+    let zero = builder.ins().iconst(types::I64, 0);
+    for offset in [0, 8, 16, 24] {
+        builder
+            .ins()
+            .store(MemFlagsData::new(), zero, assigned, offset);
+    }
+
+    let mut positional = 0usize;
+    let mut saw_named = false;
+    let mut statically_invalid = false;
+    for (argument, source_value) in source_arguments.iter().zip(source_values.iter().copied()) {
+        let destination = if let Some(name) = argument.name.as_deref() {
+            saw_named = true;
+            let scan = builder.create_block();
+            let inspect = builder.create_block();
+            let compare = builder.create_block();
+            let next = builder.create_block();
+            let found = builder.create_block();
+            builder.append_block_param(scan, types::I64);
+            builder.append_block_param(inspect, types::I64);
+            builder.append_block_param(compare, types::I64);
+            builder.append_block_param(compare, pointer_type);
+            builder.append_block_param(next, types::I64);
+            builder.append_block_param(found, types::I64);
+            builder.ins().jump(scan, &[zero.into()]);
+
+            builder.switch_to_block(scan);
+            let index = builder.block_params(scan)[0];
+            let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, index, count);
+            builder
+                .ins()
+                .brif(in_bounds, inspect, &[index.into()], failed, &[]);
+
+            builder.switch_to_block(inspect);
+            let index = builder.block_params(inspect)[0];
+            let pointer_index = if pointer_type == types::I64 {
+                index
+            } else {
+                builder.ins().ireduce(pointer_type, index)
+            };
+            let byte_offset = builder.ins().imul_imm(
+                pointer_index,
+                i64::try_from(std::mem::size_of::<crate::JitNativeParameterBinding>())
+                    .unwrap_or(i64::MAX),
+            );
+            let parameter = builder.ins().iadd(parameters, byte_offset);
+            let length = builder.ins().load(
+                types::I32,
+                MemFlagsData::new(),
+                parameter,
+                std::mem::offset_of!(crate::JitNativeParameterBinding, name_length) as i32,
+            );
+            let length_matches = builder.ins().icmp_imm(
+                IntCC::Equal,
+                length,
+                i64::try_from(name.len()).unwrap_or(i64::MAX),
+            );
+            builder.ins().brif(
+                length_matches,
+                compare,
+                &[index.into(), parameter.into()],
+                next,
+                &[index.into()],
+            );
+
+            builder.switch_to_block(compare);
+            let index = builder.block_params(compare)[0];
+            let parameter = builder.block_params(compare)[1];
+            let name_bytes = builder.ins().load(
+                pointer_type,
+                MemFlagsData::new(),
+                parameter,
+                std::mem::offset_of!(crate::JitNativeParameterBinding, name_bytes) as i32,
+            );
+            let mut matches = builder.ins().iconst(types::I8, 1);
+            for (offset, byte) in name.as_bytes().iter().copied().enumerate() {
+                let actual = builder.ins().load(
+                    types::I8,
+                    MemFlagsData::new(),
+                    name_bytes,
+                    i32::try_from(offset).unwrap_or(i32::MAX),
+                );
+                let equal = builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, actual, i64::from(byte));
+                matches = builder.ins().band(matches, equal);
+            }
+            builder
+                .ins()
+                .brif(matches, found, &[index.into()], next, &[index.into()]);
+
+            builder.switch_to_block(next);
+            let index = builder.block_params(next)[0];
+            let next_index = builder.ins().iadd_imm(index, 1);
+            builder.ins().jump(scan, &[next_index.into()]);
+
+            builder.switch_to_block(found);
+            builder.block_params(found)[0]
+        } else {
+            if saw_named {
+                statically_invalid = true;
+            }
+            let index = builder
+                .ins()
+                .iconst(types::I64, i64::try_from(positional).unwrap_or(i64::MAX));
+            positional = positional.saturating_add(1);
+            index
+        };
+
+        let word_index = builder.ins().ushr_imm(destination, 6);
+        let bit_index = builder.ins().band_imm(destination, 63);
+        let pointer_word_index = if pointer_type == types::I64 {
+            word_index
+        } else {
+            builder.ins().ireduce(pointer_type, word_index)
+        };
+        let word_offset = builder.ins().ishl_imm(pointer_word_index, 3);
+        let word_address = builder.ins().iadd(assigned, word_offset);
+        let word = builder
+            .ins()
+            .load(types::I64, MemFlagsData::new(), word_address, 0);
+        let one = builder.ins().iconst(types::I64, 1);
+        let bit = builder.ins().ishl(one, bit_index);
+        let duplicate = builder.ins().band(word, bit);
+        let duplicate = builder.ins().icmp_imm(IntCC::NotEqual, duplicate, 0);
+        let assign = builder.create_block();
+        builder.ins().brif(duplicate, failed, &[], assign, &[]);
+        builder.switch_to_block(assign);
+        let assigned_word = builder.ins().bor(word, bit);
+        builder
+            .ins()
+            .store(MemFlagsData::new(), assigned_word, word_address, 0);
+        let pointer_destination = if pointer_type == types::I64 {
+            destination
+        } else {
+            builder.ins().ireduce(pointer_type, destination)
+        };
+        let value_offset = builder.ins().ishl_imm(pointer_destination, 3);
+        let value_address = builder.ins().iadd(bound_values, value_offset);
+        builder
+            .ins()
+            .store(MemFlagsData::new(), source_value, value_address, 0);
+    }
+    if statically_invalid {
+        builder.ins().jump(failed, &[]);
+    } else {
+        builder.ins().jump(ready, &[]);
+    }
+
+    builder.switch_to_block(failed);
+    for owner in cleanup_values.iter().copied() {
+        lower_optimizing_commit_owned_value(builder, owner, transition);
+    }
+    let detail = builder.ins().iconst(
+        types::I32,
+        i64::from(0xb100_0000_u32 | (transition.continuation_id & 0x00ff_ffff)),
+    );
+    let value = builder.ins().iconst(types::I64, 0);
+    transition.emit_exact_runtime_error(builder, detail, value)?;
+
+    builder.switch_to_block(ready);
+    Ok((0..source_values.len())
+        .map(|index| {
+            builder.ins().load(
+                types::I64,
+                MemFlagsData::new(),
+                bound_values,
+                i32::try_from(index.saturating_mul(8)).unwrap_or(i32::MAX),
+            )
+        })
+        .collect())
+}
+
 /// Pack an already lowered fixed positional suffix behind the same runtime
 /// closure prefix. Every packed slot owns one value across the synchronous
 /// native entry and is committed from its current post-binding contents.
@@ -20438,7 +21299,22 @@ fn lower_optimizing_pack_dynamic_fixed_arguments(
     transition: NativeOptimizingTransition<'_>,
 ) -> (ir::Value, ir::Value) {
     let packed = lower_optimizing_pack_dynamic_callable_prefix(builder, prepared, transition);
+    let total = lower_optimizing_pack_dynamic_fixed_arguments_into(
+        builder, prepared, packed, arguments, transition,
+    );
+    (packed, total)
+}
+
+fn lower_optimizing_pack_dynamic_fixed_arguments_into(
+    builder: &mut FunctionBuilder<'_>,
+    prepared: OptimizingPreparedDynamicCallable,
+    packed: ir::Value,
+    arguments: &[ir::Value],
+    transition: NativeOptimizingTransition<'_>,
+) -> ir::Value {
     for (index, value) in arguments.iter().copied().enumerate() {
+        let value =
+            lower_optimizing_fixed_callable_argument(builder, prepared, index, value, transition);
         lower_optimizing_retain(builder, value, transition.deopt_out);
         let index = builder
             .ins()
@@ -20449,11 +21325,435 @@ fn lower_optimizing_pack_dynamic_fixed_arguments(
             .ins()
             .store(MemFlagsData::new(), value, destination, 0);
     }
-    let total = builder.ins().iadd_imm(
-        prepared.hidden_argument_count,
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    let defaults_scan = builder.create_block();
+    let defaults_load = builder.create_block();
+    let defaults_by_value = builder.create_block();
+    let defaults_by_reference = builder.create_block();
+    let defaults_store = builder.create_block();
+    let defaults_finished = builder.create_block();
+    builder.append_block_param(defaults_scan, types::I64);
+    builder.append_block_param(defaults_load, types::I64);
+    builder.append_block_param(defaults_by_value, types::I64);
+    builder.append_block_param(defaults_by_value, types::I64);
+    builder.append_block_param(defaults_by_reference, types::I64);
+    builder.append_block_param(defaults_by_reference, types::I64);
+    builder.append_block_param(defaults_store, types::I64);
+    builder.append_block_param(defaults_store, types::I64);
+    let supplied = builder.ins().iconst(
+        types::I64,
         i64::try_from(arguments.len()).unwrap_or(i64::MAX),
     );
-    (packed, total)
+    builder.ins().jump(defaults_scan, &[supplied.into()]);
+
+    builder.switch_to_block(defaults_scan);
+    let index = builder.block_params(defaults_scan)[0];
+    let defaults_complete = builder.ins().icmp(
+        IntCC::UnsignedGreaterThanOrEqual,
+        index,
+        prepared.fixed_parameter_count,
+    );
+    builder.ins().brif(
+        defaults_complete,
+        defaults_finished,
+        &[],
+        defaults_load,
+        &[index.into()],
+    );
+
+    builder.switch_to_block(defaults_load);
+    let index = builder.block_params(defaults_load)[0];
+    let parameters = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        prepared.binding_plan,
+        std::mem::offset_of!(crate::JitNativeFunctionBindingPlan, parameters) as i32,
+    );
+    let pointer_index = if pointer_type == types::I64 {
+        index
+    } else {
+        builder.ins().ireduce(pointer_type, index)
+    };
+    let parameter_offset = builder.ins().imul_imm(
+        pointer_index,
+        i64::try_from(std::mem::size_of::<crate::JitNativeParameterBinding>()).unwrap_or(i64::MAX),
+    );
+    let parameter = builder.ins().iadd(parameters, parameter_offset);
+    let constant_index = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        parameter,
+        std::mem::offset_of!(crate::JitNativeParameterBinding, default_constant_index) as i32,
+    );
+    let runtime_view = prepared
+        .callback
+        .linked_runtime_view
+        .unwrap_or_else(|| lower_active_runtime_view(builder, transition.deopt_out));
+    let literal_slots = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        runtime_view,
+        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_literal_slots) as i32,
+    );
+    let constant_index = if pointer_type == types::I64 {
+        builder.ins().uextend(pointer_type, constant_index)
+    } else {
+        constant_index
+    };
+    let literal_offset = builder.ins().imul_imm(
+        constant_index,
+        i64::try_from(std::mem::size_of::<crate::JitNativeTrustedLiteralSlot>())
+            .unwrap_or(i64::MAX),
+    );
+    let literal = builder.ins().iadd(literal_slots, literal_offset);
+    let value = builder.ins().load(
+        types::I64,
+        MemFlagsData::new(),
+        literal,
+        std::mem::offset_of!(crate::JitNativeTrustedLiteralSlot, value) as i32,
+    );
+    let parameter_flags = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        parameter,
+        std::mem::offset_of!(crate::JitNativeParameterBinding, flags) as i32,
+    );
+    let by_reference = builder.ins().band_imm(
+        parameter_flags,
+        i64::from(crate::JIT_NATIVE_PARAMETER_BINDING_BY_REFERENCE),
+    );
+    let by_reference = builder.ins().icmp_imm(IntCC::NotEqual, by_reference, 0);
+    builder.ins().brif(
+        by_reference,
+        defaults_by_reference,
+        &[index.into(), value.into()],
+        defaults_by_value,
+        &[index.into(), value.into()],
+    );
+
+    builder.switch_to_block(defaults_by_value);
+    let index = builder.block_params(defaults_by_value)[0];
+    let value = builder.block_params(defaults_by_value)[1];
+    lower_optimizing_retain(builder, value, transition.deopt_out);
+    builder
+        .ins()
+        .jump(defaults_store, &[index.into(), value.into()]);
+
+    builder.switch_to_block(defaults_by_reference);
+    let index = builder.block_params(defaults_by_reference)[0];
+    let value = builder.block_params(defaults_by_reference)[1];
+    let reference = lower_total_native_bind_reference(builder, value, transition.deopt_out);
+    // The fresh reference transfers its own owner into the packed frame. Keep
+    // the immutable literal slot's payload owner alive independently.
+    lower_optimizing_retain(builder, value, transition.deopt_out);
+    builder
+        .ins()
+        .jump(defaults_store, &[index.into(), reference.into()]);
+
+    builder.switch_to_block(defaults_store);
+    let index = builder.block_params(defaults_store)[0];
+    let value = builder.block_params(defaults_store)[1];
+    let packed_index = builder.ins().iadd(prepared.hidden_argument_count, index);
+    let byte_offset = builder.ins().ishl_imm(packed_index, 3);
+    let destination = builder.ins().iadd(packed, byte_offset);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), value, destination, 0);
+    let next = builder.ins().iadd_imm(index, 1);
+    builder.ins().jump(defaults_scan, &[next.into()]);
+
+    builder.switch_to_block(defaults_finished);
+    let total = builder.ins().iadd(
+        prepared.hidden_argument_count,
+        prepared.fixed_parameter_count,
+    );
+    total
+}
+
+/// Pack a runtime-selected positional userland signature. Non-variadic
+/// targets keep the fixed frame above. A variadic target stores its declared
+/// fixed prefix directly and owns the remaining source values through one
+/// authoritative direct array in the final physical parameter slot.
+fn lower_optimizing_pack_dynamic_arguments(
+    builder: &mut FunctionBuilder<'_>,
+    prepared: OptimizingPreparedDynamicCallable,
+    arguments: &[ir::Value],
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
+    let packed = lower_optimizing_pack_dynamic_callable_prefix(builder, prepared, transition);
+    let fixed = builder.create_block();
+    let variadic = builder.create_block();
+    let ready = builder.create_block();
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    builder.append_block_param(ready, types::I64);
+    builder
+        .ins()
+        .brif(prepared.variadic, variadic, &[], fixed, &[]);
+
+    builder.switch_to_block(fixed);
+    let length = lower_optimizing_pack_dynamic_fixed_arguments_into(
+        builder, prepared, packed, arguments, transition,
+    );
+    builder.ins().jump(ready, &[length.into()]);
+
+    builder.switch_to_block(variadic);
+    let visible_count = builder.ins().iconst(
+        types::I64,
+        i64::try_from(arguments.len()).unwrap_or(i64::MAX),
+    );
+    let tail_count = builder
+        .ins()
+        .isub(visible_count, prepared.fixed_parameter_count);
+    let tail = lower_optimizing_allocate_direct_array(builder, tail_count, false, transition)?;
+    let tail_slot = lower_optimizing_slot_address(builder, tail, transition.deopt_out);
+    let tail_entries = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        tail_slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, aux) as i32,
+    );
+
+    for (source_index, source) in arguments.iter().copied().enumerate() {
+        let prefix = builder.create_block();
+        let suffix = builder.create_block();
+        let next = builder.create_block();
+        let source_index_value = builder
+            .ins()
+            .iconst(types::I64, i64::try_from(source_index).unwrap_or(i64::MAX));
+        let is_prefix = builder.ins().icmp(
+            IntCC::UnsignedLessThan,
+            source_index_value,
+            prepared.fixed_parameter_count,
+        );
+        builder.ins().brif(is_prefix, prefix, &[], suffix, &[]);
+
+        builder.switch_to_block(prefix);
+        let value = lower_optimizing_dynamic_callable_argument(
+            builder,
+            prepared,
+            source_index_value,
+            source,
+            transition,
+        );
+        lower_optimizing_retain(builder, value, transition.deopt_out);
+        let packed_index = builder
+            .ins()
+            .iadd(prepared.hidden_argument_count, source_index_value);
+        let packed_offset = builder.ins().ishl_imm(packed_index, 3);
+        let destination = builder.ins().iadd(packed, packed_offset);
+        builder
+            .ins()
+            .store(MemFlagsData::new(), value, destination, 0);
+        builder.ins().jump(next, &[]);
+
+        builder.switch_to_block(suffix);
+        let value = lower_optimizing_dynamic_callable_argument(
+            builder,
+            prepared,
+            prepared.fixed_parameter_count,
+            source,
+            transition,
+        );
+        lower_optimizing_retain(builder, value, transition.deopt_out);
+        let tail_index = builder
+            .ins()
+            .isub(source_index_value, prepared.fixed_parameter_count);
+        let tail_offset = builder.ins().imul_imm(
+            tail_index,
+            i64::try_from(std::mem::size_of::<crate::JitNativeDirectArrayEntry>())
+                .unwrap_or(i64::MAX),
+        );
+        let entry = builder.ins().iadd(tail_entries, tail_offset);
+        builder
+            .ins()
+            .store(MemFlagsData::new(), tail_index, entry, 0);
+        builder.ins().store(
+            MemFlagsData::new(),
+            value,
+            entry,
+            std::mem::offset_of!(crate::JitNativeDirectArrayEntry, value) as i32,
+        );
+        builder.ins().jump(next, &[]);
+
+        builder.switch_to_block(next);
+    }
+
+    builder.ins().store(
+        MemFlagsData::new(),
+        tail_count,
+        tail_slot,
+        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+    );
+    let tail_state = lower_direct_array_state_address(builder, tail, transition.deopt_out);
+    builder.ins().store(
+        MemFlagsData::new(),
+        tail_count,
+        tail_state,
+        std::mem::offset_of!(crate::JitNativeDirectArrayState, next_append_key) as i32,
+    );
+    let has_tail = builder
+        .ins()
+        .icmp_imm(IntCC::UnsignedGreaterThan, tail_count, 0);
+    let has_tail = builder.ins().uextend(types::I32, has_tail);
+    builder.ins().store(
+        MemFlagsData::new(),
+        has_tail,
+        tail_state,
+        std::mem::offset_of!(crate::JitNativeDirectArrayState, has_next_append_key) as i32,
+    );
+    let variadic_index = builder.ins().iadd(
+        prepared.hidden_argument_count,
+        prepared.fixed_parameter_count,
+    );
+    let variadic_offset = builder.ins().ishl_imm(variadic_index, 3);
+    let variadic_slot = builder.ins().iadd(packed, variadic_offset);
+    builder
+        .ins()
+        .store(MemFlagsData::new(), tail, variadic_slot, 0);
+    let physical_visible_count = builder.ins().iadd_imm(prepared.fixed_parameter_count, 1);
+    let physical_length = builder
+        .ins()
+        .iadd(prepared.hidden_argument_count, physical_visible_count);
+    builder.ins().jump(ready, &[physical_length.into()]);
+
+    builder.switch_to_block(ready);
+    Ok((packed, builder.block_params(ready)[0]))
+}
+
+/// Build the published invocation frame for a runtime-resolved method. A
+/// normal method keeps its source-visible positional suffix. A magic binding
+/// instead receives PHP's exact two visible operands: the requested method
+/// name and an authoritative positional argument array. The branch is wholly
+/// generated; the resolver publishes metadata and never invokes `__call`.
+fn lower_optimizing_pack_dynamic_method_arguments(
+    builder: &mut FunctionBuilder<'_>,
+    prepared: OptimizingPreparedDynamicCallable,
+    requested_method: &[u8],
+    arguments: &[ir::Value],
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
+    let direct = builder.create_block();
+    let magic = builder.create_block();
+    let ready = builder.create_block();
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    builder.append_block_param(ready, pointer_type);
+    builder.append_block_param(ready, types::I64);
+    builder
+        .ins()
+        .brif(prepared.magic_dispatch, magic, &[], direct, &[]);
+
+    builder.switch_to_block(direct);
+    let (packed, length) =
+        lower_optimizing_pack_dynamic_arguments(builder, prepared, arguments, transition)?;
+    builder.ins().jump(ready, &[packed.into(), length.into()]);
+
+    builder.switch_to_block(magic);
+    let method = lower_optimizing_static_string(builder, requested_method, transition)?;
+    let arguments = arguments
+        .iter()
+        .copied()
+        .map(|value| {
+            Ok(lower_optimizing_admitted_reference_scalar(
+                builder,
+                value,
+                transition.deopt_out,
+                transition.reference_payload_proof,
+            ))
+        })
+        .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+    let argument_array = lower_optimizing_pack_variadic_arguments(builder, &arguments, transition)?;
+    let (packed, length) = lower_optimizing_pack_dynamic_fixed_arguments(
+        builder,
+        prepared,
+        &[method, argument_array],
+        transition,
+    );
+    lower_optimizing_commit_owned_value(builder, method, transition);
+    lower_optimizing_commit_owned_value(builder, argument_array, transition);
+    builder.ins().jump(ready, &[packed.into(), length.into()]);
+
+    builder.switch_to_block(ready);
+    Ok((
+        builder.block_params(ready)[0],
+        builder.block_params(ready)[1],
+    ))
+}
+
+/// Build the invocation frame for a callable array whose method name was
+/// resolved at runtime. The request-owned callable view keeps the original
+/// method bytes stable; generated code copies them into the authoritative
+/// string arena only on the magic-dispatch edge.
+fn lower_optimizing_pack_published_method_arguments(
+    builder: &mut FunctionBuilder<'_>,
+    prepared: OptimizingPreparedDynamicCallable,
+    arguments: &[ir::Value],
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<(ir::Value, ir::Value), CraneliftLoweringError> {
+    let direct = builder.create_block();
+    let magic = builder.create_block();
+    let ready = builder.create_block();
+    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+    builder.append_block_param(ready, pointer_type);
+    builder.append_block_param(ready, types::I64);
+    builder
+        .ins()
+        .brif(prepared.magic_dispatch, magic, &[], direct, &[]);
+
+    builder.switch_to_block(direct);
+    let (packed, length) =
+        lower_optimizing_pack_dynamic_arguments(builder, prepared, arguments, transition)?;
+    builder.ins().jump(ready, &[packed.into(), length.into()]);
+
+    builder.switch_to_block(magic);
+    let method_bytes = builder.ins().load(
+        pointer_type,
+        MemFlagsData::new(),
+        prepared.view,
+        std::mem::offset_of!(crate::JitNativePreparedCallableView, method_bytes) as i32,
+    );
+    let method_length = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        prepared.view,
+        std::mem::offset_of!(crate::JitNativePreparedCallableView, method_length) as i32,
+    );
+    let method_length = builder.ins().uextend(types::I64, method_length);
+    let method = lower_optimizing_materialize_string(
+        builder,
+        method_length,
+        NativeStringMaterialization::Copy {
+            source: method_bytes,
+        },
+        transition,
+    )?;
+    let arguments = arguments
+        .iter()
+        .copied()
+        .map(|value| {
+            Ok(lower_optimizing_admitted_reference_scalar(
+                builder,
+                value,
+                transition.deopt_out,
+                transition.reference_payload_proof,
+            ))
+        })
+        .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+    let argument_array = lower_optimizing_pack_variadic_arguments(builder, &arguments, transition)?;
+    let (packed, length) = lower_optimizing_pack_dynamic_fixed_arguments(
+        builder,
+        prepared,
+        &[method, argument_array],
+        transition,
+    );
+    lower_optimizing_commit_owned_value(builder, method, transition);
+    lower_optimizing_commit_owned_value(builder, argument_array, transition);
+    builder.ins().jump(ready, &[packed.into(), length.into()]);
+
+    builder.switch_to_block(ready);
+    Ok((
+        builder.block_params(ready)[0],
+        builder.block_params(ready)[1],
+    ))
 }
 
 /// Release the current initialized prefix after the bound callee returns.
@@ -20494,7 +21794,7 @@ fn lower_optimizing_commit_dynamic_call_arguments(
 
 /// Invoke one runtime-resolved same-unit function from a direct positional
 /// argument array. Callable publication supplies the exact fixed arity and
-/// baseline entry; no generic binder, operation ID, or Rust `Value` participates.
+/// Generic entry; no generic binder, operation ID, or Rust `Value` participates.
 #[allow(clippy::too_many_arguments)]
 fn lower_optimizing_invoke_dynamic_unpack(
     module: &mut JITModule,
@@ -20573,7 +21873,7 @@ fn lower_optimizing_prevalidate_consumed_dynamic_call_operands(
 }
 
 /// Execute one already packed dynamic callable frame through its immutable
-/// baseline entry. The special entry selector performs typed visible-argument
+/// Generic entry. The special entry selector performs typed visible-argument
 /// binding in place; generated cleanup therefore commits the current owner in
 /// every hidden and visible slot.
 #[allow(clippy::too_many_arguments)]
@@ -20589,6 +21889,70 @@ fn lower_optimizing_invoke_packed_dynamic(
     result_out: ir::Value,
     deopt_out: ir::Value,
     instruction: &RegionInstruction,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    lower_optimizing_invoke_packed_dynamic_return(
+        module,
+        builder,
+        prepared,
+        packed,
+        packed_length,
+        cleanup_values,
+        temporary_walk_reference,
+        runtime,
+        result_out,
+        deopt_out,
+        instruction,
+        crate::JitCallStatus::RETURN,
+        transition,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_optimizing_invoke_packed_dynamic_reference(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    prepared: OptimizingPreparedCallback,
+    packed: ir::Value,
+    packed_length: ir::Value,
+    cleanup_values: &[ir::Value],
+    runtime: ir::Value,
+    result_out: ir::Value,
+    deopt_out: ir::Value,
+    instruction: &RegionInstruction,
+    transition: NativeOptimizingTransition<'_>,
+) -> Result<ir::Value, CraneliftLoweringError> {
+    lower_optimizing_invoke_packed_dynamic_return(
+        module,
+        builder,
+        prepared,
+        packed,
+        packed_length,
+        cleanup_values,
+        None,
+        runtime,
+        result_out,
+        deopt_out,
+        instruction,
+        crate::JitCallStatus::RETURN_REFERENCE,
+        transition,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_optimizing_invoke_packed_dynamic_return(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder<'_>,
+    prepared: OptimizingPreparedCallback,
+    packed: ir::Value,
+    packed_length: ir::Value,
+    cleanup_values: &[ir::Value],
+    temporary_walk_reference: Option<OptimizingTemporaryWalkReference>,
+    runtime: ir::Value,
+    result_out: ir::Value,
+    deopt_out: ir::Value,
+    instruction: &RegionInstruction,
+    expected_return_status: crate::JitCallStatus,
     transition: NativeOptimizingTransition<'_>,
 ) -> Result<ir::Value, CraneliftLoweringError> {
     let caller = builder
@@ -20611,6 +21975,64 @@ fn lower_optimizing_invoke_packed_dynamic(
     );
 
     let pointer_type = module.target_config().pointer_type();
+    let callee_runtime_view = prepared
+        .linked_runtime_view
+        .unwrap_or_else(|| lower_active_runtime_view(builder, deopt_out));
+    let linked_caller_runtime_view = prepared.linked_runtime_view.map(|callee_runtime_view| {
+        let deopt_view_pointer = builder.ins().iadd_imm(
+            deopt_out,
+            i64::try_from(std::mem::offset_of!(
+                crate::JitDeoptState,
+                runtime_view_pointer,
+            ))
+            .unwrap_or(i64::MAX),
+        );
+        let fast_view_pointer = builder.ins().iadd_imm(
+            runtime,
+            i64::try_from(std::mem::offset_of!(
+                crate::JitNativeFastStateHeader,
+                runtime_view_pointer,
+            ))
+            .unwrap_or(i64::MAX),
+        );
+        let previous_deopt_view =
+            builder
+                .ins()
+                .load(pointer_type, MemFlagsData::new(), deopt_view_pointer, 0);
+        let previous_fast_view =
+            builder
+                .ins()
+                .load(pointer_type, MemFlagsData::new(), fast_view_pointer, 0);
+        builder.ins().store(
+            MemFlagsData::new(),
+            callee_runtime_view,
+            deopt_view_pointer,
+            0,
+        );
+        builder.ins().store(
+            MemFlagsData::new(),
+            callee_runtime_view,
+            fast_view_pointer,
+            0,
+        );
+        (
+            deopt_view_pointer,
+            fast_view_pointer,
+            previous_deopt_view,
+            previous_fast_view,
+        )
+    });
+    let call_depth_token =
+        allocate_native_frame_storage(module, builder, transition.frame_alloc, 1, 0, result_out);
+    let trace_publication = publish_native_packed_call_trace(
+        builder,
+        pointer_type,
+        runtime,
+        callee_runtime_view,
+        prepared.trace_metadata,
+        packed,
+        packed_length,
+    );
     let result_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let callee_result_out = builder.ins().stack_addr(pointer_type, result_slot, 0);
@@ -20622,24 +22044,16 @@ fn lower_optimizing_invoke_packed_dynamic(
     let call = builder.ins().call_indirect(
         signature,
         prepared.baseline_address,
-        &[
-            runtime,
-            packed,
-            callee_result_out,
-            deopt_out,
-            resume_id,
-            resume_state,
-        ],
+        &[runtime, packed, deopt_out, resume_id, resume_state],
     );
-    let status = builder.inst_results(call)[0];
+    let status = unpack_native_php_control(builder, call, callee_result_out);
     let returned = builder.create_block();
     let propagate = builder.create_block();
     builder.append_block_param(propagate, types::I32);
-    let is_return = builder.ins().icmp_imm(
-        IntCC::Equal,
-        status,
-        i64::from(crate::JitCallStatus::RETURN.0),
-    );
+    let is_return =
+        builder
+            .ins()
+            .icmp_imm(IntCC::Equal, status, i64::from(expected_return_status.0));
     builder
         .ins()
         .brif(is_return, returned, &[], propagate, &[status.into()]);
@@ -20647,6 +22061,14 @@ fn lower_optimizing_invoke_packed_dynamic(
     builder.switch_to_block(propagate);
     let status = builder.block_params(propagate)[0];
     let control = builder.ins().stack_load(types::I64, result_slot, 0);
+    restore_native_call_trace(builder, trace_publication);
+    release_native_frame_storage(
+        module,
+        builder,
+        transition.frame_release,
+        call_depth_token,
+        result_out,
+    )?;
     lower_optimizing_commit_dynamic_call_arguments(builder, packed, packed_length, transition);
     for cleanup in cleanup_values {
         lower_optimizing_commit_owned_value(builder, *cleanup, transition);
@@ -20659,6 +22081,46 @@ fn lower_optimizing_invoke_packed_dynamic(
     builder
         .ins()
         .store(MemFlagsData::new(), control, result_out, 0);
+    let publish_caller = builder.create_block();
+    let preserve_callee = builder.create_block();
+    let is_throw = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::THROW.0),
+    );
+    let is_exit = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::EXIT.0),
+    );
+    let is_suspend = builder.ins().icmp_imm(
+        IntCC::Equal,
+        status,
+        i64::from(crate::JitCallStatus::SUSPEND_FIBER.0),
+    );
+    let unwinds = builder.ins().bor(is_throw, is_exit);
+    let publishes = builder.ins().bor(unwinds, is_suspend);
+    builder
+        .ins()
+        .brif(publishes, publish_caller, &[], preserve_callee, &[]);
+
+    builder.switch_to_block(publish_caller);
+    if let Some((deopt_view_pointer, fast_view_pointer, previous_deopt_view, previous_fast_view)) =
+        linked_caller_runtime_view
+    {
+        builder.ins().store(
+            MemFlagsData::new(),
+            previous_deopt_view,
+            deopt_view_pointer,
+            0,
+        );
+        builder.ins().store(
+            MemFlagsData::new(),
+            previous_fast_view,
+            fast_view_pointer,
+            0,
+        );
+    }
     publish_native_call_state(
         builder,
         deopt_out,
@@ -20670,10 +22132,45 @@ fn lower_optimizing_invoke_packed_dynamic(
     )?;
     publish_native_register_values(builder, deopt_out, transition.live_values)?;
     publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
-    builder.ins().return_(&[status]);
+    return_native_or_fragment_control(builder, status, result_out);
+
+    builder.switch_to_block(preserve_callee);
+    if let Some((_, fast_view_pointer, _, previous_fast_view)) = linked_caller_runtime_view {
+        builder.ins().store(
+            MemFlagsData::new(),
+            previous_fast_view,
+            fast_view_pointer,
+            0,
+        );
+    }
+    return_native_or_fragment_control(builder, status, result_out);
 
     builder.switch_to_block(returned);
     let result = builder.ins().stack_load(types::I64, result_slot, 0);
+    restore_native_call_trace(builder, trace_publication);
+    release_native_frame_storage(
+        module,
+        builder,
+        transition.frame_release,
+        call_depth_token,
+        result_out,
+    )?;
+    if let Some((deopt_view_pointer, fast_view_pointer, previous_deopt_view, previous_fast_view)) =
+        linked_caller_runtime_view
+    {
+        builder.ins().store(
+            MemFlagsData::new(),
+            previous_deopt_view,
+            deopt_view_pointer,
+            0,
+        );
+        builder.ins().store(
+            MemFlagsData::new(),
+            previous_fast_view,
+            fast_view_pointer,
+            0,
+        );
+    }
     lower_optimizing_commit_dynamic_call_arguments(builder, packed, packed_length, transition);
     Ok(result)
 }
@@ -20690,13 +22187,22 @@ fn lower_optimizing_region_instruction(
     instruction: &RegionInstruction,
     transition_live_registers: &[RegId],
     total_native_array_call: bool,
+    countable_object_possible: bool,
+    total_fixed_builtin_call: bool,
+    total_throwable_method_call: bool,
     total_native_array_instruction: bool,
+    native_array_instruction_root_is_by_reference: bool,
     total_native_binary_instruction: bool,
-    total_native_scalar_control_instruction: bool,
+    total_native_numeric_binary_instruction: bool,
+    native_binary_operand_classes: Option<(SsaValueClass, SsaValueClass)>,
+    _total_native_scalar_control_instruction: bool,
     fresh_native_array_instruction: bool,
+    fresh_unique_array_key: Option<Option<i64>>,
+    fresh_native_array_capacity: Option<u32>,
     total_native_local_load: bool,
     total_request_local_store: bool,
     total_return_reference_store: bool,
+    reference_payload_proof: NativeReferencePayloadProof,
     constants: &[IrConstant],
     value_flow: &ExecutableValueFlow,
     inline_constants: &BTreeMap<FunctionId, BoundedInlineValue>,
@@ -20711,6 +22217,7 @@ fn lower_optimizing_region_instruction(
     function: FunctionId,
     local_count: u32,
     function_is_top_level: bool,
+    local_names: &[String],
     native_version: u32,
     _unit_identity: u64,
     optimizing_operations: NativeOptimizingOperations,
@@ -20720,6 +22227,11 @@ fn lower_optimizing_region_instruction(
     // so cold exits do not reconstruct them through Cranelift frontend
     // Variable alias chains created by the operation's internal CFG.
     let mut transition_registers = transition_live_registers.to_vec();
+    let definitions = instruction
+        .register_definitions()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    transition_registers.retain(|register| !definitions.contains(register));
     transition_registers.extend(instruction.register_uses());
     transition_registers.sort_unstable();
     transition_registers.dedup();
@@ -20731,6 +22243,7 @@ fn lower_optimizing_region_instruction(
     let value_release_commit =
         module.declare_func_in_func(optimizing_operations.value_release_commit, builder.func);
     let transition = NativeOptimizingTransition {
+        runtime,
         result_out,
         deopt_out,
         function,
@@ -20741,6 +22254,9 @@ fn lower_optimizing_region_instruction(
         live_values: &transition_live_values,
         native_version,
         value_release_commit,
+        frame_alloc: optimizing_operations.frame_alloc,
+        frame_release: optimizing_operations.frame_release,
+        reference_payload_proof,
     };
     // Integer array keys use the encoded native value domain just like array
     // values. Keep every optimizing key producer on the same publication
@@ -20753,6 +22269,14 @@ fn lower_optimizing_region_instruction(
         lower_optimizing_array_key_operand(
             builder, locals, registers, constants, operand, transition,
         )
+    };
+    let consumes_local_array_owner = |local: LocalId| {
+        !function_params.get(&function).is_some_and(|metadata| {
+            metadata
+                .params
+                .iter()
+                .any(|parameter| parameter.local == local && !parameter.by_ref)
+        })
     };
     let mut emitted_class = crate::JitProductionLoweringClass::DirectClif;
     match &instruction.kind {
@@ -20828,19 +22352,73 @@ fn lower_optimizing_region_instruction(
                         .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
                     builder.ins().select(uninitialized, null, value)
                 } else {
-                    return Err(CraneliftLoweringError::new(
-                        "JIT_CRANELIFT_REJECT_LOCAL_WARNING_BOUNDARY",
-                        format!(
-                            "non-quiet local load at continuation {} was not admitted before optimizing entry",
-                            instruction.continuation_id,
-                        ),
-                    ));
+                    let warned = builder.create_block();
+                    let initialized = builder.create_block();
+                    let complete = builder.create_block();
+                    builder.append_block_param(complete, types::I64);
+                    builder
+                        .ins()
+                        .brif(uninitialized, warned, &[], initialized, &[]);
+
+                    builder.switch_to_block(warned);
+                    let helper = optimizing_operations
+                        .undefined_variable_warning
+                        .ok_or_else(|| {
+                            CraneliftLoweringError::new(
+                                "JIT_CRANELIFT_UNDEFINED_VARIABLE_WARNING",
+                                "generated non-quiet local load has no exact warning service",
+                            )
+                        })?;
+                    let name = local_names
+                        .get(local.index())
+                        .map_or("<unknown>", String::as_str);
+                    let (name, name_length) =
+                        lower_optimizing_static_bytes(module, builder, name.as_bytes())?;
+                    let file = builder
+                        .ins()
+                        .iconst(types::I64, i64::from(instruction.span.file.raw()));
+                    let start = builder
+                        .ins()
+                        .iconst(types::I64, i64::from(instruction.span.start));
+                    let call = call_native_helper(
+                        module,
+                        builder,
+                        helper,
+                        &[name, name_length, file, start],
+                    );
+                    let status = builder.inst_results(call)[0];
+                    let warning_ok = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                    let warning_complete = builder.create_block();
+                    let warning_failed = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(warning_ok, warning_complete, &[], warning_failed, &[]);
+                    builder.switch_to_block(warning_failed);
+                    let zero = builder.ins().iconst(types::I32, 0);
+                    let no_value = builder.ins().iconst(types::I64, 0);
+                    transition.emit_exact_runtime_error(builder, zero, no_value)?;
+                    builder.switch_to_block(warning_complete);
+                    let null = builder
+                        .ins()
+                        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+                    builder.ins().jump(complete, &[null.into()]);
+
+                    builder.switch_to_block(initialized);
+                    builder.ins().jump(complete, &[value.into()]);
+                    builder.switch_to_block(complete);
+                    builder.block_params(complete)[0]
                 }
             };
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::StoreLocal { local, src } => {
-            let value = lower_region_operand(builder, locals, registers, *src)?;
+            let mut value = lower_region_operand(builder, locals, registers, *src)?;
+            if let RegionOperand::Constant(index) = *src
+                && let Some(IrConstant::Int(integer)) = constants.get(index as usize)
+                && native_integer_fits_immediate(*integer)
+            {
+                value = builder.ins().iconst(types::I64, *integer);
+            }
             let current = use_local_variable(builder, locals, *local)?;
             let release_current = instruction.live_locals.contains(local)
                 && value_release_required(value_flow.local_fact(*local));
@@ -20883,11 +22461,13 @@ fn lower_optimizing_region_instruction(
                 )
             } else if value_flow.local_storage(*local).is_reference_slot() {
                 lower_optimizing_store_reference_scalar(
+                    module,
                     builder,
                     current,
                     value,
                     release_current,
                     retain_value,
+                    optimizing_operations,
                     transition,
                 )?
             } else {
@@ -20930,11 +22510,13 @@ fn lower_optimizing_region_instruction(
                 )
             } else if value_flow.local_storage(*local).is_reference_slot() {
                 lower_optimizing_store_reference_scalar(
+                    module,
                     builder,
                     current,
                     value,
                     release_current,
                     retain_value,
+                    optimizing_operations,
                     transition,
                 )?
             } else {
@@ -20961,9 +22543,11 @@ fn lower_optimizing_region_instruction(
             define_local_variable(builder, locals, *local, stored)?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
-        RegionInstructionKind::InitStaticLocal { local, .. } => {
+        RegionInstructionKind::InitStaticLocal { local, default } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            lower_optimizing_trusted_static_local(builder, locals, *local, transition, function)?;
+            lower_optimizing_trusted_static_local(
+                builder, locals, registers, constants, *local, *default, transition, function,
+            )?;
         }
         RegionInstructionKind::Discard { src } => {
             if !value_flow.elides_discard(instruction.continuation_id) {
@@ -21018,10 +22602,17 @@ fn lower_optimizing_region_instruction(
                 || function_is_top_level
                     && storage == crate::region_ir::LocalStorageClass::RequestGlobal
             {
-                return Err(CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_UNPUBLISHED_GLOBAL_BINDING_UNSET",
-                    "global-binding unset reached optimizing lowering",
-                ));
+                emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+                let stored = lower_total_native_request_reference_unset(
+                    builder,
+                    current,
+                    uninitialized,
+                    transition,
+                )?;
+                define_local_variable(builder, locals, *local, stored)?;
+                return Ok(EmittedOptimizingInstruction {
+                    class: emitted_class,
+                });
             }
             // `unset` destroys this local binding, not the payload of a
             // ReferenceCell it happens to name. Native release is a no-op for
@@ -21029,7 +22620,7 @@ fn lower_optimizing_region_instruction(
             if total_native_array_instruction && storage.is_reference_slot() {
                 let _ = builder.ins().call(
                     transition.value_release_commit,
-                    &[transition.deopt_out, current],
+                    &[transition.runtime, transition.deopt_out, current],
                 );
             } else {
                 lower_optimizing_release(builder, current, transition)?;
@@ -21037,16 +22628,25 @@ fn lower_optimizing_region_instruction(
             define_local_variable(builder, locals, *local, uninitialized)?;
         }
         RegionInstructionKind::NewArray { dst } => {
-            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            debug_assert!(total_native_array_instruction);
-            let empty = builder.ins().iconst(types::I64, 0);
-            let array = lower_optimizing_allocate_direct_array(builder, empty, true, transition)?;
+            emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+            let capacity = builder.ins().iconst(
+                types::I64,
+                i64::from(
+                    fresh_native_array_capacity
+                        .unwrap_or(crate::JIT_NATIVE_DIRECT_ARRAY_INITIAL_CAPACITY),
+                ),
+            );
+            let allocator =
+                module.declare_func_in_func(optimizing_operations.array_allocate, builder.func);
+            let call = builder
+                .ins()
+                .call(allocator, &[transition.deopt_out, capacity]);
+            let array = builder.inst_results(call)[0];
             define_region_register(builder, register_variables, registers, *dst, array)?;
         }
         RegionInstructionKind::NewObject {
             dst,
             class,
-            prepared: true,
             linked_class,
         } => {
             emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
@@ -21055,7 +22655,7 @@ fn lower_optimizing_region_instruction(
             } else {
                 lower_optimizing_prepared_class_pointer(builder, *class, transition)
             };
-            let object = emit_total_exact_native_value!(
+            let object = emit_total_exact_runtime_value!(
                 module,
                 builder,
                 optimizing_operations.prepared_object_new,
@@ -21065,14 +22665,6 @@ fn lower_optimizing_region_instruction(
             )?;
             define_region_register(builder, register_variables, registers, *dst, object)?;
         }
-        RegionInstructionKind::NewObject {
-            prepared: false, ..
-        } => {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_UNPREPARED_OBJECT_PUBLICATION",
-                "unprepared object construction has no total optimizing publication plan",
-            ));
-        }
         RegionInstructionKind::CloneObject {
             dst,
             object,
@@ -21081,7 +22673,7 @@ fn lower_optimizing_region_instruction(
             emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
             let object = lower_region_operand(builder, locals, registers, *object)?;
             let object = lower_optimizing_reference_scalar(builder, object, false, transition)?;
-            let clone = emit_total_exact_native_value!(
+            let clone = emit_total_exact_runtime_value!(
                 module,
                 builder,
                 optimizing_operations.plain_object_clone,
@@ -21091,11 +22683,72 @@ fn lower_optimizing_region_instruction(
             )?;
             define_region_register(builder, register_variables, registers, *dst, clone)?;
         }
-        RegionInstructionKind::CloneObject { plain: false, .. } => {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_MAGIC_CLONE_PUBLICATION",
-                "object cloning with user-visible clone dispatch has no fixed optimizing target",
-            ));
+        RegionInstructionKind::CloneObject {
+            dst,
+            object,
+            plain: false,
+        } => {
+            emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+            let source = lower_region_operand(builder, locals, registers, *object)?;
+            let source = lower_optimizing_reference_scalar(builder, source, false, transition)?;
+            let clone = emit_total_exact_runtime_value!(
+                module,
+                builder,
+                optimizing_operations.plain_object_clone,
+                &[source],
+                transition,
+                "magic clone has no exact shallow-clone allocator",
+            )?;
+            let (method, method_length) =
+                lower_optimizing_static_bytes(module, builder, b"__clone")?;
+            let caller_function = builder
+                .ins()
+                .iconst(types::I64, i64::from(transition.function.raw()));
+            let callable = lower_optimizing_resolve_user_callback_action(
+                module,
+                builder,
+                optimizing_operations.acquire_method_callable,
+                &[clone, method, method_length, caller_function],
+                optimizing_operations.acquire_callable,
+                clone,
+                &[clone],
+                runtime,
+                result_out,
+                deopt_out,
+                instruction,
+                false,
+                transition,
+            )?;
+            let prepared = lower_optimizing_prepare_dynamic_callable(
+                builder,
+                callable,
+                OptimizingDynamicCallableArity::Fixed(0),
+                false,
+                false,
+                false,
+                false,
+                &[callable, clone],
+                transition,
+            )?;
+            let (packed, packed_length) =
+                lower_optimizing_pack_dynamic_fixed_arguments(builder, prepared, &[], transition);
+            let result = lower_optimizing_invoke_packed_dynamic(
+                module,
+                builder,
+                prepared.callback,
+                packed,
+                packed_length,
+                &[callable, clone],
+                None,
+                runtime,
+                result_out,
+                deopt_out,
+                instruction,
+                transition,
+            )?;
+            lower_optimizing_commit_owned_value(builder, result, transition);
+            lower_optimizing_commit_owned_value(builder, callable, transition);
+            define_region_register(builder, register_variables, registers, *dst, clone)?;
         }
         RegionInstructionKind::ArrayInsert {
             array,
@@ -21108,14 +22761,29 @@ fn lower_optimizing_region_instruction(
             debug_assert!(fresh_native_array_instruction);
             let current = use_region_register(builder, registers, *array)?;
             let key = lower_total_array_next_integer_key(builder, current, transition.deopt_out);
-            let value = lower_region_operand(builder, locals, registers, *value)?;
             // A plain array literal/write copies the PHP-visible value. A
             // reference-bound SSA local therefore contributes its payload,
             // while only the explicit `by_ref_local` form preserves binding
             // identity.
-            let value = lower_optimizing_reference_scalar(builder, value, false, transition)?;
-            let updated =
-                lower_total_fresh_array_insert(builder, current, key, value, transition.deopt_out);
+            let transfer_value = matches!(
+                *value,
+                RegionOperand::Register(register)
+                    if value_flow.moves_value_into_array(
+                        instruction.continuation_id,
+                        register,
+                    )
+            );
+            let value = lower_region_operand(builder, locals, registers, *value)?;
+            let updated = lower_total_fresh_array_insert(
+                builder,
+                current,
+                key,
+                value,
+                false,
+                !transfer_value,
+                Some(Some(key)),
+                transition.deopt_out,
+            );
             define_region_register(builder, register_variables, registers, *array, updated)?;
         }
         RegionInstructionKind::ArrayInsert {
@@ -21128,11 +22796,80 @@ fn lower_optimizing_region_instruction(
             debug_assert!(total_native_array_instruction);
             debug_assert!(fresh_native_array_instruction);
             let current = use_region_register(builder, registers, *array)?;
+            let transfer_key = matches!(
+                *key,
+                RegionOperand::Register(register)
+                    if value_flow.moves_value_into_array(
+                        instruction.continuation_id,
+                        register,
+                    )
+            );
+            let transfer_value = matches!(
+                *value,
+                RegionOperand::Register(register)
+                    if value_flow.moves_value_into_array(
+                        instruction.continuation_id,
+                        register,
+                    )
+            );
             let key = lower_array_key_operand(builder, locals, registers, constants, *key)?;
             let value = lower_region_operand(builder, locals, registers, *value)?;
-            let value = lower_optimizing_reference_scalar(builder, value, false, transition)?;
-            let updated =
-                lower_total_fresh_array_insert(builder, current, key, value, transition.deopt_out);
+            let updated = if let Some(integer_key) = fresh_unique_array_key {
+                // Publication has proved that this explicit literal key is
+                // normalized, unique, and within the reserved final capacity.
+                // Do not emit the general overwrite/reference scan once per
+                // literal entry. Generic compilation does not receive this
+                // proof and therefore retains the complete overwrite path.
+                let integer_key = integer_key.map(|key| builder.ins().iconst(types::I64, key));
+                lower_total_fresh_array_insert(
+                    builder,
+                    current,
+                    key,
+                    value,
+                    !transfer_key,
+                    !transfer_value,
+                    Some(integer_key),
+                    transition.deopt_out,
+                )
+            } else {
+                lower_total_native_array_insert(
+                    builder,
+                    current,
+                    key,
+                    value,
+                    !transfer_key,
+                    !transfer_value,
+                    transition,
+                )
+            };
+            define_region_register(builder, register_variables, registers, *array, updated)?;
+        }
+        RegionInstructionKind::ArrayInsert {
+            array,
+            key,
+            by_ref_local: Some(local),
+            ..
+        } => {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            let current = use_region_register(builder, registers, *array)?;
+            let source = use_local_variable(builder, locals, *local)?;
+            let reference =
+                lower_total_native_bind_reference(builder, source, transition.deopt_out);
+            define_local_variable(builder, locals, *local, reference)?;
+            let key = match key {
+                Some(key) => lower_array_key_operand(builder, locals, registers, constants, *key)?,
+                None => lower_total_array_next_integer_key(builder, current, transition.deopt_out),
+            };
+            let updated = lower_total_fresh_array_insert(
+                builder,
+                current,
+                key,
+                reference,
+                false,
+                true,
+                Some(Some(key)),
+                transition.deopt_out,
+            );
             define_region_register(builder, register_variables, registers, *array, updated)?;
         }
         RegionInstructionKind::ArraySpread { array, source } => {
@@ -21198,12 +22935,46 @@ fn lower_optimizing_region_instruction(
         } if keys.is_empty() => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let current = use_local_variable(builder, locals, *local)?;
+            let (root, reference_slot) = lower_optimizing_mutable_array_assignment_root(
+                module,
+                builder,
+                locals,
+                *local,
+                current,
+                optimizing_operations,
+                transition,
+            )?;
+            let zero = builder.ins().iconst(types::I64, 0);
+            let root = lower_total_direct_array_ensure_unique_capacity(
+                module,
+                builder,
+                optimizing_operations.array_ensure_unique,
+                root,
+                zero,
+                consumes_local_array_owner(*local),
+                transition.deopt_out,
+            );
+            lower_optimizing_publish_mutable_array_local(
+                builder,
+                locals,
+                *local,
+                root,
+                reference_slot,
+                transition.deopt_out,
+            )?;
             let key =
-                lower_total_native_array_next_integer_key(builder, current, transition.deopt_out);
+                lower_total_native_array_next_integer_key(builder, root, transition.deopt_out);
             let value = lower_region_operand(builder, locals, registers, *value)?;
             let updated =
-                lower_total_native_array_append(builder, current, key, value, transition.deopt_out);
-            define_local_variable(builder, locals, *local, updated)?;
+                lower_total_native_array_append(builder, root, key, value, transition.deopt_out);
+            lower_optimizing_publish_mutable_array_local(
+                builder,
+                locals,
+                *local,
+                updated,
+                reference_slot,
+                transition.deopt_out,
+            )?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::AppendDim {
@@ -21213,27 +22984,49 @@ fn lower_optimizing_region_instruction(
             value,
         } if !keys.is_empty() => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            let root = use_local_variable(builder, locals, *local)?;
+            let current = use_local_variable(builder, locals, *local)?;
+            let (root, reference_slot) = lower_optimizing_mutable_array_assignment_root(
+                module,
+                builder,
+                locals,
+                *local,
+                current,
+                optimizing_operations,
+                transition,
+            )?;
             let lowered_keys = keys
                 .iter()
                 .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
                 .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
-            let leaf = if fresh_native_array_instruction {
-                lower_total_native_create_array_path(builder, root, &lowered_keys, transition)?
+            let (root, leaf) = if fresh_native_array_instruction {
+                let leaf =
+                    lower_total_native_create_array_path(builder, root, &lowered_keys, transition)?;
+                (root, leaf)
             } else {
-                lower_total_native_existing_array_path(
+                lower_total_native_mutable_array_path(
+                    module,
                     builder,
+                    optimizing_operations.array_ensure_unique,
                     root,
                     &lowered_keys,
-                    transition.deopt_out,
-                )
+                    true,
+                    consumes_local_array_owner(*local),
+                    transition,
+                )?
             };
+            lower_optimizing_publish_mutable_array_local(
+                builder,
+                locals,
+                *local,
+                root,
+                reference_slot,
+                transition.deopt_out,
+            )?;
             let key =
                 lower_total_native_array_next_integer_key(builder, leaf, transition.deopt_out);
             let value = lower_region_operand(builder, locals, registers, *value)?;
             let _ =
                 lower_total_native_array_append(builder, leaf, key, value, transition.deopt_out);
-            define_local_variable(builder, locals, *local, root)?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::AssignDim {
@@ -21276,13 +23069,8 @@ fn lower_optimizing_region_instruction(
                     parents,
                     transition.deopt_out,
                 );
-                let _ = lower_total_native_array_insert_integer(
-                    builder,
-                    leaf,
-                    *leaf_key,
-                    value,
-                    true,
-                    transition.deopt_out,
+                let _ = lower_total_native_array_insert(
+                    builder, leaf, *leaf_key, value, true, true, transition,
                 );
             }
             define_region_register(builder, register_variables, registers, *dst, value)?;
@@ -21295,17 +23083,50 @@ fn lower_optimizing_region_instruction(
         } if keys.len() == 1 => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let current = use_local_variable(builder, locals, *local)?;
+            let (root, reference_slot) = lower_optimizing_mutable_array_assignment_root(
+                module,
+                builder,
+                locals,
+                *local,
+                current,
+                optimizing_operations,
+                transition,
+            )?;
+            let root = if fresh_native_array_instruction {
+                root
+            } else {
+                let additional = builder.ins().iconst(types::I64, 1);
+                let root = lower_total_direct_array_ensure_unique_capacity(
+                    module,
+                    builder,
+                    optimizing_operations.array_ensure_unique,
+                    root,
+                    additional,
+                    consumes_local_array_owner(*local),
+                    transition.deopt_out,
+                );
+                root
+            };
+            lower_optimizing_publish_mutable_array_local(
+                builder,
+                locals,
+                *local,
+                root,
+                reference_slot,
+                transition.deopt_out,
+            )?;
             let key = lower_array_key_operand(builder, locals, registers, constants, keys[0])?;
             let value = lower_region_operand(builder, locals, registers, *value)?;
-            let updated = lower_total_native_array_insert_integer(
+            let updated =
+                lower_total_native_array_insert(builder, root, key, value, true, true, transition);
+            lower_optimizing_publish_mutable_array_local(
                 builder,
-                current,
-                key,
-                value,
-                true,
+                locals,
+                *local,
+                updated,
+                reference_slot,
                 transition.deopt_out,
-            );
-            define_local_variable(builder, locals, *local, updated)?;
+            )?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::AssignDim {
@@ -21315,7 +23136,16 @@ fn lower_optimizing_region_instruction(
             value,
         } if keys.len() > 1 => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            let root = use_local_variable(builder, locals, *local)?;
+            let current = use_local_variable(builder, locals, *local)?;
+            let (root, reference_slot) = lower_optimizing_mutable_array_assignment_root(
+                module,
+                builder,
+                locals,
+                *local,
+                current,
+                optimizing_operations,
+                transition,
+            )?;
             let lowered_keys = keys
                 .iter()
                 .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
@@ -21323,21 +23153,34 @@ fn lower_optimizing_region_instruction(
             let (leaf_key, parents) = lowered_keys
                 .split_last()
                 .expect("total nested assignment has at least two keys");
-            let leaf = if fresh_native_array_instruction {
-                lower_total_native_create_array_path(builder, root, parents, transition)?
+            let (root, leaf) = if fresh_native_array_instruction {
+                let leaf =
+                    lower_total_native_create_array_path(builder, root, parents, transition)?;
+                (root, leaf)
             } else {
-                lower_total_native_existing_array_path(builder, root, parents, transition.deopt_out)
+                lower_total_native_mutable_array_path(
+                    module,
+                    builder,
+                    optimizing_operations.array_ensure_unique,
+                    root,
+                    parents,
+                    true,
+                    consumes_local_array_owner(*local),
+                    transition,
+                )?
             };
-            let value = lower_region_operand(builder, locals, registers, *value)?;
-            let _ = lower_total_native_array_insert_integer(
+            lower_optimizing_publish_mutable_array_local(
                 builder,
-                leaf,
-                *leaf_key,
-                value,
-                true,
+                locals,
+                *local,
+                root,
+                reference_slot,
                 transition.deopt_out,
+            )?;
+            let value = lower_region_operand(builder, locals, registers, *value)?;
+            let _ = lower_total_native_array_insert(
+                builder, leaf, *leaf_key, value, true, true, transition,
             );
-            define_local_variable(builder, locals, *local, root)?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::IssetDim { dst, keys, .. }
@@ -21367,7 +23210,9 @@ fn lower_optimizing_region_instruction(
                 (builder.ins().iconst(types::I8, 1), root)
             } else {
                 lower_total_native_array_probe_path(
+                    module,
                     builder,
+                    optimizing_operations.array_lookup,
                     root,
                     &lowered_keys,
                     transition.deopt_out,
@@ -21391,12 +23236,19 @@ fn lower_optimizing_region_instruction(
         RegionInstructionKind::IssetDim { dst, local, keys } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let root = use_local_variable(builder, locals, *local)?;
+            let root = if value_flow.local_storage(*local).is_reference_slot() {
+                lower_optimizing_reference_scalar(builder, root, false, transition)?
+            } else {
+                root
+            };
             let lowered_keys = keys
                 .iter()
                 .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
                 .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
             let (path_present, value) = lower_total_native_array_probe_path(
+                module,
                 builder,
+                optimizing_operations.array_lookup,
                 root,
                 &lowered_keys,
                 transition.deopt_out,
@@ -21443,7 +23295,9 @@ fn lower_optimizing_region_instruction(
                 (builder.ins().iconst(types::I8, 1), root)
             } else {
                 lower_total_native_array_probe_path(
+                    module,
                     builder,
+                    optimizing_operations.array_lookup,
                     root,
                     &lowered_keys,
                     transition.deopt_out,
@@ -21459,12 +23313,19 @@ fn lower_optimizing_region_instruction(
         RegionInstructionKind::EmptyDim { dst, local, keys } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let root = use_local_variable(builder, locals, *local)?;
+            let root = if value_flow.local_storage(*local).is_reference_slot() {
+                lower_optimizing_reference_scalar(builder, root, false, transition)?
+            } else {
+                root
+            };
             let lowered_keys = keys
                 .iter()
                 .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
                 .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
             let (present, value) = lower_total_native_array_probe_path(
+                module,
                 builder,
+                optimizing_operations.array_lookup,
                 root,
                 &lowered_keys,
                 transition.deopt_out,
@@ -21479,10 +23340,55 @@ fn lower_optimizing_region_instruction(
         RegionInstructionKind::UnsetDim { keys, .. }
             if instruction.native_global_name.is_some() && keys.len() == 1 =>
         {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_UNPUBLISHED_GLOBAL_BINDING_UNSET",
-                "global binding unset reached optimizing lowering without baseline admission",
-            ));
+            emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+            let reference = lower_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition.deopt_out,
+            )?;
+            let helper = optimizing_operations.global_binding_unset.ok_or_else(|| {
+                CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_GLOBAL_BINDING_UNSET",
+                    "generated global binding unset has no exact cold transition",
+                )
+            })?;
+            let call = call_native_helper(module, builder, helper, &[reference]);
+            let status = builder.inst_results(call)[0];
+            let complete = builder.create_block();
+            let failed = builder.create_block();
+            let succeeded = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+            builder.ins().brif(succeeded, complete, &[], failed, &[]);
+            builder.switch_to_block(failed);
+            let no_value = builder.ins().iconst(types::I64, 0);
+            transition.emit_exact_runtime_error(builder, status, no_value)?;
+            builder.switch_to_block(complete);
+            if let Some(global_name) = instruction.native_global_name.as_deref()
+                && let Some(local_index) = local_names.iter().position(|name| name == global_name)
+                && let Ok(local_raw) = u32::try_from(local_index)
+            {
+                let binding_local = LocalId::new(local_raw);
+                if locals.contains_key(&binding_local)
+                    && matches!(
+                        value_flow.local_storage(binding_local),
+                        crate::region_ir::LocalStorageClass::RequestGlobal
+                            | crate::region_ir::LocalStorageClass::Superglobal
+                    )
+                {
+                    let previous = use_local_variable(builder, locals, binding_local)?;
+                    let replacement = lower_trusted_request_local_reference(
+                        builder,
+                        transition.deopt_out,
+                        function,
+                        binding_local,
+                    );
+                    // The republished request-local slot owns one handle; the
+                    // active generated frame acquires its own canonical owner.
+                    lower_optimizing_retain(builder, replacement, transition.deopt_out);
+                    define_local_variable(builder, locals, binding_local, replacement)?;
+                    lower_optimizing_release(builder, previous, transition)?;
+                }
+            }
         }
         RegionInstructionKind::UnsetDim { keys, .. }
             if instruction.native_global_name.is_some() && keys.len() > 1 =>
@@ -21527,10 +23433,36 @@ fn lower_optimizing_region_instruction(
         RegionInstructionKind::UnsetDim { local, keys } if keys.len() == 1 => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let current = use_local_variable(builder, locals, *local)?;
+            let (root, reference_slot) = lower_optimizing_mutable_array_assignment_root(
+                module,
+                builder,
+                locals,
+                *local,
+                current,
+                optimizing_operations,
+                transition,
+            )?;
+            let zero = builder.ins().iconst(types::I64, 0);
+            let root = lower_total_direct_array_ensure_unique_capacity(
+                module,
+                builder,
+                optimizing_operations.array_ensure_unique,
+                root,
+                zero,
+                consumes_local_array_owner(*local),
+                transition.deopt_out,
+            );
             let key = lower_array_key_operand(builder, locals, registers, constants, keys[0])?;
             let updated =
-                lower_total_native_array_unset_integer(builder, current, key, transition.deopt_out);
-            define_local_variable(builder, locals, *local, updated)?;
+                lower_total_native_array_unset_integer(builder, root, key, transition.deopt_out);
+            lower_optimizing_publish_mutable_array_local(
+                builder,
+                locals,
+                *local,
+                updated,
+                reference_slot,
+                transition.deopt_out,
+            )?;
         }
         RegionInstructionKind::UnsetDim { local: _, keys }
             if keys.len() > 1 && fresh_native_array_instruction =>
@@ -21542,7 +23474,16 @@ fn lower_optimizing_region_instruction(
         }
         RegionInstructionKind::UnsetDim { local, keys } if keys.len() > 1 => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            let root = use_local_variable(builder, locals, *local)?;
+            let current = use_local_variable(builder, locals, *local)?;
+            let (root, reference_slot) = lower_optimizing_mutable_array_assignment_root(
+                module,
+                builder,
+                locals,
+                *local,
+                current,
+                optimizing_operations,
+                transition,
+            )?;
             let lowered_keys = keys
                 .iter()
                 .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
@@ -21550,34 +23491,76 @@ fn lower_optimizing_region_instruction(
             let (leaf_key, parents) = lowered_keys
                 .split_last()
                 .expect("total nested unset has at least two keys");
-            let leaf = lower_total_native_existing_array_path(
+            let (root, leaf) = lower_total_native_mutable_array_path(
+                module,
                 builder,
+                optimizing_operations.array_ensure_unique,
                 root,
                 parents,
-                transition.deopt_out,
-            );
+                false,
+                consumes_local_array_owner(*local),
+                transition,
+            )?;
             let _ = lower_total_native_array_unset_integer(
                 builder,
                 leaf,
                 *leaf_key,
                 transition.deopt_out,
             );
-            define_local_variable(builder, locals, *local, root)?;
+            lower_optimizing_publish_mutable_array_local(
+                builder,
+                locals,
+                *local,
+                root,
+                reference_slot,
+                transition.deopt_out,
+            )?;
         }
         RegionInstructionKind::Binary { dst, op, lhs, rhs } => {
-            if !total_native_binary_instruction {
-                return Err(CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_BINARY_PUBLICATION",
-                    format!(
-                        "binary operation at continuation {} reached optimizing lowering without a total publication plan",
-                        instruction.continuation_id,
-                    ),
-                ));
+            if !total_native_binary_instruction && *op != RegionBinaryOp::Concat {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let lhs = lower_prepared_native_call_operand(
+                    builder, locals, registers, constants, *lhs, transition,
+                )?;
+                let rhs = lower_prepared_native_call_operand(
+                    builder, locals, registers, constants, *rhs, transition,
+                )?;
+                let prepared_type_error = lower_optimizing_prepared_exception_pointer(
+                    builder,
+                    function,
+                    instruction.continuation_id,
+                    deopt_out,
+                );
+                let file = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(instruction.span.file.raw()));
+                let start = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(instruction.span.start));
+                let result = emit_total_exact_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_arithmetic[native_exact_arithmetic_index(*op)],
+                    &[lhs, rhs, prepared_type_error, file, start],
+                    transition,
+                    "exact arithmetic leaf was not declared",
+                )?;
+                define_region_register(builder, register_variables, registers, *dst, result)?;
+                return Ok(EmittedOptimizingInstruction {
+                    class: emitted_class,
+                });
             }
+            debug_assert!(total_native_binary_instruction);
             let lhs_operand = *lhs;
             let rhs_operand = *rhs;
-            let lhs_fact = lowering_operand_fact(value_flow, constants, lhs_operand);
-            let rhs_fact = lowering_operand_fact(value_flow, constants, rhs_operand);
+            let mut lhs_fact = lowering_operand_fact(value_flow, constants, lhs_operand);
+            let mut rhs_fact = lowering_operand_fact(value_flow, constants, rhs_operand);
+            if let Some((lhs_class, rhs_class)) = native_binary_operand_classes {
+                lhs_fact.class = lhs_class;
+                lhs_fact.certainty = crate::region_ir::SsaCertainty::KnownClass;
+                rhs_fact.class = rhs_class;
+                rhs_fact.certainty = crate::region_ir::SsaCertainty::KnownClass;
+            }
             let lhs = lower_prepared_native_call_operand(
                 builder, locals, registers, constants, *lhs, transition,
             )?;
@@ -21588,28 +23571,42 @@ fn lower_optimizing_region_instruction(
                 lhs_fact.class == SsaValueClass::Int && rhs_fact.class == SsaValueClass::Int;
             let has_float =
                 lhs_fact.class == SsaValueClass::Float || rhs_fact.class == SsaValueClass::Float;
-            let value = if both_integer
+            let value = if total_native_numeric_binary_instruction
                 && matches!(
                     op,
-                    RegionBinaryOp::Add
-                        | RegionBinaryOp::Sub
-                        | RegionBinaryOp::Mul
-                        | RegionBinaryOp::Mod
+                    RegionBinaryOp::Add | RegionBinaryOp::Sub | RegionBinaryOp::Mul
+                ) {
+                emitted_class = crate::JitProductionLoweringClass::DirectClif;
+                lower_total_native_numeric_arithmetic(builder, lhs, rhs, *op, transition)?
+            } else if both_integer
+                && matches!(
+                    op,
+                    RegionBinaryOp::Add | RegionBinaryOp::Sub | RegionBinaryOp::Mul
+                )
+            {
+                emitted_class = crate::JitProductionLoweringClass::DirectClif;
+                let lhs =
+                    lower_optimizing_authoritative_integer(builder, lhs, transition.deopt_out);
+                let rhs =
+                    lower_optimizing_authoritative_integer(builder, rhs, transition.deopt_out);
+                lower_total_native_integer_arithmetic(builder, lhs, rhs, *op, transition)?
+            } else if both_integer
+                && matches!(
+                    op,
+                    RegionBinaryOp::Mod
                         | RegionBinaryOp::BitAnd
                         | RegionBinaryOp::BitOr
                         | RegionBinaryOp::BitXor
                         | RegionBinaryOp::ShiftLeft
                         | RegionBinaryOp::ShiftRight
-                ) {
+                )
+            {
                 emitted_class = crate::JitProductionLoweringClass::DirectClif;
                 let lhs =
                     lower_optimizing_authoritative_integer(builder, lhs, transition.deopt_out);
                 let rhs =
                     lower_optimizing_authoritative_integer(builder, rhs, transition.deopt_out);
                 let raw = match op {
-                    RegionBinaryOp::Add => builder.ins().iadd(lhs, rhs),
-                    RegionBinaryOp::Sub => builder.ins().isub(lhs, rhs),
-                    RegionBinaryOp::Mul => builder.ins().imul(lhs, rhs),
                     RegionBinaryOp::BitAnd => builder.ins().band(lhs, rhs),
                     RegionBinaryOp::BitOr => builder.ins().bor(lhs, rhs),
                     RegionBinaryOp::BitXor => builder.ins().bxor(lhs, rhs),
@@ -21654,7 +23651,12 @@ fn lower_optimizing_region_instruction(
                         builder.switch_to_block(merge);
                         builder.block_params(merge)[0]
                     }
-                    RegionBinaryOp::Div | RegionBinaryOp::Concat | RegionBinaryOp::Pow => {
+                    RegionBinaryOp::Add
+                    | RegionBinaryOp::Sub
+                    | RegionBinaryOp::Mul
+                    | RegionBinaryOp::Div
+                    | RegionBinaryOp::Concat
+                    | RegionBinaryOp::Pow => {
                         unreachable!("publication selected an integer direct operation")
                     }
                 };
@@ -21783,7 +23785,7 @@ fn lower_optimizing_region_instruction(
                         "total representation-heavy binary target was not declared",
                     )
                 })?;
-                emit_total_exact_native_value!(
+                emit_total_exact_runtime_value!(
                     module,
                     builder,
                     Some(helper),
@@ -21795,10 +23797,6 @@ fn lower_optimizing_region_instruction(
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::Unary { dst, op, src } => {
-            debug_assert!(
-                total_native_scalar_control_instruction,
-                "optimizing unary lowering requires a publication-total operand plan"
-            );
             let src = lower_prepared_native_call_operand(
                 builder, locals, registers, constants, *src, transition,
             )?;
@@ -21810,7 +23808,7 @@ fn lower_optimizing_region_instruction(
                 }
                 exact => {
                     emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-                    emit_total_exact_native_value!(
+                    emit_total_exact_runtime_value!(
                         module,
                         builder,
                         optimizing_operations.exact_unary[native_exact_unary_index(*exact)],
@@ -21823,32 +23821,54 @@ fn lower_optimizing_region_instruction(
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::Compare { dst, op, lhs, rhs } => {
-            debug_assert!(
-                total_native_scalar_control_instruction,
-                "optimizing comparison lowering requires a publication-total operand plan"
-            );
             let lhs_value = lower_prepared_native_call_operand(
                 builder, locals, registers, constants, *lhs, transition,
             )?;
             let rhs_value = lower_prepared_native_call_operand(
                 builder, locals, registers, constants, *rhs, transition,
             )?;
-            emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-            let value = emit_total_exact_native_value!(
-                module,
-                builder,
-                optimizing_operations.exact_compare[native_exact_compare_index(*op)],
-                &[lhs_value, rhs_value],
-                transition,
-                "exact native comparison handler was not declared",
-            )?;
+            let lhs_fact = lowering_operand_fact(value_flow, constants, *lhs);
+            let rhs_fact = lowering_operand_fact(value_flow, constants, *rhs);
+            let direct =
+                if lhs_fact.class == SsaValueClass::Int && rhs_fact.class == SsaValueClass::Int {
+                    let lhs = lower_optimizing_authoritative_integer(
+                        builder,
+                        lhs_value,
+                        transition.deopt_out,
+                    );
+                    let rhs = lower_optimizing_authoritative_integer(
+                        builder,
+                        rhs_value,
+                        transition.deopt_out,
+                    );
+                    lower_direct_compare(builder, *op, lhs, rhs, lhs_fact.class, rhs_fact.class)
+                } else {
+                    lower_direct_compare(
+                        builder,
+                        *op,
+                        lhs_value,
+                        rhs_value,
+                        lhs_fact.class,
+                        rhs_fact.class,
+                    )
+                };
+            let value = if let Some(value) = direct {
+                emitted_class = crate::JitProductionLoweringClass::DirectClif;
+                value
+            } else {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                emit_total_exact_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_compare[native_exact_compare_index(*op)],
+                    &[lhs_value, rhs_value],
+                    transition,
+                    "exact native comparison handler was not declared",
+                )?
+            };
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::Cast { dst, op, src } => {
-            debug_assert!(
-                total_native_scalar_control_instruction,
-                "optimizing cast lowering requires a publication-total operand plan"
-            );
             let value = lower_prepared_native_call_operand(
                 builder, locals, registers, constants, *src, transition,
             )?;
@@ -21861,7 +23881,7 @@ fn lower_optimizing_region_instruction(
                     || optimizing_fact_is_compound_numeric_cast(fact))
             {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-                emit_total_exact_native_value!(
+                emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.float_cast,
@@ -21885,7 +23905,7 @@ fn lower_optimizing_region_instruction(
                     .expect("direct integer cast contract was checked")
             } else if *op == RegionCastOp::Int {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-                emit_total_exact_native_value!(
+                emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.int_cast,
@@ -21895,7 +23915,7 @@ fn lower_optimizing_region_instruction(
                 )?
             } else if *op == RegionCastOp::Array {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-                emit_total_exact_native_value!(
+                emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.array_cast,
@@ -21905,7 +23925,7 @@ fn lower_optimizing_region_instruction(
                 )?
             } else if *op == RegionCastOp::Object {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-                emit_total_exact_native_value!(
+                emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.object_cast,
@@ -21915,7 +23935,7 @@ fn lower_optimizing_region_instruction(
                 )?
             } else if *op == RegionCastOp::String {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-                emit_total_exact_native_value!(
+                emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.string_cast,
@@ -21944,6 +23964,7 @@ fn lower_optimizing_region_instruction(
                 encoded,
                 lowering_operand_fact(value_flow, constants, *src),
                 optimizing_operations.float_to_string,
+                optimizing_operations.string_cast,
                 transition,
             )?;
             let (_, length, bytes) =
@@ -21997,7 +24018,7 @@ fn lower_optimizing_region_instruction(
                     let object = lower_region_operand(builder, locals, registers, *object)?;
                     let object =
                         lower_optimizing_reference_scalar(builder, object, false, transition)?;
-                    emit_total_exact_native_value!(
+                    emit_total_exact_runtime_value!(
                         module,
                         builder,
                         optimizing_operations.object_class_name,
@@ -22055,30 +24076,52 @@ fn lower_optimizing_region_instruction(
         } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let array = lower_region_operand(builder, locals, registers, *array)?;
+            let array = lower_optimizing_reference_scalar(builder, array, false, transition)?;
             let key = lower_array_key_operand(builder, locals, registers, constants, *key)?;
             // Lvalue probes are completed by the following exact reference or
             // write operation. A missing entry is therefore null here rather
             // than a read-side undefined-key warning.
             let quiet = *quiet || *mode == php_ir::instruction::DimFetchMode::Lvalue;
             let value = lower_total_native_array_fetch(
+                module,
                 builder,
+                optimizing_operations.array_lookup,
+                optimizing_operations.undefined_array_key_warning,
+                optimizing_operations.array_offset_warning,
                 array,
                 key,
                 quiet,
                 true,
                 *mode == php_ir::instruction::DimFetchMode::Read,
+                instruction.span.file.raw(),
+                instruction.span.start,
                 transition,
-            );
+            )?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::ForeachInit { iterator, source } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            debug_assert!(total_native_array_instruction);
             let source_operand = *source;
             let source_fact = lowering_operand_fact(value_flow, constants, source_operand);
             let transfer_source = source_fact.ownership == SsaOwnership::Owned;
             let source = lower_region_operand(builder, locals, registers, source_operand)?;
             let source = lower_optimizing_reference_scalar(builder, source, false, transition)?;
+            if !total_native_array_instruction {
+                let rejected = builder.create_block();
+                let ready = builder.create_block();
+                let _ = executable_region::emit_optimizing_entry_direct_array_descriptor(
+                    builder,
+                    source,
+                    transition.deopt_out,
+                    rejected,
+                );
+                builder.ins().jump(ready, &[]);
+                builder.switch_to_block(rejected);
+                let zero = builder.ins().iconst(types::I32, 0);
+                let no_value = builder.ins().iconst(types::I64, 0);
+                transition.emit_exact_runtime_error(builder, zero, no_value)?;
+                builder.switch_to_block(ready);
+            }
             let iterator_value = lower_total_direct_foreach_init(
                 builder,
                 source,
@@ -22108,7 +24151,6 @@ fn lower_optimizing_region_instruction(
         }
         RegionInstructionKind::ForeachInitRef { iterator, local } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            debug_assert!(total_native_array_instruction);
             let iterator_value = lower_total_direct_foreach_reference_init(
                 builder,
                 *local,
@@ -22131,7 +24173,6 @@ fn lower_optimizing_region_instruction(
             value,
         } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            debug_assert!(total_native_array_instruction);
             let iterator_value = use_region_register(builder, registers, *iterator)?;
             let (next_key, next_value, has) = lower_total_direct_foreach_next(
                 builder,
@@ -22152,7 +24193,6 @@ fn lower_optimizing_region_instruction(
             value_local,
         } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-            debug_assert!(total_native_array_instruction);
             let iterator_value = use_region_register(builder, registers, *iterator)?;
             let previous = use_local_variable(builder, locals, *value_local)?;
             let (next_key, next_value, has) = lower_total_direct_foreach_next_reference(
@@ -22160,6 +24200,7 @@ fn lower_optimizing_region_instruction(
                 iterator_value,
                 previous,
                 key.is_some(),
+                transition.runtime,
                 transition.deopt_out,
                 transition.value_release_commit,
             );
@@ -22176,6 +24217,7 @@ fn lower_optimizing_region_instruction(
             lower_total_direct_foreach_cleanup(
                 builder,
                 iterator_value,
+                transition.runtime,
                 transition.deopt_out,
                 transition.value_release_commit,
             );
@@ -22189,17 +24231,31 @@ fn lower_optimizing_region_instruction(
             dst,
             object,
             property: _,
+            dynamic_stdclass,
             ..
         } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let object = lower_region_operand(builder, locals, registers, *object)?;
-            let value = lower_optimizing_property_fetch(
-                builder,
-                object,
-                function,
-                instruction.continuation_id,
-                transition,
-            )?;
+            let value = if *dynamic_stdclass {
+                let slot = lower_optimizing_named_dynamic_property_slot(
+                    module,
+                    builder,
+                    object,
+                    function,
+                    instruction.continuation_id,
+                    optimizing_operations,
+                    transition,
+                )?;
+                lower_optimizing_dynamic_property_fetch(builder, slot, transition)?
+            } else {
+                lower_optimizing_property_fetch(
+                    builder,
+                    object,
+                    function,
+                    instruction.continuation_id,
+                    transition,
+                )?
+            };
             define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::AssignProperty {
@@ -22207,32 +24263,34 @@ fn lower_optimizing_region_instruction(
             object,
             value,
             property: _,
+            dynamic_stdclass,
             ..
         } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let object = lower_region_operand(builder, locals, registers, *object)?;
             let value = lower_region_operand(builder, locals, registers, *value)?;
-            let value = lower_optimizing_property_assign(
-                builder,
-                object,
-                value,
-                function,
-                instruction.continuation_id,
-                transition,
-            )?;
+            let value = if *dynamic_stdclass {
+                let slot = lower_optimizing_named_dynamic_property_slot(
+                    module,
+                    builder,
+                    object,
+                    function,
+                    instruction.continuation_id,
+                    optimizing_operations,
+                    transition,
+                )?;
+                lower_optimizing_property_assign_to_slot(builder, slot, value, true, transition)?
+            } else {
+                lower_optimizing_property_assign(
+                    builder,
+                    object,
+                    value,
+                    function,
+                    instruction.continuation_id,
+                    transition,
+                )?
+            };
             define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::BindReference { target, .. }
-            if value_flow.local_storage(*target)
-                == crate::region_ir::LocalStorageClass::Superglobal
-                || function_is_top_level
-                    && value_flow.local_storage(*target)
-                        == crate::region_ir::LocalStorageClass::RequestGlobal =>
-        {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_UNPUBLISHED_REQUEST_REFERENCE",
-                "request-global reference binding reached optimizing lowering without baseline admission",
-            ));
         }
         RegionInstructionKind::BindReference { target, source } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
@@ -22246,13 +24304,40 @@ fn lower_optimizing_region_instruction(
                 define_local_variable(builder, locals, *target, reference)?;
             }
         }
-        RegionInstructionKind::BindReferenceIntoDim { .. }
-            if instruction.native_global_name.is_some() =>
-        {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_UNPUBLISHED_GLOBAL_REFERENCE_DIM",
-                "global reference-dimension binding reached optimizing lowering without baseline admission",
-            ));
+        RegionInstructionKind::BindReferenceIntoDim {
+            source,
+            keys,
+            append: false,
+            ..
+        } if instruction.native_global_name.is_some() && keys.len() == 1 => {
+            emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+            let destination = lower_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition.deopt_out,
+            )?;
+            let source_value = use_local_variable(builder, locals, *source)?;
+            let source_reference =
+                lower_total_native_bind_reference(builder, source_value, transition.deopt_out);
+            define_local_variable(builder, locals, *source, source_reference)?;
+            let helper = optimizing_operations.global_binding_rebind.ok_or_else(|| {
+                CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_GLOBAL_BINDING_REBIND",
+                    "generated global binding rebind has no exact cold transition",
+                )
+            })?;
+            let call =
+                call_native_helper(module, builder, helper, &[destination, source_reference]);
+            let status = builder.inst_results(call)[0];
+            let complete = builder.create_block();
+            let failed = builder.create_block();
+            let succeeded = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+            builder.ins().brif(succeeded, complete, &[], failed, &[]);
+            builder.switch_to_block(failed);
+            let no_value = builder.ins().iconst(types::I64, 0);
+            transition.emit_exact_runtime_error(builder, status, no_value)?;
+            builder.switch_to_block(complete);
         }
         RegionInstructionKind::BindReferenceIntoDim {
             array,
@@ -22274,7 +24359,19 @@ fn lower_optimizing_region_instruction(
                     .expect("non-append reference binding retains a dimension");
                 (Some(*leaf), parents)
             };
-            let root = use_local_variable(builder, locals, *array)?;
+            let root_owner = use_local_variable(builder, locals, *array)?;
+            let root_is_by_reference = native_array_instruction_root_is_by_reference
+                || value_flow.local_storage(*array).is_reference_slot();
+            let root = if root_is_by_reference {
+                lower_optimizing_admitted_reference_scalar(
+                    builder,
+                    root_owner,
+                    transition.deopt_out,
+                    transition.reference_payload_proof,
+                )
+            } else {
+                root_owner
+            };
             let leaf = lower_total_native_existing_array_path(
                 builder,
                 root,
@@ -22286,13 +24383,8 @@ fn lower_optimizing_region_instruction(
                 lower_total_native_bind_reference(builder, source_value, transition.deopt_out);
             define_local_variable(builder, locals, *source, reference)?;
             if let Some(key) = leaf_key {
-                let _ = lower_total_native_array_insert_integer(
-                    builder,
-                    leaf,
-                    key,
-                    reference,
-                    true,
-                    transition.deopt_out,
+                let _ = lower_total_native_array_insert(
+                    builder, leaf, key, reference, true, true, transition,
                 );
             } else {
                 let key =
@@ -22310,10 +24402,15 @@ fn lower_optimizing_region_instruction(
         RegionInstructionKind::BindReferenceDim { target, keys, .. }
             if instruction.native_global_name.is_some() && keys.len() == 1 =>
         {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_UNPUBLISHED_GLOBAL_REFERENCE_FETCH",
-                "global reference fetch reached optimizing lowering without baseline admission",
-            ));
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            let reference = lower_trusted_global_reference(
+                builder,
+                function,
+                instruction,
+                transition.deopt_out,
+            )?;
+            lower_optimizing_retain(builder, reference, transition.deopt_out);
+            define_local_variable(builder, locals, *target, reference)?;
         }
         RegionInstructionKind::BindReferenceDim {
             target,
@@ -22326,16 +24423,41 @@ fn lower_optimizing_region_instruction(
                 .iter()
                 .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
                 .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
-            let root = use_local_variable(builder, locals, *array)?;
-            let reference = lower_total_native_array_dimension_reference(
+            let root_owner = use_local_variable(builder, locals, *array)?;
+            let root_is_by_reference = native_array_instruction_root_is_by_reference
+                || value_flow.local_storage(*array).is_reference_slot();
+            let root = if root_is_by_reference {
+                lower_optimizing_admitted_reference_scalar(
+                    builder,
+                    root_owner,
+                    transition.deopt_out,
+                    transition.reference_payload_proof,
+                )
+            } else {
+                root_owner
+            };
+            let (root, reference) = lower_total_native_cow_array_dimension_reference(
+                module,
                 builder,
+                optimizing_operations.array_ensure_unique,
                 root,
                 &lowered_keys,
                 transition.deopt_out,
             );
             lower_optimizing_retain(builder, reference, deopt_out);
             define_local_variable(builder, locals, *target, reference)?;
-            define_local_variable(builder, locals, *array, root)?;
+            if root_is_by_reference {
+                let root_slot =
+                    lower_optimizing_slot_address(builder, root_owner, transition.deopt_out);
+                builder.ins().store(
+                    MemFlagsData::new(),
+                    root,
+                    root_slot,
+                    std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+                );
+            } else {
+                define_local_variable(builder, locals, *array, root)?;
+            }
             lower_mark_native_roots_dirty(builder, deopt_out);
         }
         RegionInstructionKind::BindReferenceProperty { object, source, .. } => {
@@ -22389,7 +24511,7 @@ fn lower_optimizing_region_instruction(
             builder.switch_to_block(release);
             let _ = builder.ins().call(
                 transition.value_release_commit,
-                &[transition.deopt_out, old],
+                &[transition.runtime, transition.deopt_out, old],
             );
             builder.ins().jump(done, &[]);
             builder.switch_to_block(done);
@@ -22492,13 +24614,8 @@ fn lower_optimizing_region_instruction(
                 lower_total_native_bind_reference(builder, source_value, transition.deopt_out);
             define_local_variable(builder, locals, *source, reference)?;
             if let Some(key) = leaf_key {
-                let _ = lower_total_native_array_insert_integer(
-                    builder,
-                    leaf,
-                    key,
-                    reference,
-                    true,
-                    transition.deopt_out,
+                let _ = lower_total_native_array_insert(
+                    builder, leaf, key, reference, true, true, transition,
                 );
             } else {
                 let key =
@@ -22647,13 +24764,8 @@ fn lower_optimizing_region_instruction(
                 transition.deopt_out,
             );
             if let Some(key) = leaf_key {
-                let _ = lower_total_native_array_insert_integer(
-                    builder,
-                    leaf,
-                    key,
-                    reference,
-                    true,
-                    transition.deopt_out,
+                let _ = lower_total_native_array_insert(
+                    builder, leaf, key, reference, true, true, transition,
                 );
             } else {
                 let key =
@@ -22672,9 +24784,11 @@ fn lower_optimizing_region_instruction(
         RegionInstructionKind::FetchConst { dst } => {
             emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
             let value = lower_optimizing_constant_fetch(
+                module,
                 builder,
                 function,
                 instruction.continuation_id,
+                optimizing_operations,
                 transition,
             )?;
             define_region_register(builder, register_variables, registers, *dst, value)?;
@@ -22682,11 +24796,17 @@ fn lower_optimizing_region_instruction(
         RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::Include {
             dst, ..
         }) => {
-            let _ = dst;
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_UNPUBLISHED_INCLUDE",
-                "include reached optimizing lowering",
-            ));
+            emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+            let status = builder.ins().iconst(
+                types::I32,
+                i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
+            );
+            let detail = builder
+                .ins()
+                .iconst(types::I32, i64::from(instruction.continuation_id));
+            let value = builder.ins().iconst(types::I64, 0);
+            transition.emit_control(builder, status, detail, value)?;
+            define_region_register(builder, register_variables, registers, *dst, value)?;
         }
         RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::MakeClosure {
             dst,
@@ -22766,7 +24886,7 @@ fn lower_optimizing_region_instruction(
                 instruction.continuation_id,
                 deopt_out,
             );
-            let closure = emit_total_exact_native_value!(
+            let closure = emit_total_exact_runtime_value!(
                 module,
                 builder,
                 optimizing_operations.prepared_closure_new,
@@ -22775,6 +24895,31 @@ fn lower_optimizing_region_instruction(
                 "exact prepared closure allocator was not declared",
             )?;
             define_region_register(builder, register_variables, registers, *dst, closure)?;
+        }
+        RegionInstructionKind::NativeDynamicCode(RegionNativeDynamicCode::Eval { dst, .. }) => {
+            emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+            let status = builder.ins().iconst(
+                types::I32,
+                i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
+            );
+            let detail = builder
+                .ins()
+                .iconst(types::I32, i64::from(instruction.continuation_id));
+            let value = builder.ins().iconst(types::I64, 0);
+            transition.emit_control(builder, status, detail, value)?;
+            define_region_register(builder, register_variables, registers, *dst, value)?;
+        }
+        RegionInstructionKind::NativeDynamicCode(_) => {
+            emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+            let status = builder.ins().iconst(
+                types::I32,
+                i64::from(crate::JitCallStatus::RECOMPILE_REQUESTED.0),
+            );
+            let detail = builder
+                .ins()
+                .iconst(types::I32, i64::from(instruction.continuation_id));
+            let value = builder.ins().iconst(types::I64, 0);
+            transition.emit_control(builder, status, detail, value)?;
         }
         RegionInstructionKind::NativeControl(control) => match control {
             RegionNativeControl::EnterTry { .. } | RegionNativeControl::LeaveTry => {
@@ -22803,6 +24948,7 @@ fn lower_optimizing_region_instruction(
                         builder,
                         locals,
                         value_flow,
+                        transition.runtime,
                         transition.deopt_out,
                         transition.value_release_commit,
                     )?;
@@ -22815,10 +24961,11 @@ fn lower_optimizing_region_instruction(
                         locals,
                         native_version,
                     )?;
+                    publish_native_register_values(builder, deopt_out, transition.live_values)?;
                     builder
                         .ins()
                         .store(MemFlagsData::new(), value, result_out, 0);
-                    builder.ins().return_(&[status]);
+                    return_native_or_fragment_control(builder, status, result_out);
                 }
                 let unreachable = builder.create_block();
                 builder.switch_to_block(unreachable);
@@ -22839,6 +24986,7 @@ fn lower_optimizing_region_instruction(
                     builder,
                     locals,
                     value_flow,
+                    transition.runtime,
                     transition.deopt_out,
                     transition.value_release_commit,
                 )?;
@@ -22851,13 +24999,14 @@ fn lower_optimizing_region_instruction(
                     locals,
                     native_version,
                 )?;
+                publish_native_register_values(builder, deopt_out, transition.live_values)?;
                 builder
                     .ins()
                     .store(MemFlagsData::new(), value, result_out, 0);
                 let status = builder
                     .ins()
                     .iconst(types::I32, i64::from(crate::JitCallStatus::THROW.0));
-                builder.ins().return_(&[status]);
+                return_native_or_fragment_control(builder, status, result_out);
                 let unreachable = builder.create_block();
                 builder.switch_to_block(unreachable);
                 builder.seal_block(unreachable);
@@ -22877,11 +25026,15 @@ fn lower_optimizing_region_instruction(
                     instruction.continuation_id,
                     deopt_out,
                 );
-                let value = emit_total_exact_native_value!(
+                let code = builder.ins().iconst(types::I64, 0);
+                let previous = builder
+                    .ins()
+                    .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+                let value = emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.prepared_exception_new,
-                    &[prepared, message],
+                    &[prepared, message, code, previous],
                     transition,
                     "prepared native exception allocator was not declared",
                 )?;
@@ -23253,7 +25406,9 @@ fn lower_optimizing_region_instruction(
         }
         RegionInstructionKind::PregCallbackArray(call) => {
             emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
-            lower_optimizing_require_non_fiber_callback_scope(builder, transition)?;
+            if !total_native_array_instruction {
+                lower_optimizing_require_non_fiber_callback_scope(builder, transition)?;
+            }
 
             let stable_entries = call
                 .entries
@@ -23272,8 +25427,8 @@ fn lower_optimizing_region_instruction(
                         .saturating_add(callback.capture_count);
                     let binding =
                         optimizing_callback_binding_plan(target, hidden_argument_count, 1, 0)?;
-                    (!(callback.closure.is_some() && callback.receiver.is_some())
-                        && !(callback.closure.is_none()
+                    (!(callback.closure.is_some() && callback.receiver.is_some()
+                        || callback.closure.is_none()
                             && callback.receiver.is_none()
                             && hidden_argument_count != 0)
                         && callback.returns_releasable_scalar
@@ -23388,14 +25543,14 @@ fn lower_optimizing_region_instruction(
                 }
                 let callable = runtime_callables[entry_index]
                     .expect("runtime PCRE map entry retains its native callable value");
-                let owner = emit_total_exact_native_value_with_cleanup!(
+                let owner = emit_total_exact_owned_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.acquire_callable,
                     &[callable],
                     &acquired_owners,
                     transition,
-                    "exact native callable-acquisition handler was not declared",
+                    "exact native callable-acquisition handler was not declared"
                 )?;
                 let mut rejected_cleanup = acquired_owners.clone();
                 rejected_cleanup.push(owner);
@@ -23501,7 +25656,14 @@ fn lower_optimizing_region_instruction(
                 builder.switch_to_block(store);
                 let count = lower_optimizing_encode_int(builder, total_count, transition)?;
                 let stored = lower_optimizing_store_reference_scalar(
-                    builder, current, count, true, false, transition,
+                    module,
+                    builder,
+                    current,
+                    count,
+                    true,
+                    false,
+                    optimizing_operations,
+                    transition,
                 )?;
                 builder.ins().jump(complete, &[stored.into()]);
 
@@ -23516,7 +25678,7 @@ fn lower_optimizing_region_instruction(
         RegionInstructionKind::NativeCall(call) => {
             emitted_class = crate::JitProductionLoweringClass::DirectClif;
             if let Some(family) = stable_exact_control_builtin_family(&call.target)
-                && !total_native_array_call
+                && !total_fixed_builtin_call
             {
                 return Err(CraneliftLoweringError::new(
                     "JIT_CRANELIFT_REJECT_FIXED_BUILTIN_PUBLICATION",
@@ -23540,6 +25702,7 @@ fn lower_optimizing_region_instruction(
                 RegionCallTarget::Function {
                     name,
                     function: None,
+                    ..
                 } => external_function_signatures.iter().find(|signature| {
                     signature
                         .name
@@ -23576,9 +25739,7 @@ fn lower_optimizing_region_instruction(
                         .map(|signature| OptimizingCompiledCallTarget {
                             address: OptimizingCompiledCallAddress::Linked(signature.link_index),
                             params: &signature.native_params,
-                            requires_trampoline: signature.requires_non_reference_trampoline
-                                || signature.params.iter().any(|parameter| parameter.by_ref)
-                                || signature.returns_by_reference,
+                            requires_trampoline: signature.requires_non_reference_trampoline,
                             arity: signature.native_arity as usize,
                             reference_only_trampoline: !signature.requires_non_reference_trampoline
                                 && (signature.params.iter().any(|parameter| parameter.by_ref)
@@ -23606,7 +25767,8 @@ fn lower_optimizing_region_instruction(
             // builtin.  Builtin identity is authoritative for global names:
             // never let that incidental ID route a prepared builtin through
             // userland inlining or an unpublished function cell.
-            let direct_builtin = stable_builtin_type_predicate(&call.target).is_some()
+            let direct_builtin = stable_builtin_call_user_func(&call.target)
+                || stable_builtin_type_predicate(&call.target).is_some()
                 || stable_builtin_ctype(&call.target).is_some()
                 || stable_builtin_is_numeric(&call.target)
                 || stable_builtin_scalar_math(&call.target).is_some()
@@ -23618,6 +25780,8 @@ fn lower_optimizing_region_instruction(
                 || stable_builtin_network_address(&call.target).is_some()
                 || stable_builtin_compression_codec(&call.target).is_some()
                 || stable_builtin_error_reporting(&call.target)
+                || stable_builtin_error_log(&call.target)
+                || stable_builtin_sleep(&call.target)
                 || stable_builtin_symbol_query(&call.target).is_some()
                 || stable_builtin_pcre(&call.target).is_some()
                 || stable_builtin_json(&call.target).is_some()
@@ -23632,6 +25796,30 @@ fn lower_optimizing_region_instruction(
                 || stable_builtin_recursive_array(&call.target).is_some()
                 || stable_builtin_array_sort(&call.target).is_some()
                 || stable_builtin_array_multisort(&call.target)
+                || stable_builtin_print(&call.target)
+                || stable_builtin_print_r(&call.target)
+                || stable_builtin_var_dump(&call.target)
+                || stable_builtin_var_export(&call.target)
+                || stable_builtin_mysqli_set_charset(&call.target)
+                || stable_builtin_mysqli_query(&call.target)
+                || stable_builtin_mysqli_fetch_array(&call.target)
+                || stable_builtin_mysqli_fetch_object(&call.target)
+                || stable_builtin_mysqli_character_set_name(&call.target)
+                || stable_builtin_mysqli_result_count(&call.target).is_some()
+                || stable_builtin_mysqli_fetch_field(&call.target)
+                || stable_builtin_mysqli_connect_status(&call.target).is_some()
+                || stable_builtin_mysqli_close(&call.target)
+                || stable_builtin_mysqli_get_server_info(&call.target)
+                || stable_builtin_mysqli_select_db(&call.target)
+                || stable_builtin_mysqli_real_escape_string(&call.target)
+                || stable_builtin_mysqli_free_result(&call.target)
+                || stable_builtin_mysqli_more_results(&call.target)
+                || stable_builtin_mysqli_next_result(&call.target)
+                || stable_builtin_mysqli_report(&call.target)
+                || stable_builtin_mysqli_init(&call.target)
+                || stable_builtin_mysqli_options(&call.target)
+                || stable_builtin_mysqli_real_connect(&call.target)
+                || stable_builtin_mysqli_connection_status(&call.target).is_some()
                 || stable_builtin_object_identity(&call.target).is_some()
                 || stable_builtin_callable_query(&call.target).is_some()
                 || stable_builtin_callback_handler(&call.target).is_some()
@@ -23651,6 +25839,7 @@ fn lower_optimizing_region_instruction(
                 || stable_builtin_memory_query(&call.target).is_some()
                 || stable_builtin_gc(&call.target).is_some()
                 || stable_builtin_resource_query(&call.target).is_some()
+                || stable_builtin_fileinfo(&call.target).is_some()
                 || stable_builtin_error_state(&call.target).is_some()
                 || stable_builtin_settype(&call.target)
                 || stable_builtin_configuration(&call.target).is_some()
@@ -23679,12 +25868,13 @@ fn lower_optimizing_region_instruction(
                 || stable_builtin_string_span(&call.target).is_some()
                 || stable_builtin_ord(&call.target)
                 || stable_builtin_chr(&call.target)
-                || stable_builtin_default_trim(&call.target).is_some()
+                || stable_builtin_default_trim(&call.target).is_some() && call.args.len() == 1
                 || stable_builtin_substr(&call.target)
                 || stable_builtin_array_constructor(&call.target).is_some()
                 || stable_builtin_array_shape(&call.target).is_some()
                 || stable_builtin_array_set(&call.target).is_some()
                 || stable_builtin_array_projection(&call.target).is_some()
+                || stable_builtin_array_change_key_case(&call.target)
                 || stable_builtin_callback_neutral_array(&call.target).is_some()
                 || stable_builtin_array_lookup(&call.target).is_some()
                 || stable_builtin_array_edge_key(&call.target).is_some()
@@ -23699,7 +25889,12 @@ fn lower_optimizing_region_instruction(
                 || stable_builtin_array_merge(&call.target)
                 || stable_builtin_str_replace(&call.target)
                 || stable_builtin_array_key_exists(&call.target);
-            if baseline_builtin_helper_id(&call.target).is_some() && !direct_builtin {
+            let fixed_shared_abi_builtin =
+                stable_builtin_default_trim(&call.target).is_some() && call.args.len() == 2;
+            if baseline_builtin_helper_id(&call.target).is_some()
+                && !direct_builtin
+                && !fixed_shared_abi_builtin
+            {
                 return Err(CraneliftLoweringError::new(
                     "JIT_CRANELIFT_REJECT_GENERIC_OPTIMIZING_BUILTIN",
                     format!(
@@ -23732,11 +25927,14 @@ fn lower_optimizing_region_instruction(
                 && (fixed_arguments || trailing_unpack.is_some())
                 && target.returns_by_reference == call.returns_by_reference
                 && (call.returns_by_reference
-                    == matches!(call.result, RegionCallResult::ReferenceLocal(_)))
+                    || !matches!(call.result, RegionCallResult::ReferenceLocal(_)))
                 && match call.result {
                     RegionCallResult::ReferenceLocal(destination) => {
-                        value_flow.local_storage(destination)
-                            == crate::region_ir::LocalStorageClass::MemoryReference
+                        matches!(
+                            value_flow.local_storage(destination),
+                            crate::region_ir::LocalStorageClass::MemoryReference
+                                | crate::region_ir::LocalStorageClass::RequestGlobal
+                        )
                     }
                     RegionCallResult::Register(_) | RegionCallResult::Discard => true,
                 }
@@ -23904,7 +26102,9 @@ fn lower_optimizing_region_instruction(
                 };
                 let replaced_reference_destination =
                     if let RegionCallResult::ReferenceLocal(destination) = call.result {
-                        (instruction.live_locals.contains(&destination)
+                        (value_flow.local_storage(destination)
+                            == crate::region_ir::LocalStorageClass::MemoryReference
+                            && instruction.live_locals.contains(&destination)
                             && value_release_required(value_flow.local_fact(destination)))
                         .then(|| use_local_variable(builder, locals, destination))
                         .transpose()?
@@ -24040,7 +26240,59 @@ fn lower_optimizing_region_instruction(
                             transition.deopt_out,
                         )
                     } else {
-                        lower_optimizing_direct_array_descriptor(builder, unpack_array, transition)?
+                        let rejected = builder.create_block();
+                        let ready = builder.create_block();
+                        let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+                        builder.append_block_param(ready, pointer_type);
+                        builder.append_block_param(ready, types::I64);
+                        builder.append_block_param(ready, pointer_type);
+                        let descriptor =
+                            executable_region::emit_optimizing_entry_direct_array_descriptor(
+                                builder,
+                                unpack_array,
+                                transition.deopt_out,
+                                rejected,
+                            );
+                        builder.ins().jump(
+                            ready,
+                            &[
+                                descriptor.0.into(),
+                                descriptor.1.into(),
+                                descriptor.2.into(),
+                            ],
+                        );
+
+                        builder.switch_to_block(rejected);
+                        let message = lower_optimizing_static_string(
+                            builder,
+                            b"Only arrays and Traversables can be unpacked",
+                            transition,
+                        )?;
+                        let prepared = lower_optimizing_prepared_exception_pointer(
+                            builder,
+                            function,
+                            instruction.continuation_id,
+                            transition.deopt_out,
+                        );
+                        let code = builder.ins().iconst(types::I64, 0);
+                        let previous = builder
+                            .ins()
+                            .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+                        let throwable = emit_total_exact_runtime_value!(
+                            module,
+                            builder,
+                            optimizing_operations.prepared_exception_new,
+                            &[prepared, message, code, previous],
+                            transition,
+                            "prepared unpack TypeError allocator was not declared",
+                        )?;
+                        lower_optimizing_commit_owned_value(builder, message, transition);
+                        let detail = builder.ins().iconst(types::I32, 0);
+                        transition.emit_exact_throw(builder, detail, throwable)?;
+
+                        builder.switch_to_block(ready);
+                        let values = builder.block_params(ready);
+                        (values[0], values[1], values[2])
                     };
                     let fixed_count = parameters.len().saturating_sub(usize::from(call.variadic));
                     let expected = fixed_count.saturating_sub(unpack);
@@ -24049,7 +26301,6 @@ fn lower_optimizing_region_instruction(
                         .take(fixed_count)
                         .skip(unpack)
                         .collect::<Vec<_>>();
-                    debug_assert!(total_native_array_call);
                     let mut unpacked = Vec::with_capacity(expected);
                     for (index, parameter) in fixed_unpack_parameters.iter().copied().enumerate() {
                         let inspect = builder.create_block();
@@ -24277,6 +26528,31 @@ fn lower_optimizing_region_instruction(
                                 value
                             };
                             let argument_index = call_args.len();
+                            let value = if parameter.is_some_and(|parameter| {
+                                matches!(
+                                    parameter.type_.as_ref(),
+                                    Some(php_ir::IrReturnType::Callable)
+                                )
+                            }) {
+                                let cleanup = owned_call_arguments
+                                    .iter()
+                                    .filter_map(|index| call_args.get(*index).copied())
+                                    .collect::<Vec<_>>();
+                                let callable = emit_total_exact_owned_runtime_value!(
+                                    module,
+                                    builder,
+                                    optimizing_operations.acquire_callable,
+                                    &[value],
+                                    &cleanup,
+                                    transition,
+                                    "typed callable parameter has no exact acquisition handler",
+                                )?;
+                                owned_call_arguments.insert(argument_index);
+                                authoritative_call_arguments.insert(argument_index);
+                                callable
+                            } else {
+                                value
+                            };
                             if index < call.argument_operand_offset {
                                 // Exact receivers and prepared closure slots
                                 // are authoritative native frame inputs.
@@ -24502,7 +26778,16 @@ fn lower_optimizing_region_instruction(
                         values.extend(trace_extra_values.iter().copied());
                         (Some(values), plan.visible_fixed_count)
                     } else {
-                        (None, 0)
+                        (
+                            Some(
+                                call_args
+                                    .iter()
+                                    .skip(call.argument_operand_offset)
+                                    .copied()
+                                    .collect::<Vec<_>>(),
+                            ),
+                            parameters.len(),
+                        )
                     };
 
                 if call.variadic {
@@ -24527,9 +26812,15 @@ fn lower_optimizing_region_instruction(
                                 transition,
                             )?
                         } else {
-                            let array = lower_optimizing_pack_variadic_arguments(
+                            let variadic_sources = argument_plan
+                                .as_ref()
+                                .map(|plan| plan.visible_variadic_sources.as_slice())
+                                .unwrap_or(&[]);
+                            let array = lower_optimizing_pack_bound_variadic_arguments(
                                 builder,
                                 &variadic_values,
+                                variadic_sources,
+                                &call.args,
                                 transition,
                             )?;
                             let count = builder.ins().iconst(
@@ -24608,7 +26899,7 @@ fn lower_optimizing_region_instruction(
 
                 let pointer_type = module.target_config().pointer_type();
                 let caller_runtime_view = lower_active_runtime_view(builder, deopt_out);
-                let (preferred_entry, linked_runtime_view) = match target.address {
+                let (preferred_entry, linked_runtime_view, trace_function) = match target.address {
                     OptimizingCompiledCallAddress::Local(function) => {
                         let preferred_entries = builder.ins().load(
                             pointer_type,
@@ -24625,9 +26916,12 @@ fn lower_optimizing_region_instruction(
                                 .saturating_mul(pointer_type.bytes() as usize),
                         )
                         .unwrap_or(i64::MAX);
+                        let trace_function =
+                            builder.ins().iconst(types::I32, i64::from(function.raw()));
                         (
                             builder.ins().iadd_imm(preferred_entries, entry_offset),
                             None,
+                            trace_function,
                         )
                     }
                     OptimizingCompiledCallAddress::Linked(link_index) => {
@@ -24669,9 +26963,23 @@ fn lower_optimizing_region_instruction(
                             std::mem::offset_of!(crate::JitNativeLinkedFunction, runtime_view,)
                                 as i32,
                         );
-                        (preferred_entry, Some(callee_runtime_view))
+                        let trace_function = builder.ins().load(
+                            types::I32,
+                            MemFlagsData::new(),
+                            link,
+                            std::mem::offset_of!(crate::JitNativeLinkedFunction, function_id)
+                                as i32,
+                        );
+                        (preferred_entry, Some(callee_runtime_view), trace_function)
                     }
                 };
+                let trace_runtime_view = linked_runtime_view.unwrap_or(caller_runtime_view);
+                let trace_metadata = lower_native_function_trace_metadata(
+                    builder,
+                    pointer_type,
+                    trace_runtime_view,
+                    trace_function,
+                );
                 // Both same-unit and linked publication prepare the direct
                 // callee before exposing this caller. The loaded cell is the
                 // one mutable tier-selection indirection; its target is always
@@ -24726,6 +27034,19 @@ fn lower_optimizing_region_instruction(
                         previous_fast_view,
                     )
                 });
+                // Every generated-to-generated PHP call acquires one bounded
+                // request-arena token. The token is independent of the
+                // machine stack and therefore turns runaway PHP recursion
+                // into the deterministic native-frame-limit diagnostic before
+                // the worker stack can overflow.
+                let call_depth_token = allocate_native_frame_storage(
+                    module,
+                    builder,
+                    optimizing_operations.frame_alloc,
+                    1,
+                    0,
+                    result_out,
+                );
                 for (index, value) in call_args.iter().copied().enumerate() {
                     if !owned_call_arguments.contains(&index)
                         && !nonowning_call_arguments.contains(&index)
@@ -24765,7 +27086,9 @@ fn lower_optimizing_region_instruction(
                     Some(publish_native_call_trace(
                         builder,
                         pointer_type,
+                        runtime,
                         callee_view,
+                        trace_metadata,
                         &trace_values,
                         trace_fixed_count,
                         segmented_trace,
@@ -24779,20 +27102,24 @@ fn lower_optimizing_region_instruction(
                     3,
                 ));
                 let callee_result_out = builder.ins().stack_addr(pointer_type, result_slot, 0);
-                let resume_id = builder.ins().iconst(types::I32, -1);
+                let resume_id = builder.ins().iconst(
+                    types::I32,
+                    if parameters.iter().any(|parameter| parameter.type_.is_some()) {
+                        i64::from(if call.caller_strict_types {
+                            crate::JIT_NATIVE_BIND_STRICT_ENTRY_RESUME_ID
+                        } else {
+                            crate::JIT_NATIVE_BIND_WEAK_ENTRY_RESUME_ID
+                        })
+                    } else {
+                        -1
+                    },
+                );
                 let resume_state = builder.ins().iconst(pointer_type, 0);
                 let signature = builder.import_signature(native_php_entry_signature(module));
                 let native_call = builder.ins().call_indirect(
                     signature,
                     address,
-                    &[
-                        runtime,
-                        arguments,
-                        callee_result_out,
-                        deopt_out,
-                        resume_id,
-                        resume_state,
-                    ],
+                    &[runtime, arguments, deopt_out, resume_id, resume_state],
                 );
                 let restore_trace_publication = |builder: &mut FunctionBuilder<'_>| {
                     if let Some(publication) = trace_publication {
@@ -24802,7 +27129,7 @@ fn lower_optimizing_region_instruction(
                         lower_optimizing_commit_owned_value(builder, array, transition);
                     }
                 };
-                let status = builder.inst_results(native_call)[0];
+                let status = unpack_native_php_control(builder, native_call, callee_result_out);
                 let status_dispatch = builder.create_block();
                 let returned = builder.create_block();
                 let propagate = builder.create_block();
@@ -24883,16 +27210,10 @@ fn lower_optimizing_region_instruction(
                     let resumed = builder.ins().call_indirect(
                         signature,
                         address,
-                        &[
-                            runtime,
-                            arguments,
-                            callee_result_out,
-                            deopt_out,
-                            resume_id,
-                            deopt_out,
-                        ],
+                        &[runtime, arguments, deopt_out, resume_id, deopt_out],
                     );
-                    let resumed_status = builder.inst_results(resumed)[0];
+                    let resumed_status =
+                        unpack_native_php_control(builder, resumed, callee_result_out);
                     builder
                         .ins()
                         .jump(status_dispatch, &[resumed_status.into()]);
@@ -24954,6 +27275,13 @@ fn lower_optimizing_region_instruction(
 
                 builder.switch_to_block(publish_caller);
                 restore_trace_publication(builder);
+                release_native_frame_storage(
+                    module,
+                    builder,
+                    optimizing_operations.frame_release,
+                    call_depth_token,
+                    result_out,
+                )?;
                 if let Some((
                     deopt_view_pointer,
                     fast_view_pointer,
@@ -24985,10 +27313,17 @@ fn lower_optimizing_region_instruction(
                 )?;
                 publish_native_register_values(builder, deopt_out, transition.live_values)?;
                 publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
-                builder.ins().return_(&[propagated_status]);
+                return_native_or_fragment_control(builder, propagated_status, result_out);
 
                 builder.switch_to_block(preserve_callee);
                 restore_trace_publication(builder);
+                release_native_frame_storage(
+                    module,
+                    builder,
+                    optimizing_operations.frame_release,
+                    call_depth_token,
+                    result_out,
+                )?;
                 if let Some((_, fast_view_pointer, _, previous_fast_view)) =
                     linked_caller_runtime_view
                 {
@@ -24999,10 +27334,17 @@ fn lower_optimizing_region_instruction(
                         0,
                     );
                 }
-                builder.ins().return_(&[propagated_status]);
+                return_native_or_fragment_control(builder, propagated_status, result_out);
 
                 builder.switch_to_block(returned);
                 restore_trace_publication(builder);
+                release_native_frame_storage(
+                    module,
+                    builder,
+                    optimizing_operations.frame_release,
+                    call_depth_token,
+                    result_out,
+                )?;
                 let result = builder.ins().stack_load(types::I64, result_slot, 0);
                 if let Some((
                     deopt_view_pointer,
@@ -25041,6 +27383,13 @@ fn lower_optimizing_region_instruction(
                 builder.ins().jump(completed_call, &[result.into()]);
                 builder.switch_to_block(completed_call);
                 let result = builder.block_params(completed_call)[0];
+                let result = if call.returns_by_reference
+                    && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
+                {
+                    lower_optimizing_dereference_owned_value(builder, result, transition)
+                } else {
+                    result
+                };
                 if let Some(previous) = replaced_reference_destination {
                     // The previous owner remains live while the callee runs
                     // and is released only after a direct or resumed return.
@@ -25058,6 +27407,32 @@ fn lower_optimizing_region_instruction(
                         lower_optimizing_commit_owned_value(builder, result, transition);
                     }
                     RegionCallResult::ReferenceLocal(destination) => {
+                        if value_flow.local_storage(destination)
+                            == crate::region_ir::LocalStorageClass::RequestGlobal
+                        {
+                            let slot = lower_trusted_request_local_slot(
+                                builder,
+                                deopt_out,
+                                function,
+                                destination,
+                            );
+                            let previous = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::new(),
+                                slot,
+                                std::mem::offset_of!(crate::JitNativeRequestLocalSlot, encoded)
+                                    as i32,
+                            );
+                            builder.ins().store(
+                                MemFlagsData::new(),
+                                result,
+                                slot,
+                                std::mem::offset_of!(crate::JitNativeRequestLocalSlot, encoded)
+                                    as i32,
+                            );
+                            lower_mark_native_roots_dirty(builder, deopt_out);
+                            lower_optimizing_release(builder, previous, transition)?;
+                        }
                         define_local_variable(builder, locals, destination, result)?;
                     }
                 }
@@ -25067,9 +27442,11 @@ fn lower_optimizing_region_instruction(
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
                 let value = lower_optimizing_constant_fetch(
+                    module,
                     builder,
                     function,
                     instruction.continuation_id,
+                    optimizing_operations,
                     transition,
                 )?;
                 define_optimizing_call_result(
@@ -25087,13 +27464,7 @@ fn lower_optimizing_region_instruction(
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
                 let object = lower_region_operand(builder, locals, registers, *object)?;
                 let _ = target;
-                let value = lower_total_native_static_instanceof(
-                    builder,
-                    object,
-                    function,
-                    instruction.continuation_id,
-                    transition.deopt_out,
-                );
+                let value = lower_total_native_static_instanceof(builder, object, transition)?;
                 define_optimizing_call_result(
                     builder,
                     register_variables,
@@ -25112,13 +27483,7 @@ fn lower_optimizing_region_instruction(
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
                 let object = lower_region_operand(builder, locals, registers, *object)?;
-                let value = lower_total_native_static_instanceof(
-                    builder,
-                    object,
-                    function,
-                    instruction.continuation_id,
-                    transition.deopt_out,
-                );
+                let value = lower_total_native_static_instanceof(builder, object, transition)?;
                 define_optimizing_call_result(
                     builder,
                     register_variables,
@@ -25134,7 +27499,7 @@ fn lower_optimizing_region_instruction(
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
                 let object = lower_region_operand(builder, locals, registers, *bound_object)?;
                 let object = lower_optimizing_reference_scalar(builder, object, false, transition)?;
-                let value = emit_total_exact_native_value!(
+                let value = emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.object_class_name,
@@ -25155,14 +27520,53 @@ fn lower_optimizing_region_instruction(
             {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
                 let value = lower_region_operand(builder, locals, registers, *value)?;
-                let callable = emit_total_exact_native_value!(
+                let callable = emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.acquire_callable,
                     &[value],
                     transition,
-                    "exact native callable-acquisition handler was not declared",
+                    "exact native callable-acquisition handler was not declared"
                 )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    callable,
+                )?;
+            } else if let RegionCallTarget::Semantic {
+                operation:
+                    crate::region_ir::RegionSemanticOp::ResolveCallable {
+                        callable: php_ir::instruction::CallableKind::FunctionName { name },
+                        ..
+                    },
+            } = &call.target
+                && php_std::arginfo::function_metadata_indexed(name.trim_start_matches('\\'))
+                    .is_some()
+                && !function_params.iter().any(|(_, target)| {
+                    target
+                        .name
+                        .trim_start_matches('\\')
+                        .eq_ignore_ascii_case(name.trim_start_matches('\\'))
+                })
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let name_value = lower_optimizing_static_string(
+                    builder,
+                    name.trim_start_matches('\\').as_bytes(),
+                    transition,
+                )?;
+                let callable = emit_total_exact_owned_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.acquire_callable,
+                    &[name_value],
+                    &[name_value],
+                    transition,
+                    "exact fixed-builtin callable publication handler was not declared",
+                )?;
+                lower_optimizing_commit_owned_value(builder, name_value, transition);
                 define_optimizing_call_result(
                     builder,
                     register_variables,
@@ -25202,6 +27606,14 @@ fn lower_optimizing_region_instruction(
                 {
                     flags |= crate::JIT_NATIVE_PREPARED_CALLABLE_FIRST_PARAMETER_BY_REFERENCE;
                 }
+                let mut parameter_by_reference = [0_u64; 4];
+                for (index, parameter) in target.params.iter().enumerate() {
+                    if parameter.by_ref
+                        && let Some(word) = parameter_by_reference.get_mut(index / 64)
+                    {
+                        *word |= 1_u64 << (index % 64);
+                    }
+                }
                 if matches!(target.return_type.as_ref(), Some(php_ir::IrReturnType::Int)) {
                     flags |= crate::JIT_NATIVE_PREPARED_CALLABLE_RETURNS_INT;
                 }
@@ -25218,6 +27630,16 @@ fn lower_optimizing_region_instruction(
                 {
                     flags |= crate::JIT_NATIVE_PREPARED_CALLABLE_RETURNS_RELEASABLE_SCALAR;
                 }
+                if target.returns_by_reference {
+                    flags |= crate::JIT_NATIVE_PREPARED_CALLABLE_RETURNS_REFERENCE;
+                }
+                if target
+                    .params
+                    .iter()
+                    .all(|parameter| parameter.type_.is_none())
+                {
+                    flags |= crate::JIT_NATIVE_PREPARED_CALLABLE_DIRECT_PACKED_BINDING;
+                }
                 let (name, length) =
                     lower_optimizing_static_bytes(module, builder, name.as_bytes())?;
                 let function_id = builder.ins().iconst(types::I64, i64::from(target_id.raw()));
@@ -25231,11 +27653,23 @@ fn lower_optimizing_region_instruction(
                     })?,
                 );
                 let flags = builder.ins().iconst(types::I64, i64::from(flags));
-                let callable = emit_total_exact_native_value!(
+                let parameter_by_reference = parameter_by_reference
+                    .map(|word| builder.ins().iconst(types::I64, word as i64));
+                let callable = emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.resolve_callable,
-                    &[name, length, function_id, visible_arity, flags],
+                    &[
+                        name,
+                        length,
+                        function_id,
+                        visible_arity,
+                        flags,
+                        parameter_by_reference[0],
+                        parameter_by_reference[1],
+                        parameter_by_reference[2],
+                        parameter_by_reference[3],
+                    ],
                     transition,
                     "exact native callable-resolution handler was not declared",
                 )?;
@@ -25275,63 +27709,35 @@ fn lower_optimizing_region_instruction(
                 && let RegionCallResult::ReferenceLocal(result_target) = call.result
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-                debug_assert!(total_native_array_call);
                 debug_assert_eq!(*target, result_target);
-                let slot = lower_total_native_trusted_static_property_slot(
+                let (plan, slot) = lower_total_native_trusted_static_property_slot(
                     builder,
                     function,
                     instruction.continuation_id,
                     transition.deopt_out,
                 );
-                let current = builder.ins().load(
+                let stored_current = builder.ins().load(
                     types::I64,
                     MemFlagsData::new(),
                     slot,
                     std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
                 );
+                let was_initialized = builder.ins().load(
+                    types::I32,
+                    MemFlagsData::new(),
+                    slot,
+                    std::mem::offset_of!(crate::JitNativeStaticPropertySlot, initialized) as i32,
+                );
+                let was_initialized = builder.ins().icmp_imm(IntCC::NotEqual, was_initialized, 0);
+                let null = builder
+                    .ins()
+                    .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+                let current = builder.ins().select(was_initialized, stored_current, null);
                 let reference = if *bind_source_into_property {
                     let source = use_local_variable(builder, locals, *target)?;
-                    let reference =
-                        lower_total_native_bind_reference(builder, source, transition.deopt_out);
-                    lower_optimizing_retain(builder, reference, transition.deopt_out);
-                    builder.ins().store(
-                        MemFlagsData::new(),
-                        reference,
-                        slot,
-                        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
-                    );
-                    let initialized = builder.ins().load(
-                        types::I32,
-                        MemFlagsData::new(),
-                        slot,
-                        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, initialized)
-                            as i32,
-                    );
-                    let initialized = builder.ins().icmp_imm(IntCC::NotEqual, initialized, 0);
-                    let old_runtime = lower_is_runtime_handle(builder, current);
-                    let release_old = builder.ins().band(initialized, old_runtime);
-                    let release = builder.create_block();
-                    let done = builder.create_block();
-                    builder.ins().brif(release_old, release, &[], done, &[]);
-                    builder.switch_to_block(release);
-                    let _ = builder.ins().call(
-                        transition.value_release_commit,
-                        &[transition.deopt_out, current],
-                    );
-                    builder.ins().jump(done, &[]);
-                    builder.switch_to_block(done);
-                    reference
+                    lower_total_native_bind_reference(builder, source, transition.deopt_out)
                 } else if dimensions.is_empty() {
-                    let reference =
-                        lower_total_native_bind_reference(builder, current, transition.deopt_out);
-                    builder.ins().store(
-                        MemFlagsData::new(),
-                        reference,
-                        slot,
-                        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
-                    );
-                    lower_optimizing_retain(builder, reference, transition.deopt_out);
-                    reference
+                    lower_total_native_bind_reference(builder, current, transition.deopt_out)
                 } else {
                     let keys = dimensions
                         .iter()
@@ -25348,6 +27754,41 @@ fn lower_optimizing_region_instruction(
                     lower_optimizing_retain(builder, reference, transition.deopt_out);
                     reference
                 };
+                let reference = if *bind_source_into_property || dimensions.is_empty() {
+                    lower_optimizing_typed_static_reference_bind(
+                        module,
+                        builder,
+                        plan,
+                        reference,
+                        optimizing_operations,
+                        transition,
+                    )?
+                } else {
+                    reference
+                };
+                if *bind_source_into_property || dimensions.is_empty() {
+                    lower_optimizing_retain(builder, reference, transition.deopt_out);
+                    builder.ins().store(
+                        MemFlagsData::new(),
+                        reference,
+                        slot,
+                        std::mem::offset_of!(crate::JitNativeStaticPropertySlot, value) as i32,
+                    );
+                    if *bind_source_into_property {
+                        let old_runtime = lower_is_runtime_handle(builder, stored_current);
+                        let release_old = builder.ins().band(was_initialized, old_runtime);
+                        let release = builder.create_block();
+                        let done = builder.create_block();
+                        builder.ins().brif(release_old, release, &[], done, &[]);
+                        builder.switch_to_block(release);
+                        let _ = builder.ins().call(
+                            transition.value_release_commit,
+                            &[transition.runtime, transition.deopt_out, stored_current],
+                        );
+                        builder.ins().jump(done, &[]);
+                        builder.switch_to_block(done);
+                    }
+                }
                 let one = builder.ins().iconst(types::I32, 1);
                 builder.ins().store(
                     MemFlagsData::new(),
@@ -25357,6 +27798,61 @@ fn lower_optimizing_region_instruction(
                 );
                 lower_mark_native_roots_dirty(builder, transition.deopt_out);
                 define_local_variable(builder, locals, result_target, reference)?;
+            } else if let RegionCallTarget::Semantic { operation } = &call.target
+                && matches!(
+                    operation,
+                    crate::region_ir::RegionSemanticOp::PropertyIsset {
+                        property: crate::region_ir::RegionPropertyName::FixedDynamic(_),
+                        ..
+                    } | crate::region_ir::RegionSemanticOp::PropertyEmpty {
+                        property: crate::region_ir::RegionPropertyName::FixedDynamic(_),
+                        ..
+                    } | crate::region_ir::RegionSemanticOp::PropertyUnset {
+                        property: crate::region_ir::RegionPropertyName::FixedDynamic(_),
+                        ..
+                    }
+                )
+            {
+                emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+                let (object, empty, unset) = match operation {
+                    crate::region_ir::RegionSemanticOp::PropertyIsset { object, .. } => {
+                        (*object, false, false)
+                    }
+                    crate::region_ir::RegionSemanticOp::PropertyEmpty { object, .. } => {
+                        (*object, true, false)
+                    }
+                    crate::region_ir::RegionSemanticOp::PropertyUnset { object, .. } => {
+                        (*object, false, true)
+                    }
+                    _ => unreachable!("fixed dynamic property operation was filtered above"),
+                };
+                let object = lower_region_operand(builder, locals, registers, object)?;
+                let property_slot = lower_optimizing_named_dynamic_property_slot(
+                    module,
+                    builder,
+                    object,
+                    function,
+                    instruction.continuation_id,
+                    optimizing_operations,
+                    transition,
+                )?;
+                let result = if unset {
+                    lower_optimizing_dynamic_property_unset(builder, property_slot, transition)?
+                } else {
+                    lower_optimizing_dynamic_property_test(
+                        builder,
+                        property_slot,
+                        empty,
+                        transition,
+                    )?
+                };
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
             } else if let RegionCallTarget::Semantic { operation } = &call.target
                 && matches!(
                     operation,
@@ -25383,7 +27879,7 @@ fn lower_optimizing_region_instruction(
                     } => (dimensions, true),
                     _ => unreachable!("static dimension test was filtered above"),
                 };
-                let slot = lower_total_native_trusted_static_property_slot(
+                let (_, slot) = lower_total_native_trusted_static_property_slot(
                     builder,
                     function,
                     instruction.continuation_id,
@@ -25399,8 +27895,14 @@ fn lower_optimizing_region_instruction(
                     .iter()
                     .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
                     .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
-                let (present, value) =
-                    lower_total_native_array_probe_path(builder, root, &keys, transition.deopt_out);
+                let (present, value) = lower_total_native_array_probe_path(
+                    module,
+                    builder,
+                    optimizing_operations.array_lookup,
+                    root,
+                    &keys,
+                    transition.deopt_out,
+                );
                 let result = if empty {
                     let truthy =
                         lower_optimizing_authoritative_truthy(builder, value, transition.deopt_out);
@@ -25441,8 +27943,7 @@ fn lower_optimizing_region_instruction(
                 && !dimensions.is_empty()
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-                debug_assert!(total_native_array_call);
-                let slot = lower_total_native_trusted_static_property_slot(
+                let (_, slot) = lower_total_native_trusted_static_property_slot(
                     builder,
                     function,
                     instruction.continuation_id,
@@ -25549,7 +28050,7 @@ fn lower_optimizing_region_instruction(
                 } else {
                     optimizing_operations.dynamic_property_slot
                 };
-                let property_slot = emit_total_exact_native_value!(
+                let property_slot = emit_total_exact_runtime_value!(
                     module,
                     builder,
                     property_slot_handler,
@@ -25729,25 +28230,45 @@ fn lower_optimizing_region_instruction(
                 operation:
                     crate::region_ir::RegionSemanticOp::PropertyDimAssign {
                         object,
-                        property: crate::region_ir::RegionPropertyName::Static(_),
+                        property,
                         dimensions,
                         value,
                         append,
                         ..
                     },
             } = &call.target
+                && matches!(
+                    property,
+                    crate::region_ir::RegionPropertyName::Static(_)
+                        | crate::region_ir::RegionPropertyName::FixedDynamic(_)
+                )
                 && (*append || !dimensions.is_empty())
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-                debug_assert!(total_native_array_call);
                 let object = lower_region_operand(builder, locals, registers, *object)?;
-                let property_slot = lower_total_native_trusted_property_slot(
-                    builder,
-                    object,
-                    function,
-                    instruction.continuation_id,
-                    transition.deopt_out,
-                );
+                let property_slot = match property {
+                    crate::region_ir::RegionPropertyName::FixedDynamic(_) => {
+                        lower_optimizing_named_dynamic_property_slot(
+                            module,
+                            builder,
+                            object,
+                            function,
+                            instruction.continuation_id,
+                            optimizing_operations,
+                            transition,
+                        )?
+                    }
+                    crate::region_ir::RegionPropertyName::Static(_) => {
+                        lower_total_native_trusted_property_slot(
+                            builder,
+                            object,
+                            function,
+                            instruction.continuation_id,
+                            transition.deopt_out,
+                        )
+                    }
+                    crate::region_ir::RegionPropertyName::Dynamic(_) => unreachable!(),
+                };
                 let lowered_keys = dimensions
                     .iter()
                     .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
@@ -25760,28 +28281,31 @@ fn lower_optimizing_region_instruction(
                         .expect("property dimension assignment retains a leaf key");
                     (Some(*leaf), parents)
                 };
-                let root = builder.ins().load(
+                let stored = builder.ins().load(
                     types::I64,
                     MemFlagsData::new(),
                     property_slot,
                     std::mem::offset_of!(php_runtime::api::NativeDeclaredPropertySlot, value)
                         as i32,
                 );
-                let leaf = lower_total_native_existing_array_path(
+                let (root, reference_slot) =
+                    lower_optimizing_mutable_array_reference(builder, stored, transition)?;
+                let (root, leaf) = lower_total_native_mutable_array_path(
+                    module,
                     builder,
+                    optimizing_operations.array_ensure_unique,
                     root,
                     parents,
-                    transition.deopt_out,
-                );
-                let value = lower_region_operand(builder, locals, registers, *value)?;
+                    true,
+                    true,
+                    transition,
+                )?;
+                let value = lower_prepared_native_call_operand(
+                    builder, locals, registers, constants, *value, transition,
+                )?;
                 if let Some(key) = leaf_key {
-                    let _ = lower_total_native_array_insert_integer(
-                        builder,
-                        leaf,
-                        key,
-                        value,
-                        true,
-                        transition.deopt_out,
+                    let _ = lower_total_native_array_insert(
+                        builder, leaf, key, value, true, true, transition,
                     );
                 } else {
                     let key = lower_total_native_array_next_integer_key(
@@ -25797,7 +28321,13 @@ fn lower_optimizing_region_instruction(
                         transition.deopt_out,
                     );
                 }
-                lower_mark_native_roots_dirty(builder, deopt_out);
+                lower_optimizing_publish_mutable_array_property(
+                    builder,
+                    property_slot,
+                    root,
+                    reference_slot,
+                    transition.deopt_out,
+                );
                 define_optimizing_call_result(
                     builder,
                     register_variables,
@@ -25821,23 +28351,43 @@ fn lower_optimizing_region_instruction(
                 operation:
                     crate::region_ir::RegionSemanticOp::PropertyDimUnset {
                         object,
-                        property: crate::region_ir::RegionPropertyName::Static(_),
+                        property,
                         dimensions,
                         ..
                     },
             } = &call.target
+                && matches!(
+                    property,
+                    crate::region_ir::RegionPropertyName::Static(_)
+                        | crate::region_ir::RegionPropertyName::FixedDynamic(_)
+                )
                 && !dimensions.is_empty()
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-                debug_assert!(total_native_array_call);
                 let object = lower_region_operand(builder, locals, registers, *object)?;
-                let property_slot = lower_total_native_trusted_property_slot(
-                    builder,
-                    object,
-                    function,
-                    instruction.continuation_id,
-                    transition.deopt_out,
-                );
+                let property_slot = match property {
+                    crate::region_ir::RegionPropertyName::FixedDynamic(_) => {
+                        lower_optimizing_named_dynamic_property_slot(
+                            module,
+                            builder,
+                            object,
+                            function,
+                            instruction.continuation_id,
+                            optimizing_operations,
+                            transition,
+                        )?
+                    }
+                    crate::region_ir::RegionPropertyName::Static(_) => {
+                        lower_total_native_trusted_property_slot(
+                            builder,
+                            object,
+                            function,
+                            instruction.continuation_id,
+                            transition.deopt_out,
+                        )
+                    }
+                    crate::region_ir::RegionPropertyName::Dynamic(_) => unreachable!(),
+                };
                 let lowered_keys = dimensions
                     .iter()
                     .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
@@ -25845,26 +28395,38 @@ fn lower_optimizing_region_instruction(
                 let (leaf_key, parents) = lowered_keys
                     .split_last()
                     .expect("property dimension unset retains a leaf key");
-                let root = builder.ins().load(
+                let stored = builder.ins().load(
                     types::I64,
                     MemFlagsData::new(),
                     property_slot,
                     std::mem::offset_of!(php_runtime::api::NativeDeclaredPropertySlot, value)
                         as i32,
                 );
-                let leaf = lower_total_native_existing_array_path(
+                let (root, reference_slot) =
+                    lower_optimizing_mutable_array_reference(builder, stored, transition)?;
+                let (root, leaf) = lower_total_native_mutable_array_path(
+                    module,
                     builder,
+                    optimizing_operations.array_ensure_unique,
                     root,
                     parents,
-                    transition.deopt_out,
-                );
+                    false,
+                    true,
+                    transition,
+                )?;
                 let _ = lower_total_native_array_unset_integer(
                     builder,
                     leaf,
                     *leaf_key,
                     transition.deopt_out,
                 );
-                lower_mark_native_roots_dirty(builder, deopt_out);
+                lower_optimizing_publish_mutable_array_property(
+                    builder,
+                    property_slot,
+                    root,
+                    reference_slot,
+                    transition.deopt_out,
+                );
             } else if let RegionCallTarget::Semantic {
                 operation:
                     crate::region_ir::RegionSemanticOp::PropertyUnset {
@@ -25934,7 +28496,7 @@ fn lower_optimizing_region_instruction(
                 builder.switch_to_block(release);
                 let _ = builder.ins().call(
                     transition.value_release_commit,
-                    &[transition.deopt_out, old],
+                    &[transition.runtime, transition.deopt_out, old],
                 );
                 builder.ins().jump(done, &[]);
 
@@ -25953,38 +28515,58 @@ fn lower_optimizing_region_instruction(
                 && matches!(
                     operation,
                     crate::region_ir::RegionSemanticOp::PropertyDimIsset {
-                        property: crate::region_ir::RegionPropertyName::Static(_),
+                        property: crate::region_ir::RegionPropertyName::Static(_)
+                            | crate::region_ir::RegionPropertyName::FixedDynamic(_),
                         dimensions,
                         ..
                     } | crate::region_ir::RegionSemanticOp::PropertyDimEmpty {
-                        property: crate::region_ir::RegionPropertyName::Static(_),
+                        property: crate::region_ir::RegionPropertyName::Static(_)
+                            | crate::region_ir::RegionPropertyName::FixedDynamic(_),
                         dimensions,
                         ..
                     } if !dimensions.is_empty()
                 )
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-                let (object, dimensions, empty) = match operation {
+                let (object, property, dimensions, empty) = match operation {
                     crate::region_ir::RegionSemanticOp::PropertyDimIsset {
                         object,
+                        property,
                         dimensions,
                         ..
-                    } => (*object, dimensions, false),
+                    } => (*object, property, dimensions, false),
                     crate::region_ir::RegionSemanticOp::PropertyDimEmpty {
                         object,
+                        property,
                         dimensions,
                         ..
-                    } => (*object, dimensions, true),
+                    } => (*object, property, dimensions, true),
                     _ => unreachable!("declared property dimension test was filtered above"),
                 };
                 let object = lower_region_operand(builder, locals, registers, object)?;
-                let property_slot = lower_total_native_trusted_property_slot(
-                    builder,
-                    object,
-                    function,
-                    instruction.continuation_id,
-                    transition.deopt_out,
-                );
+                let property_slot = match property {
+                    crate::region_ir::RegionPropertyName::FixedDynamic(_) => {
+                        lower_optimizing_named_dynamic_property_slot(
+                            module,
+                            builder,
+                            object,
+                            function,
+                            instruction.continuation_id,
+                            optimizing_operations,
+                            transition,
+                        )?
+                    }
+                    crate::region_ir::RegionPropertyName::Static(_) => {
+                        lower_total_native_trusted_property_slot(
+                            builder,
+                            object,
+                            function,
+                            instruction.continuation_id,
+                            transition.deopt_out,
+                        )
+                    }
+                    crate::region_ir::RegionPropertyName::Dynamic(_) => unreachable!(),
+                };
                 let root = builder.ins().load(
                     types::I64,
                     MemFlagsData::new(),
@@ -25992,12 +28574,19 @@ fn lower_optimizing_region_instruction(
                     std::mem::offset_of!(php_runtime::api::NativeDeclaredPropertySlot, value)
                         as i32,
                 );
+                let root = lower_optimizing_reference_scalar(builder, root, false, transition)?;
                 let keys = dimensions
                     .iter()
                     .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
                     .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
-                let (present, value) =
-                    lower_total_native_array_probe_path(builder, root, &keys, transition.deopt_out);
+                let (present, value) = lower_total_native_array_probe_path(
+                    module,
+                    builder,
+                    optimizing_operations.array_lookup,
+                    root,
+                    &keys,
+                    transition.deopt_out,
+                );
                 let result = if empty {
                     let truthy =
                         lower_optimizing_authoritative_truthy(builder, value, transition.deopt_out);
@@ -26049,19 +28638,23 @@ fn lower_optimizing_region_instruction(
                 let result = match operation {
                     crate::region_ir::RegionSemanticOp::StaticPropertyFetch { .. } => {
                         lower_optimizing_static_property_fetch(
+                            module,
                             builder,
                             function,
                             instruction.continuation_id,
+                            optimizing_operations,
                             transition,
                         )?
                     }
                     crate::region_ir::RegionSemanticOp::StaticPropertyAssign { value, .. } => {
                         let value = lower_region_operand(builder, locals, registers, *value)?;
                         lower_optimizing_static_property_assign(
+                            module,
                             builder,
                             value,
                             function,
                             instruction.continuation_id,
+                            optimizing_operations,
                             transition,
                         )?
                     }
@@ -26128,14 +28721,54 @@ fn lower_optimizing_region_instruction(
                     types::I64,
                     crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
                 );
-                let result = emit_fixed_two_argument_control!(
-                    module,
-                    builder,
-                    optimizing_operations.exact_symbol_query[builtin.index()],
-                    arguments[0],
-                    arguments.get(1).copied().unwrap_or(missing),
-                    transition,
-                )?;
+                let argument_1 = arguments.get(1).copied().unwrap_or(missing);
+                let result = if builtin == StableSymbolQueryBuiltin::Define {
+                    let file = builder
+                        .ins()
+                        .iconst(types::I64, i64::from(instruction.span.file.raw()));
+                    let start = builder
+                        .ins()
+                        .iconst(types::I64, i64::from(instruction.span.start));
+                    emit_total_exact_builtin_value!(
+                        module,
+                        builder,
+                        optimizing_operations.exact_symbol_query[builtin.index()],
+                        &[arguments[0], argument_1, file, start],
+                        transition,
+                        "total define builtin has no fixed native handler",
+                    )?
+                } else if matches!(
+                    builtin,
+                    StableSymbolQueryBuiltin::ClassExists
+                        | StableSymbolQueryBuiltin::InterfaceExists
+                        | StableSymbolQueryBuiltin::TraitExists
+                        | StableSymbolQueryBuiltin::EnumExists
+                ) {
+                    lower_optimizing_resolve_user_callback_action(
+                        module,
+                        builder,
+                        optimizing_operations.exact_symbol_query[builtin.index()],
+                        &[arguments[0], argument_1],
+                        optimizing_operations.acquire_callable,
+                        arguments[0],
+                        &[],
+                        runtime,
+                        result_out,
+                        deopt_out,
+                        instruction,
+                        call.caller_strict_types,
+                        transition,
+                    )?
+                } else {
+                    emit_fixed_two_argument_control!(
+                        module,
+                        builder,
+                        optimizing_operations.exact_symbol_query[builtin.index()],
+                        arguments[0],
+                        argument_1,
+                        transition,
+                    )?
+                };
                 define_optimizing_call_result(
                     builder,
                     register_variables,
@@ -26255,15 +28888,27 @@ fn lower_optimizing_region_instruction(
                             transition,
                         )?
                     }
-                    StableJsonBuiltin::Decode => emit_total_exact_quaternary!(
-                        module,
-                        builder,
-                        helper,
-                        std::array::from_fn(|index| {
-                            arguments.get(index).copied().unwrap_or(missing)
-                        }),
-                        transition,
-                    )?,
+                    StableJsonBuiltin::Decode => {
+                        let prepared_error = lower_optimizing_prepared_exception_pointer(
+                            builder,
+                            function,
+                            instruction.continuation_id,
+                            transition.deopt_out,
+                        );
+                        emit_total_exact_five!(
+                            module,
+                            builder,
+                            helper,
+                            [
+                                arguments.first().copied().unwrap_or(missing),
+                                arguments.get(1).copied().unwrap_or(missing),
+                                arguments.get(2).copied().unwrap_or(missing),
+                                arguments.get(3).copied().unwrap_or(missing),
+                                prepared_error,
+                            ],
+                            transition,
+                        )?
+                    }
                 };
                 define_optimizing_call_result(
                     builder,
@@ -26289,7 +28934,7 @@ fn lower_optimizing_region_instruction(
                     StableFormatBuiltin::Sprintf | StableFormatBuiltin::Printf => {
                         let frame =
                             lower_optimizing_exact_argument_slice(module, builder, &arguments)?;
-                        emit_total_exact_native_value!(
+                        emit_total_exact_runtime_value!(
                             module,
                             builder,
                             helper,
@@ -26360,6 +29005,15 @@ fn lower_optimizing_region_instruction(
                         arguments[1],
                         transition,
                     )?,
+                    StableHashBuiltin::SodiumGenericHash => emit_total_exact_ternary!(
+                        module,
+                        builder,
+                        helper,
+                        arguments[0],
+                        arguments.get(1).copied().unwrap_or(missing),
+                        arguments.get(2).copied().unwrap_or(missing),
+                        transition,
+                    )?,
                     StableHashBuiltin::Md5 | StableHashBuiltin::Sha1 => {
                         emit_fixed_two_argument_control!(
                             module,
@@ -26406,7 +29060,7 @@ fn lower_optimizing_region_instruction(
                     StableByteCodecBuiltin::Pack => {
                         let frame =
                             lower_optimizing_exact_argument_slice(module, builder, &arguments)?;
-                        emit_total_exact_native_value!(
+                        emit_total_exact_runtime_value!(
                             module,
                             builder,
                             helper,
@@ -26444,7 +29098,8 @@ fn lower_optimizing_region_instruction(
                             transition,
                         )?
                     }
-                    StableByteCodecBuiltin::AddCSlashes => emit_fixed_two_argument_control!(
+                    StableByteCodecBuiltin::AddCSlashes
+                    | StableByteCodecBuiltin::SodiumBin2Base64 => emit_fixed_two_argument_control!(
                         module,
                         builder,
                         helper,
@@ -26635,6 +29290,15 @@ fn lower_optimizing_region_instruction(
                         arguments.get(1).copied().unwrap_or(missing),
                         transition,
                     )?,
+                    StableHtmlCodecBuiltin::TranslationTable => emit_total_exact_ternary!(
+                        module,
+                        builder,
+                        helper,
+                        arguments.first().copied().unwrap_or(missing),
+                        arguments.get(1).copied().unwrap_or(missing),
+                        arguments.get(2).copied().unwrap_or(missing),
+                        transition,
+                    )?,
                 };
                 define_optimizing_call_result(
                     builder,
@@ -26712,10 +29376,14 @@ fn lower_optimizing_region_instruction(
                 && builtin.accepts_arity(call.args.len())
                 && direct_builtin_argument(0).is_none_or(|operand| {
                     let fact = lowering_operand_fact(value_flow, constants, operand);
-                    fact.certainty == crate::region_ir::SsaCertainty::Unknown
+                    matches!(
+                        builtin,
+                        StableArrayAggregateBuiltin::Count | StableArrayAggregateBuiltin::SizeOf
+                    ) || fact.certainty == crate::region_ir::SsaCertainty::Unknown
                         || matches!(
                             fact.class,
                             SsaValueClass::ArrayHandle
+                                | SsaValueClass::ObjectHandle
                                 | SsaValueClass::ReferenceHandle
                                 | SsaValueClass::MixedHandle
                         )
@@ -26773,14 +29441,151 @@ fn lower_optimizing_region_instruction(
                             types::I64,
                             crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
                         );
-                        emit_fixed_two_argument_control!(
-                            module,
+                        let prepared_type_error = lower_optimizing_prepared_exception_pointer(
                             builder,
-                            helper,
+                            function,
+                            instruction.continuation_id,
+                            deopt_out,
+                        );
+                        let value = lower_optimizing_reference_scalar(
+                            builder,
                             arguments[0],
-                            arguments.get(1).copied().unwrap_or(missing),
+                            false,
                             transition,
-                        )?
+                        )?;
+                        if !countable_object_possible {
+                            emit_total_exact_ternary!(
+                                module,
+                                builder,
+                                helper,
+                                value,
+                                arguments.get(1).copied().unwrap_or(missing),
+                                prepared_type_error,
+                                transition,
+                            )?
+                        } else {
+                            let mode = arguments.get(1).copied().unwrap_or(missing);
+                            let mode_missing = builder.ins().icmp_imm(
+                                IntCC::Equal,
+                                mode,
+                                crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                            );
+                            let (mode_integer, mode_value) = lower_optimizing_integer_candidate(
+                                builder,
+                                mode,
+                                transition.deopt_out,
+                            );
+                            let normal = builder.ins().icmp_imm(IntCC::Equal, mode_value, 0);
+                            let recursive = builder.ins().icmp_imm(IntCC::Equal, mode_value, 1);
+                            let valid_integer = builder.ins().bor(normal, recursive);
+                            let valid_integer = builder.ins().band(mode_integer, valid_integer);
+                            let valid_mode = builder.ins().bor(mode_missing, valid_integer);
+                            let object = lower_value_has_tag(
+                                builder,
+                                value,
+                                crate::JIT_VALUE_RUNTIME_OBJECT_TAG,
+                            );
+                            let countable = lower_optimizing_type_predicate(
+                                builder,
+                                StableTypePredicateBuiltin::Countable,
+                                value,
+                                transition,
+                            )?;
+                            let countable = builder.ins().icmp_imm(
+                                IntCC::Equal,
+                                countable,
+                                crate::jit_encode_constant(crate::JIT_VALUE_TRUE),
+                            );
+                            let countable_object = builder.ins().band(object, countable);
+                            let inspect_object = builder.create_block();
+                            let invoke_count = builder.create_block();
+                            let exact_count = builder.create_block();
+                            let complete = builder.create_block();
+                            builder.append_block_param(complete, types::I64);
+                            builder
+                                .ins()
+                                .brif(valid_mode, inspect_object, &[], exact_count, &[]);
+
+                            builder.switch_to_block(inspect_object);
+                            builder.ins().brif(
+                                countable_object,
+                                invoke_count,
+                                &[],
+                                exact_count,
+                                &[],
+                            );
+
+                            builder.switch_to_block(invoke_count);
+                            let (method, method_length) =
+                                lower_optimizing_static_bytes(module, builder, b"count")?;
+                            let caller_function = builder
+                                .ins()
+                                .iconst(types::I64, i64::from(transition.function.raw()));
+                            let callable = lower_optimizing_resolve_user_callback_action(
+                                module,
+                                builder,
+                                optimizing_operations.acquire_method_callable,
+                                &[value, method, method_length, caller_function],
+                                optimizing_operations.acquire_callable,
+                                value,
+                                &[],
+                                runtime,
+                                result_out,
+                                deopt_out,
+                                instruction,
+                                call.caller_strict_types,
+                                transition,
+                            )?;
+                            let prepared = lower_optimizing_prepare_dynamic_callable(
+                                builder,
+                                callable,
+                                OptimizingDynamicCallableArity::Fixed(0),
+                                call.caller_strict_types,
+                                true,
+                                false,
+                                false,
+                                &[callable],
+                                transition,
+                            )?;
+                            let (packed, packed_length) =
+                                lower_optimizing_pack_dynamic_fixed_arguments(
+                                    builder,
+                                    prepared,
+                                    &[],
+                                    transition,
+                                );
+                            let counted = lower_optimizing_invoke_packed_dynamic(
+                                module,
+                                builder,
+                                prepared.callback,
+                                packed,
+                                packed_length,
+                                &[callable],
+                                None,
+                                runtime,
+                                result_out,
+                                deopt_out,
+                                instruction,
+                                transition,
+                            )?;
+                            lower_optimizing_commit_owned_value(builder, callable, transition);
+                            builder.ins().jump(complete, &[counted.into()]);
+
+                            builder.switch_to_block(exact_count);
+                            let counted = emit_total_exact_ternary!(
+                                module,
+                                builder,
+                                helper,
+                                value,
+                                arguments.get(1).copied().unwrap_or(missing),
+                                prepared_type_error,
+                                transition,
+                            )?;
+                            builder.ins().jump(complete, &[counted.into()]);
+
+                            builder.switch_to_block(complete);
+                            builder.block_params(complete)[0]
+                        }
                     }
                 };
                 define_optimizing_call_result(
@@ -26812,7 +29617,7 @@ fn lower_optimizing_region_instruction(
                     }
                 }
                 let frame = lower_optimizing_exact_argument_slice(module, builder, &arguments)?;
-                let result = emit_total_exact_native_value!(
+                let result = emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.exact_array_multisort,
@@ -26840,6 +29645,38 @@ fn lower_optimizing_region_instruction(
                 let reference =
                     lower_optimizing_bind_direct_local_reference(builder, current, transition)?;
                 define_local_variable(builder, locals, local, reference)?;
+                // PHP's by-reference sort operations are COW mutation
+                // boundaries. The property/local reference owns its payload,
+                // but earlier expression owners or a genuine PHP alias may
+                // still share that array. Detach through the generated native
+                // array transition before entering the fixed sort leaf, then
+                // publish the unique payload back into the same reference
+                // identity.
+                let reference_slot =
+                    lower_optimizing_slot_address(builder, reference, transition.deopt_out);
+                let array = builder.ins().load(
+                    types::I64,
+                    MemFlagsData::new(),
+                    reference_slot,
+                    std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+                );
+                let zero = builder.ins().iconst(types::I64, 0);
+                let unique = lower_total_direct_array_ensure_unique_capacity(
+                    module,
+                    builder,
+                    optimizing_operations.array_ensure_unique,
+                    array,
+                    zero,
+                    true,
+                    transition.deopt_out,
+                );
+                builder.ins().store(
+                    MemFlagsData::new(),
+                    unique,
+                    reference_slot,
+                    std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+                );
+                lower_mark_native_roots_dirty(builder, transition.deopt_out);
                 let mut arguments = vec![reference];
                 for index in 1..call.args.len() {
                     let operand = direct_builtin_argument(index)
@@ -26923,9 +29760,7 @@ fn lower_optimizing_region_instruction(
                     let operand = direct_builtin_argument(index)
                         .expect("fixed native callable-query argument has an operand");
                     let argument = lower_region_operand(builder, locals, registers, operand)?;
-                    arguments.push(lower_optimizing_reference_scalar(
-                        builder, argument, false, transition,
-                    )?);
+                    arguments.push(argument);
                 }
                 let missing = builder.ins().iconst(
                     types::I64,
@@ -26957,22 +29792,45 @@ fn lower_optimizing_region_instruction(
                     let operand = direct_builtin_argument(index)
                         .expect("fixed native callback-handler argument has an operand");
                     let argument = lower_region_operand(builder, locals, registers, operand)?;
-                    arguments.push(lower_optimizing_reference_scalar(
-                        builder, argument, false, transition,
-                    )?);
+                    arguments.push(argument);
                 }
                 let missing = builder.ins().iconst(
                     types::I64,
                     crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
                 );
-                let result = emit_fixed_two_argument_control!(
-                    module,
-                    builder,
-                    optimizing_operations.exact_callback_handler[builtin.index()],
-                    arguments.first().copied().unwrap_or(missing),
-                    arguments.get(1).copied().unwrap_or(missing),
-                    transition,
-                )?;
+                let result = if builtin == StableCallbackHandlerBuiltin::TriggerError {
+                    let file = builder
+                        .ins()
+                        .iconst(types::I64, i64::from(instruction.span.file.raw()));
+                    let start = builder
+                        .ins()
+                        .iconst(types::I64, i64::from(instruction.span.start));
+                    lower_optimizing_trigger_error(
+                        module,
+                        builder,
+                        optimizing_operations.exact_callback_handler[builtin.index()],
+                        optimizing_operations.acquire_callable,
+                        arguments[0],
+                        arguments.get(1).copied().unwrap_or(missing),
+                        file,
+                        start,
+                        missing,
+                        runtime,
+                        result_out,
+                        deopt_out,
+                        instruction,
+                        transition,
+                    )?
+                } else {
+                    emit_fixed_two_argument_control!(
+                        module,
+                        builder,
+                        optimizing_operations.exact_callback_handler[builtin.index()],
+                        arguments.first().copied().unwrap_or(missing),
+                        arguments.get(1).copied().unwrap_or(missing),
+                        transition,
+                    )?
+                };
                 define_optimizing_call_result(
                     builder,
                     register_variables,
@@ -26990,9 +29848,7 @@ fn lower_optimizing_region_instruction(
                     let operand = direct_builtin_argument(index)
                         .expect("fixed native autoload-callback argument has an operand");
                     let argument = lower_region_operand(builder, locals, registers, operand)?;
-                    arguments.push(lower_optimizing_reference_scalar(
-                        builder, argument, false, transition,
-                    )?);
+                    arguments.push(argument);
                 }
                 let missing = builder.ins().iconst(
                     types::I64,
@@ -27035,7 +29891,7 @@ fn lower_optimizing_region_instruction(
                     .ins()
                     .iconst(types::I32, i64::from(transition.continuation_id));
                 let native_arguments = [frame[0], frame[1], function, continuation];
-                let result = emit_total_exact_native_value!(
+                let result = emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.exact_shutdown_callback,
@@ -27084,9 +29940,7 @@ fn lower_optimizing_region_instruction(
                     let operand = direct_builtin_argument(index)
                         .expect("fixed native tokenizer argument has an operand");
                     let argument = lower_region_operand(builder, locals, registers, operand)?;
-                    arguments.push(lower_optimizing_reference_scalar(
-                        builder, argument, false, transition,
-                    )?);
+                    arguments.push(argument);
                 }
                 let helper = optimizing_operations.exact_tokenizer[builtin.index()];
                 let result = match builtin {
@@ -27177,6 +30031,24 @@ fn lower_optimizing_region_instruction(
                         arguments.get(1).copied().unwrap_or(missing),
                         transition,
                     )?,
+                    StableMbstringBuiltin::NormalizerNormalize
+                    | StableMbstringBuiltin::NormalizerIsNormalized => {
+                        let prepared_error = lower_optimizing_prepared_exception_pointer(
+                            builder,
+                            function,
+                            instruction.continuation_id,
+                            transition.deopt_out,
+                        );
+                        emit_total_exact_ternary!(
+                            module,
+                            builder,
+                            helper,
+                            arguments[0],
+                            arguments.get(1).copied().unwrap_or(missing),
+                            prepared_error,
+                            transition,
+                        )?
+                    }
                     StableMbstringBuiltin::DetectEncoding
                     | StableMbstringBuiltin::ConvertEncoding
                     | StableMbstringBuiltin::SubstrCount
@@ -27189,6 +30061,22 @@ fn lower_optimizing_region_instruction(
                         arguments.get(2).copied().unwrap_or(missing),
                         transition,
                     )?,
+                    StableMbstringBuiltin::Iconv => {
+                        let file = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(instruction.span.file.raw()));
+                        let start = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(instruction.span.start));
+                        emit_total_exact_builtin_value!(
+                            module,
+                            builder,
+                            helper,
+                            &[arguments[0], arguments[1], arguments[2], file, start],
+                            transition,
+                            "total iconv builtin has no fixed native handler",
+                        )?
+                    }
                     StableMbstringBuiltin::Stripos
                     | StableMbstringBuiltin::Strpos
                     | StableMbstringBuiltin::Strripos
@@ -27477,7 +30365,7 @@ fn lower_optimizing_region_instruction(
                     .expect("fixed native get_class argument has an operand");
                 let object = lower_region_operand(builder, locals, registers, operand)?;
                 let object = lower_optimizing_reference_scalar(builder, object, false, transition)?;
-                let result = emit_total_exact_native_value!(
+                let result = emit_total_exact_runtime_value!(
                     module,
                     builder,
                     optimizing_operations.object_class_name,
@@ -27677,6 +30565,120 @@ fn lower_optimizing_region_instruction(
                     call.result,
                     result,
                 )?;
+            } else if let Some(builtin) = stable_builtin_fileinfo(&call.target)
+                && builtin.accepts_arity(call.args.len())
+                && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
+                && (builtin != StableFileinfoBuiltin::GetImageSize
+                    || call.args.len() == 1
+                    || call.args[1].by_ref_local.is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let mut arguments = Vec::with_capacity(call.args.len());
+                for index in 0..call.args.len() {
+                    if builtin == StableFileinfoBuiltin::GetImageSize && index == 1 {
+                        let local = call.args[index]
+                            .by_ref_local
+                            .expect("admitted getimagesize info argument is a direct local");
+                        let current = use_local_variable(builder, locals, local)?;
+                        let reference = lower_optimizing_bind_direct_local_reference(
+                            builder, current, transition,
+                        )?;
+                        define_local_variable(builder, locals, local, reference)?;
+                        arguments.push(reference);
+                        continue;
+                    }
+                    let operand = direct_builtin_argument(index)
+                        .expect("fixed native fileinfo argument has an operand");
+                    let argument = lower_region_operand(builder, locals, registers, operand)?;
+                    arguments.push(lower_optimizing_reference_scalar(
+                        builder, argument, false, transition,
+                    )?);
+                }
+                let helper = optimizing_operations.exact_fileinfo[builtin.index()];
+                let missing = builder.ins().iconst(
+                    types::I64,
+                    crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                );
+                let file = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(instruction.span.file.raw()));
+                let start = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(instruction.span.start));
+                let result = match builtin {
+                    StableFileinfoBuiltin::Open => emit_total_exact_builtin_value!(
+                        module,
+                        builder,
+                        helper,
+                        &[
+                            arguments.first().copied().unwrap_or(missing),
+                            arguments.get(1).copied().unwrap_or(missing),
+                            file,
+                            start,
+                        ],
+                        transition,
+                        "prepared finfo_open callsite has no exact native handler",
+                    )?,
+                    StableFileinfoBuiltin::Close => {
+                        emit_total_exact_unary!(module, builder, helper, arguments[0], transition,)?
+                    }
+                    StableFileinfoBuiltin::Buffer | StableFileinfoBuiltin::File => {
+                        emit_total_exact_builtin_value!(
+                            module,
+                            builder,
+                            helper,
+                            &[
+                                arguments[0],
+                                arguments[1],
+                                arguments.get(2).copied().unwrap_or(missing),
+                                arguments.get(3).copied().unwrap_or(missing),
+                                file,
+                                start,
+                            ],
+                            transition,
+                            "prepared fileinfo detection callsite has no exact native handler",
+                        )?
+                    }
+                    StableFileinfoBuiltin::SetFlags => emit_fixed_two_argument_control!(
+                        module,
+                        builder,
+                        helper,
+                        arguments[0],
+                        arguments[1],
+                        transition,
+                    )?,
+                    StableFileinfoBuiltin::ExifImageType => emit_total_exact_builtin_value!(
+                        module,
+                        builder,
+                        helper,
+                        &[arguments[0], file, start],
+                        transition,
+                        "prepared exif_imagetype callsite has no exact native handler",
+                    )?,
+                    StableFileinfoBuiltin::ImageTypeToMimeType => {
+                        emit_total_exact_unary!(module, builder, helper, arguments[0], transition,)?
+                    }
+                    StableFileinfoBuiltin::GetImageSize => emit_total_exact_builtin_value!(
+                        module,
+                        builder,
+                        helper,
+                        &[
+                            arguments[0],
+                            arguments.get(1).copied().unwrap_or(missing),
+                            file,
+                            start,
+                        ],
+                        transition,
+                        "prepared getimagesize callsite has no exact native handler",
+                    )?,
+                };
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
             } else if let Some(builtin) = stable_builtin_error_state(&call.target)
                 && call.args.is_empty()
             {
@@ -27815,15 +30817,28 @@ fn lower_optimizing_region_instruction(
                         arguments.first().copied().unwrap_or(missing),
                         transition,
                     )?,
-                    StableHttpResponseBuiltin::Header => emit_total_exact_ternary!(
-                        module,
-                        builder,
-                        helper,
-                        arguments[0],
-                        arguments.get(1).copied().unwrap_or(missing),
-                        arguments.get(2).copied().unwrap_or(missing),
-                        transition,
-                    )?,
+                    StableHttpResponseBuiltin::Header => {
+                        let file = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(instruction.span.file.raw()));
+                        let start = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(instruction.span.start));
+                        emit_total_exact_builtin_value!(
+                            module,
+                            builder,
+                            helper,
+                            &[
+                                arguments[0],
+                                arguments.get(1).copied().unwrap_or(missing),
+                                arguments.get(2).copied().unwrap_or(missing),
+                                file,
+                                start,
+                            ],
+                            transition,
+                            "header has no exact source-aware native handler",
+                        )?
+                    }
                 };
                 define_optimizing_call_result(
                     builder,
@@ -27883,7 +30898,10 @@ fn lower_optimizing_region_instruction(
                     StableClockBuiltin::Time => {
                         emit_total_exact_zero!(module, builder, helper, transition,)?
                     }
-                    StableClockBuiltin::Microtime | StableClockBuiltin::Hrtime => {
+                    StableClockBuiltin::Microtime
+                    | StableClockBuiltin::Hrtime
+                    | StableClockBuiltin::Usleep
+                    | StableClockBuiltin::SetTimeLimit => {
                         let missing = builder.ins().iconst(
                             types::I64,
                             crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
@@ -27893,6 +30911,20 @@ fn lower_optimizing_region_instruction(
                             builder,
                             helper,
                             arguments.first().copied().unwrap_or(missing),
+                            transition,
+                        )?
+                    }
+                    StableClockBuiltin::Uniqid => {
+                        let missing = builder.ins().iconst(
+                            types::I64,
+                            crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                        );
+                        emit_fixed_two_argument_control!(
+                            module,
+                            builder,
+                            helper,
+                            arguments.first().copied().unwrap_or(missing),
+                            arguments.get(1).copied().unwrap_or(missing),
                             transition,
                         )?
                     }
@@ -27924,9 +30956,14 @@ fn lower_optimizing_region_instruction(
                     crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
                 );
                 let result = match builtin {
-                    StableDateBuiltin::TimezoneIdentifiers => {
-                        emit_total_exact_zero!(module, builder, helper, transition,)?
-                    }
+                    StableDateBuiltin::TimezoneIdentifiers => emit_fixed_two_argument_control!(
+                        module,
+                        builder,
+                        helper,
+                        arguments.first().copied().unwrap_or(missing),
+                        arguments.get(1).copied().unwrap_or(missing),
+                        transition,
+                    )?,
                     StableDateBuiltin::Date
                     | StableDateBuiltin::Gmdate
                     | StableDateBuiltin::Strtotime => emit_fixed_two_argument_control!(
@@ -27937,6 +30974,26 @@ fn lower_optimizing_region_instruction(
                         arguments.get(1).copied().unwrap_or(missing),
                         transition,
                     )?,
+                    StableDateBuiltin::TimezoneOpen => {
+                        emit_total_exact_unary!(module, builder, helper, arguments[0], transition,)?
+                    }
+                    StableDateBuiltin::DateCreate => {
+                        let prepared_error = lower_optimizing_prepared_exception_pointer(
+                            builder,
+                            function,
+                            instruction.continuation_id,
+                            transition.deopt_out,
+                        );
+                        emit_total_exact_ternary!(
+                            module,
+                            builder,
+                            helper,
+                            arguments.first().copied().unwrap_or(missing),
+                            arguments.get(1).copied().unwrap_or(missing),
+                            prepared_error,
+                            transition,
+                        )?
+                    }
                     StableDateBuiltin::Checkdate => emit_total_exact_ternary!(
                         module,
                         builder,
@@ -28214,8 +31271,14 @@ fn lower_optimizing_region_instruction(
                     }
                     compact_arguments
                 };
-                let function_id = builder.ins().iconst(types::I64, i64::from(function.raw()));
-                let local_count = builder.ins().iconst(types::I64, i64::from(local_count));
+                let runtime_view = lower_active_runtime_view(builder, transition.deopt_out);
+                let function_id = builder.ins().iconst(types::I32, i64::from(function.raw()));
+                let function_metadata = lower_native_function_trace_metadata(
+                    builder,
+                    pointer_type,
+                    runtime_view,
+                    function_id,
+                );
                 let compact_argument_count = builder.ins().iconst(
                     types::I64,
                     if stable_builtin_get_defined_vars(&call.target) {
@@ -28229,9 +31292,8 @@ fn lower_optimizing_region_instruction(
                     builder,
                     optimizing_operations.exact_compact,
                     [
-                        function_id,
+                        function_metadata,
                         local_values,
-                        local_count,
                         compact_arguments,
                         compact_argument_count,
                     ],
@@ -28317,6 +31379,7 @@ fn lower_optimizing_region_instruction(
                             "published frame-introspection callsite has no exact handler",
                         )
                     })?;
+                let padded_arguments;
                 let native_arguments = match builtin {
                     StableFrameIntrospectionBuiltin::NumArgs
                     | StableFrameIntrospectionBuiltin::GetArgs => {
@@ -28326,6 +31389,21 @@ fn lower_optimizing_region_instruction(
                     StableFrameIntrospectionBuiltin::GetArg => {
                         debug_assert_eq!(arguments.len(), 1);
                         &arguments[..]
+                    }
+                    StableFrameIntrospectionBuiltin::DebugBacktrace => {
+                        let missing = builder.ins().iconst(
+                            types::I64,
+                            crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                        );
+                        let strict = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(call.caller_strict_types));
+                        padded_arguments = [
+                            arguments.first().copied().unwrap_or(missing),
+                            arguments.get(1).copied().unwrap_or(missing),
+                            strict,
+                        ];
+                        &padded_arguments[..]
                     }
                 };
                 let native_call = call_native_helper(module, builder, helper, native_arguments);
@@ -28342,7 +31420,8 @@ fn lower_optimizing_region_instruction(
                 let detail = builder.ins().ireduce(types::I32, detail);
                 let returned = builder.create_block();
                 let classify_control = builder.create_block();
-                let semantic_control = builder.create_block();
+                let throw_control = builder.create_block();
+                let runtime_error_control = builder.create_block();
                 let contract_violation = builder.create_block();
                 let is_return = builder.ins().icmp_imm(
                     IntCC::Equal,
@@ -28358,22 +31437,32 @@ fn lower_optimizing_region_instruction(
                     status,
                     i64::from(crate::JitCallStatus::THROW.0),
                 );
+                builder
+                    .ins()
+                    .brif(is_throw, throw_control, &[], runtime_error_control, &[]);
+                builder.switch_to_block(throw_control);
+                transition.emit_exact_throw(builder, detail, result)?;
+                builder.switch_to_block(runtime_error_control);
                 let is_runtime_error = builder.ins().icmp_imm(
                     IntCC::Equal,
                     status,
                     i64::from(crate::JitCallStatus::RUNTIME_ERROR.0),
                 );
-                let semantic = builder.ins().bor(is_throw, is_runtime_error);
-                builder
-                    .ins()
-                    .brif(semantic, semantic_control, &[], contract_violation, &[]);
-                builder.switch_to_block(semantic_control);
-                transition.emit_control(builder, status, detail, result)?;
+                let publish_runtime_error = builder.create_block();
+                builder.ins().brif(
+                    is_runtime_error,
+                    publish_runtime_error,
+                    &[],
+                    contract_violation,
+                    &[],
+                );
+                builder.switch_to_block(publish_runtime_error);
+                transition.emit_exact_runtime_error(builder, detail, result)?;
                 builder.switch_to_block(contract_violation);
                 let abi_mismatch = builder
                     .ins()
                     .iconst(types::I32, i64::from(crate::JitCallStatus::ABI_MISMATCH.0));
-                builder.ins().return_(&[abi_mismatch]);
+                return_native_or_fragment_control(builder, abi_mismatch, result_out);
                 builder.switch_to_block(returned);
                 define_optimizing_call_result(
                     builder,
@@ -28533,7 +31622,6 @@ fn lower_optimizing_region_instruction(
                     | StablePathBuiltin::Filesize
                     | StablePathBuiltin::Filemtime
                     | StablePathBuiltin::Unlink
-                    | StablePathBuiltin::Mkdir
                     | StablePathBuiltin::Rmdir
                     | StablePathBuiltin::Touch
                     | StablePathBuiltin::Fclose
@@ -28565,6 +31653,22 @@ fn lower_optimizing_region_instruction(
                         arguments.first().copied().unwrap_or(missing),
                         transition,
                     )?,
+                    StablePathBuiltin::MoveUploadedFile => {
+                        let file = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(instruction.span.file.raw()));
+                        let start = builder
+                            .ins()
+                            .iconst(types::I64, i64::from(instruction.span.start));
+                        emit_total_exact_builtin_value!(
+                            module,
+                            builder,
+                            helper,
+                            &[arguments[0], arguments[1], file, start],
+                            transition,
+                            "uploaded-file move has no exact native handler",
+                        )?
+                    }
                     StablePathBuiltin::Basename
                     | StablePathBuiltin::Dirname
                     | StablePathBuiltin::Pathinfo
@@ -28599,15 +31703,17 @@ fn lower_optimizing_region_instruction(
                         arguments.get(2).copied().unwrap_or(missing),
                         transition,
                     )?,
-                    StablePathBuiltin::StreamCopyToStream => emit_total_exact_quaternary!(
-                        module,
-                        builder,
-                        helper,
-                        std::array::from_fn(|index| {
-                            arguments.get(index).copied().unwrap_or(missing)
-                        }),
-                        transition,
-                    )?,
+                    StablePathBuiltin::Mkdir | StablePathBuiltin::StreamCopyToStream => {
+                        emit_total_exact_quaternary!(
+                            module,
+                            builder,
+                            helper,
+                            std::array::from_fn(|index| {
+                                arguments.get(index).copied().unwrap_or(missing)
+                            }),
+                            transition,
+                        )?
+                    }
                     StablePathBuiltin::StreamContextSetOption => emit_total_exact_quaternary!(
                         module,
                         builder,
@@ -28655,12 +31761,578 @@ fn lower_optimizing_region_instruction(
                 )?;
             } else if let Some(builtin) = stable_builtin_output_buffer(&call.target)
                 && builtin.accepts_arity(call.args.len())
+                && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let helper = optimizing_operations.exact_output_buffer[builtin.index()];
+                let result = if builtin == StableOutputBufferBuiltin::PhpInfo {
+                    let argument = if let Some(operand) = direct_builtin_argument(0) {
+                        let argument = lower_region_operand(builder, locals, registers, operand)?;
+                        lower_optimizing_reference_scalar(builder, argument, false, transition)?
+                    } else {
+                        builder.ins().iconst(
+                            types::I64,
+                            crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                        )
+                    };
+                    emit_total_exact_unary!(module, builder, helper, argument, transition,)?
+                } else {
+                    emit_total_exact_zero!(module, builder, helper, transition,)?
+                };
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_print(&call.target)
+                && call.args.len() == 1
+                && let Some(argument) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let argument = lower_region_operand(builder, locals, registers, argument)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_print,
+                    argument,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_print_r(&call.target)
+                && (1..=2).contains(&call.args.len())
+                && let Some(argument) = direct_builtin_argument(0)
+                && (call.args.len() == 1 || direct_builtin_argument(1).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let argument = lower_region_operand(builder, locals, registers, argument)?;
+                let return_output = if let Some(return_output) = direct_builtin_argument(1) {
+                    lower_region_operand(builder, locals, registers, return_output)?
+                } else {
+                    builder.ins().iconst(
+                        types::I64,
+                        crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                    )
+                };
+                let result = emit_fixed_two_argument_control!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_print_r,
+                    argument,
+                    return_output,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_var_dump(&call.target)
+                && !call.args.is_empty()
+                && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let arguments = (0..call.args.len())
+                    .map(|index| {
+                        lower_region_operand(
+                            builder,
+                            locals,
+                            registers,
+                            direct_builtin_argument(index)
+                                .expect("var_dump argument is direct and positional"),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, CraneliftLoweringError>>()?;
+                let frame = lower_optimizing_exact_argument_slice(module, builder, &arguments)?;
+                let result = emit_total_exact_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_var_dump,
+                    &frame,
+                    transition,
+                    "prepared var_dump callsite has no exact variadic handler",
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_var_export(&call.target)
+                && (1..=2).contains(&call.args.len())
+                && let Some(argument) = direct_builtin_argument(0)
+                && (call.args.len() == 1 || direct_builtin_argument(1).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let argument = lower_region_operand(builder, locals, registers, argument)?;
+                let return_output = if let Some(return_output) = direct_builtin_argument(1) {
+                    lower_region_operand(builder, locals, registers, return_output)?
+                } else {
+                    builder.ins().iconst(
+                        types::I64,
+                        crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                    )
+                };
+                let result = emit_fixed_two_argument_control!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_var_export,
+                    argument,
+                    return_output,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_set_charset(&call.target)
+                && call.args.len() == 2
+                && let (Some(connection), Some(charset)) =
+                    (direct_builtin_argument(0), direct_builtin_argument(1))
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let charset = lower_region_operand(builder, locals, registers, charset)?;
+                let result = emit_fixed_two_argument_control!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_set_charset,
+                    connection,
+                    charset,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_select_db(&call.target)
+                && call.args.len() == 2
+                && let (Some(connection), Some(database)) =
+                    (direct_builtin_argument(0), direct_builtin_argument(1))
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let database = lower_region_operand(builder, locals, registers, database)?;
+                let result = emit_fixed_two_argument_control!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_select_db,
+                    connection,
+                    database,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_real_escape_string(&call.target)
+                && call.args.len() == 2
+                && let (Some(connection), Some(value)) =
+                    (direct_builtin_argument(0), direct_builtin_argument(1))
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let value = lower_region_operand(builder, locals, registers, value)?;
+                let result = emit_fixed_two_argument_control!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_real_escape_string,
+                    connection,
+                    value,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if let Some(operation) = stable_builtin_mysqli_connection_status(&call.target)
+                && call.args.len() == 1
+                && let Some(connection) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_connection_status[operation.index()],
+                    connection,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_free_result(&call.target)
+                && call.args.len() == 1
+                && let Some(result) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let result = lower_region_operand(builder, locals, registers, result)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_free_result,
+                    result,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if (stable_builtin_mysqli_more_results(&call.target)
+                || stable_builtin_mysqli_next_result(&call.target))
+                && call.args.len() == 1
+                && let Some(connection) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let helper = if stable_builtin_mysqli_more_results(&call.target) {
+                    optimizing_operations.exact_mysqli_more_results
+                } else {
+                    optimizing_operations.exact_mysqli_next_result
+                };
+                let result =
+                    emit_total_exact_unary!(module, builder, helper, connection, transition,)?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_report(&call.target)
+                && call.args.len() == 1
+                && let Some(flags) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let flags = lower_region_operand(builder, locals, registers, flags)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_report,
+                    flags,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_init(&call.target) && call.args.is_empty() {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let result = emit_total_exact_zero!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_init,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_options(&call.target)
+                && call.args.len() == 3
+                && (0..3).all(|index| direct_builtin_argument(index).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let mut arguments = Vec::with_capacity(3);
+                for index in 0..3 {
+                    arguments.push(lower_region_operand(
+                        builder,
+                        locals,
+                        registers,
+                        direct_builtin_argument(index)
+                            .expect("validated mysqli_options argument has an operand"),
+                    )?);
+                }
+                let result = emit_total_exact_ternary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_options,
+                    arguments[0],
+                    arguments[1],
+                    arguments[2],
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_real_connect(&call.target)
+                && (1..=8).contains(&call.args.len())
+                && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let missing = builder.ins().iconst(
+                    types::I64,
+                    crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                );
+                let mut arguments = [missing; 8];
+                for (index, argument) in arguments.iter_mut().enumerate().take(call.args.len()) {
+                    *argument = lower_region_operand(
+                        builder,
+                        locals,
+                        registers,
+                        direct_builtin_argument(index)
+                            .expect("validated mysqli_real_connect argument has an operand"),
+                    )?;
+                }
+                let result = emit_total_exact_builtin_value!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_real_connect,
+                    &arguments,
+                    transition,
+                    "prepared mysqli_real_connect has no exact native handler",
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_query(&call.target)
+                && call.args.len() == 2
+                && let (Some(connection), Some(sql)) =
+                    (direct_builtin_argument(0), direct_builtin_argument(1))
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let sql = lower_region_operand(builder, locals, registers, sql)?;
+                let result = emit_fixed_two_argument_control!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_query,
+                    connection,
+                    sql,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_fetch_array(&call.target)
+                && (1..=2).contains(&call.args.len())
+                && let Some(result_object) = direct_builtin_argument(0)
+                && (call.args.len() == 1 || direct_builtin_argument(1).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let result_object =
+                    lower_region_operand(builder, locals, registers, result_object)?;
+                let mode = if let Some(mode) = direct_builtin_argument(1) {
+                    lower_region_operand(builder, locals, registers, mode)?
+                } else {
+                    builder.ins().iconst(
+                        types::I64,
+                        crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                    )
+                };
+                let result = emit_fixed_two_argument_control!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_fetch_array,
+                    result_object,
+                    mode,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_fetch_object(&call.target)
+                && (1..=3).contains(&call.args.len())
+                && let Some(result_object) = direct_builtin_argument(0)
+                && (call.args.len() == 1 || direct_builtin_argument(1).is_some())
+                && (call.args.len() <= 2 || direct_builtin_argument(2).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let result_object =
+                    lower_region_operand(builder, locals, registers, result_object)?;
+                let class_name = if let Some(class_name) = direct_builtin_argument(1) {
+                    lower_region_operand(builder, locals, registers, class_name)?
+                } else {
+                    builder.ins().iconst(
+                        types::I64,
+                        crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                    )
+                };
+                let constructor_args = if let Some(constructor_args) = direct_builtin_argument(2) {
+                    lower_region_operand(builder, locals, registers, constructor_args)?
+                } else {
+                    builder.ins().iconst(
+                        types::I64,
+                        crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                    )
+                };
+                let result = emit_total_exact_ternary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_fetch_object,
+                    result_object,
+                    class_name,
+                    constructor_args,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_character_set_name(&call.target)
+                && call.args.len() == 1
+                && let Some(connection) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_character_set_name,
+                    connection,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if let Some(operation) = stable_builtin_mysqli_result_count(&call.target)
+                && call.args.len() == 1
+                && let Some(result_object) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let result_object =
+                    lower_region_operand(builder, locals, registers, result_object)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_result_count[operation.index()],
+                    result_object,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_fetch_field(&call.target)
+                && call.args.len() == 1
+                && let Some(result_object) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let result_object =
+                    lower_region_operand(builder, locals, registers, result_object)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_fetch_field,
+                    result_object,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if let Some(operation) = stable_builtin_mysqli_connect_status(&call.target)
+                && call.args.is_empty()
             {
                 emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
                 let result = emit_total_exact_zero!(
                     module,
                     builder,
-                    optimizing_operations.exact_output_buffer[builtin.index()],
+                    optimizing_operations.exact_mysqli_connect_status[operation.index()],
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_close(&call.target)
+                && call.args.len() == 1
+                && let Some(connection) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_close,
+                    connection,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_mysqli_get_server_info(&call.target)
+                && call.args.len() == 1
+                && let Some(connection) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let connection = lower_region_operand(builder, locals, registers, connection)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_mysqli_get_server_info,
+                    connection,
                     transition,
                 )?;
                 define_optimizing_call_result(
@@ -28734,12 +32406,51 @@ fn lower_optimizing_region_instruction(
                     StableScalarConsumerBuiltin::GetType
                         | StableScalarConsumerBuiltin::GetDebugType
                 ) {
-                    lower_optimizing_type_name(
-                        builder,
-                        operation,
-                        value_flow.operand_fact(constants, operand),
-                        transition,
-                    )?
+                    let fact = value_flow.operand_fact(constants, operand);
+                    if fact.certainty == crate::region_ir::SsaCertainty::Unknown
+                        || matches!(
+                            fact.class,
+                            SsaValueClass::Uninitialized
+                                | SsaValueClass::ReferenceHandle
+                                | SsaValueClass::MixedHandle
+                        )
+                    {
+                        let value = lower_prepared_native_call_operand(
+                            builder, locals, registers, constants, operand, transition,
+                        )?;
+                        let value =
+                            lower_optimizing_reference_scalar(builder, value, false, transition)?;
+                        let debug = builder.ins().iconst(
+                            types::I64,
+                            i64::from(operation == StableScalarConsumerBuiltin::GetDebugType),
+                        );
+                        emit_total_exact_runtime_value!(
+                            module,
+                            builder,
+                            optimizing_operations.type_name,
+                            &[value, debug],
+                            transition,
+                            "dynamic type-name query has no exact native handler",
+                        )?
+                    } else if operation == StableScalarConsumerBuiltin::GetDebugType
+                        && fact.class == SsaValueClass::ObjectHandle
+                    {
+                        let object = lower_prepared_native_call_operand(
+                            builder, locals, registers, constants, operand, transition,
+                        )?;
+                        let object =
+                            lower_optimizing_reference_scalar(builder, object, false, transition)?;
+                        emit_total_exact_runtime_value!(
+                            module,
+                            builder,
+                            optimizing_operations.object_class_name,
+                            &[object],
+                            transition,
+                            "dynamic get_debug_type object has no exact class-name handler",
+                        )?
+                    } else {
+                        lower_optimizing_type_name(builder, operation, fact, transition)?
+                    }
                 } else {
                     let encoded = lower_prepared_native_call_operand(
                         builder, locals, registers, constants, operand, transition,
@@ -28939,6 +32650,59 @@ fn lower_optimizing_region_instruction(
                     call.result,
                     result,
                 )?;
+            } else if stable_builtin_error_log(&call.target)
+                && (1..=4).contains(&call.args.len())
+                && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let missing = builder.ins().iconst(
+                    types::I64,
+                    crate::jit_encode_constant(crate::JIT_VALUE_ARGUMENT_MISSING),
+                );
+                let mut arguments = [missing; 4];
+                for (index, argument) in arguments.iter_mut().enumerate().take(call.args.len()) {
+                    *argument = lower_region_operand(
+                        builder,
+                        locals,
+                        registers,
+                        direct_builtin_argument(index)
+                            .expect("validated error_log argument has an operand"),
+                    )?;
+                }
+                let result = emit_total_exact_quaternary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_error_log,
+                    arguments,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_sleep(&call.target)
+                && call.args.len() == 1
+                && let Some(seconds) = direct_builtin_argument(0)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let seconds = lower_region_operand(builder, locals, registers, seconds)?;
+                let result = emit_total_exact_unary!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_sleep,
+                    seconds,
+                    transition,
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
             } else if stable_builtin_error_reporting(&call.target)
                 && call.args.len() <= 1
                 && (call.args.is_empty() || direct_builtin_argument(0).is_some())
@@ -28970,8 +32734,33 @@ fn lower_optimizing_region_instruction(
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
                 let value = lower_region_operand(builder, locals, registers, operand)?;
-                let value = lower_optimizing_reference_scalar(builder, value, false, transition)?;
-                let result = lower_optimizing_length(builder, value, transition)?;
+                // `strlen()` counts the bytes of the argument's *string
+                // coercion*, so the operand is not necessarily a string
+                // handle. Reading the value arena slot directly would index it
+                // with a non-handle payload for every scalar PHP would coerce.
+                // A proven handle stays a direct descriptor read; anything else
+                // goes through the same exact typed coercion leaves `echo`
+                // uses, which is what preserves PHP's semantics here.
+                let coerced = lower_total_native_scalar_string_coercion(
+                    module,
+                    builder,
+                    value,
+                    lowering_operand_fact(value_flow, constants, operand),
+                    optimizing_operations.float_to_string,
+                    optimizing_operations.string_cast,
+                    transition,
+                )?;
+                let (_, result, _) = lower_native_string_key_descriptor(
+                    builder,
+                    coerced.value,
+                    transition.deopt_out,
+                );
+                lower_optimizing_commit_owned_value_if(
+                    builder,
+                    coerced.value,
+                    coerced.temporary,
+                    transition,
+                );
                 define_optimizing_call_result(
                     builder,
                     register_variables,
@@ -29261,7 +33050,8 @@ fn lower_optimizing_region_instruction(
                     result,
                 )?;
             } else if stable_builtin_str_replace(&call.target)
-                && call.args.len() == 3
+                && matches!(call.args.len(), 3 | 4)
+                && (call.args.len() == 3 || call.args[3].by_ref_local.is_some())
                 && let (Some(search), Some(replacement), Some(subject)) = (
                     direct_builtin_argument(0),
                     direct_builtin_argument(1),
@@ -29277,11 +33067,60 @@ fn lower_optimizing_region_instruction(
                     lower_optimizing_reference_scalar(builder, replacement, false, transition)?;
                 let subject =
                     lower_optimizing_reference_scalar(builder, subject, false, transition)?;
-                let result = lower_optimizing_str_replace(
+                let (result, replacement_count) = lower_optimizing_str_replace(
                     builder,
                     search,
                     replacement,
                     subject,
+                    transition,
+                )?;
+                if let Some(count_local) =
+                    call.args.get(3).and_then(|argument| argument.by_ref_local)
+                {
+                    let count = lower_optimizing_admit_integer_result(
+                        builder,
+                        replacement_count,
+                        transition,
+                    )?;
+                    let current = use_local_variable(builder, locals, count_local)?;
+                    let stored = lower_optimizing_total_request_reference_store(
+                        builder, current, count, false, transition,
+                    );
+                    define_local_variable(builder, locals, count_local, stored)?;
+                }
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_explode(&call.target)
+                && matches!(call.args.len(), 2 | 3)
+                && let (Some(delimiter), Some(input)) =
+                    (direct_builtin_argument(0), direct_builtin_argument(1))
+                && let Some(piece_limit) = (match call.args.len() {
+                    2 => Some(None),
+                    3 => direct_builtin_argument(2)
+                        .and_then(|limit| {
+                            prepared_call_integer_constant(constants, value_flow, limit)
+                        })
+                        .filter(|limit| *limit >= 0)
+                        .map(Some),
+                    _ => None,
+                })
+            {
+                emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+                let delimiter = lower_region_operand(builder, locals, registers, delimiter)?;
+                let input = lower_region_operand(builder, locals, registers, input)?;
+                let delimiter =
+                    lower_optimizing_reference_scalar(builder, delimiter, false, transition)?;
+                let input = lower_optimizing_reference_scalar(builder, input, false, transition)?;
+                let result = lower_optimizing_explode(
+                    builder,
+                    delimiter,
+                    input,
+                    piece_limit.map(|limit| limit.max(1) as u64),
                     transition,
                 )?;
                 define_optimizing_call_result(
@@ -29291,35 +33130,29 @@ fn lower_optimizing_region_instruction(
                     call.result,
                     result,
                 )?;
-            } else if stable_builtin_explode(&call.target)
-                && call.args.len() == 2
-                && let (Some(delimiter), Some(input)) =
-                    (direct_builtin_argument(0), direct_builtin_argument(1))
-            {
-                emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-                let delimiter = lower_region_operand(builder, locals, registers, delimiter)?;
-                let input = lower_region_operand(builder, locals, registers, input)?;
-                let delimiter =
-                    lower_optimizing_reference_scalar(builder, delimiter, false, transition)?;
-                let input = lower_optimizing_reference_scalar(builder, input, false, transition)?;
-                let result = lower_optimizing_explode(builder, delimiter, input, transition)?;
-                define_optimizing_call_result(
-                    builder,
-                    register_variables,
-                    registers,
-                    call.result,
-                    result,
-                )?;
             } else if stable_builtin_implode(&call.target)
-                && call.args.len() == 2
-                && let (Some(separator), Some(array)) =
-                    (direct_builtin_argument(0), direct_builtin_argument(1))
+                && (1..=2).contains(&call.args.len())
+                && (0..call.args.len()).all(|index| direct_builtin_argument(index).is_some())
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-                let separator = lower_region_operand(builder, locals, registers, separator)?;
+                let (separator, array) = if call.args.len() == 1 {
+                    let array = direct_builtin_argument(0)
+                        .expect("one-argument implode retains its array operand");
+                    (None, array)
+                } else {
+                    let separator = direct_builtin_argument(0)
+                        .expect("two-argument implode retains its separator operand");
+                    let separator = lower_region_operand(builder, locals, registers, separator)?;
+                    let array = direct_builtin_argument(1)
+                        .expect("two-argument implode retains its array operand");
+                    (Some(separator), array)
+                };
                 let array = lower_region_operand(builder, locals, registers, array)?;
-                let separator =
-                    lower_optimizing_reference_scalar(builder, separator, false, transition)?;
+                let separator = separator
+                    .map(|separator| {
+                        lower_optimizing_reference_scalar(builder, separator, false, transition)
+                    })
+                    .transpose()?;
                 let array = lower_optimizing_reference_scalar(builder, array, false, transition)?;
                 let result = lower_optimizing_implode(builder, separator, array, transition)?;
                 define_optimizing_call_result(
@@ -29514,7 +33347,12 @@ fn lower_optimizing_region_instruction(
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
                 let array = lower_region_operand(builder, locals, registers, array)?;
                 let array = if total_native_array_call {
-                    array
+                    lower_optimizing_admitted_reference_scalar(
+                        builder,
+                        array,
+                        transition.deopt_out,
+                        transition.reference_payload_proof,
+                    )
                 } else {
                     lower_optimizing_reference_scalar(builder, array, false, transition)?
                 };
@@ -29525,6 +33363,40 @@ fn lower_optimizing_region_instruction(
                     total_native_array_call,
                     transition,
                 )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if stable_builtin_array_change_key_case(&call.target)
+                && (1..=2).contains(&call.args.len())
+                && let Some(array) = direct_builtin_argument(0)
+                && (call.args.len() == 1 || direct_builtin_argument(1).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+                let array = lower_region_operand(builder, locals, registers, array)?;
+                let array = if total_native_array_call {
+                    lower_optimizing_admitted_reference_scalar(
+                        builder,
+                        array,
+                        transition.deopt_out,
+                        transition.reference_payload_proof,
+                    )
+                } else {
+                    lower_optimizing_reference_scalar(builder, array, false, transition)?
+                };
+                let uppercase = if let Some(case) = direct_builtin_argument(1) {
+                    let case = lower_region_operand(builder, locals, registers, case)?;
+                    let case =
+                        lower_optimizing_require_immediate_integer(builder, case, transition)?;
+                    builder.ins().icmp_imm(IntCC::NotEqual, case, 0)
+                } else {
+                    builder.ins().iconst(types::I8, 0)
+                };
+                let result =
+                    lower_optimizing_array_change_key_case(builder, array, uppercase, transition)?;
                 define_optimizing_call_result(
                     builder,
                     register_variables,
@@ -29744,7 +33616,12 @@ fn lower_optimizing_region_instruction(
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
                 let array = lower_region_operand(builder, locals, registers, array)?;
                 let array = if total_native_array_call {
-                    array
+                    lower_optimizing_admitted_reference_scalar(
+                        builder,
+                        array,
+                        transition.deopt_out,
+                        transition.reference_payload_proof,
+                    )
                 } else {
                     lower_optimizing_reference_scalar(builder, array, false, transition)?
                 };
@@ -29770,7 +33647,12 @@ fn lower_optimizing_region_instruction(
                     if let Some(array) = direct_builtin_argument(0) {
                         let array = lower_region_operand(builder, locals, registers, array)?;
                         let array = if total_native_array_call {
-                            array
+                            lower_optimizing_admitted_reference_scalar(
+                                builder,
+                                array,
+                                transition.deopt_out,
+                                transition.reference_payload_proof,
+                            )
                         } else {
                             lower_optimizing_reference_scalar(builder, array, false, transition)?
                         };
@@ -29913,7 +33795,12 @@ fn lower_optimizing_region_instruction(
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
                 let array = lower_region_operand(builder, locals, registers, array)?;
                 let array = if total_native_array_call {
-                    array
+                    lower_optimizing_admitted_reference_scalar(
+                        builder,
+                        array,
+                        transition.deopt_out,
+                        transition.reference_payload_proof,
+                    )
                 } else {
                     lower_optimizing_reference_scalar(builder, array, false, transition)?
                 };
@@ -29935,14 +33822,39 @@ fn lower_optimizing_region_instruction(
                     (direct_builtin_argument(0), direct_builtin_argument(1))
             {
                 emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
-                let key = lower_array_key_operand(builder, locals, registers, constants, key)?;
-                let array = lower_region_operand(builder, locals, registers, array)?;
-                let (found, _) = lower_total_native_array_probe_path(
-                    builder,
-                    array,
-                    &[key],
-                    transition.deopt_out,
-                );
+                let found = if instruction.native_global_name.is_some() {
+                    let reference = lower_trusted_global_reference(
+                        builder,
+                        function,
+                        instruction,
+                        transition.deopt_out,
+                    )?;
+                    let slot =
+                        lower_optimizing_slot_address(builder, reference, transition.deopt_out);
+                    let payload = builder.ins().load(
+                        types::I64,
+                        MemFlagsData::new(),
+                        slot,
+                        std::mem::offset_of!(crate::JitNativeValueSlot, payload) as i32,
+                    );
+                    let uninitialized = builder.ins().iconst(
+                        types::I64,
+                        crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
+                    );
+                    builder.ins().icmp(IntCC::NotEqual, payload, uninitialized)
+                } else {
+                    let key = lower_array_key_operand(builder, locals, registers, constants, key)?;
+                    let array = lower_region_operand(builder, locals, registers, array)?;
+                    let (found, _) = lower_total_native_array_probe_path(
+                        module,
+                        builder,
+                        optimizing_operations.array_lookup,
+                        array,
+                        &[key],
+                        transition.deopt_out,
+                    );
+                    found
+                };
                 let result = encode_native_bool(builder, found);
                 define_optimizing_call_result(
                     builder,
@@ -29951,6 +33863,775 @@ fn lower_optimizing_region_instruction(
                     call.result,
                     result,
                 )?;
+            } else if stable_internal_throwable_constructor(&call.target)
+                && !call.returns_by_reference
+                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
+                && call.argument_operand_offset == 0
+                && call.args.len() <= 3
+                && call.operands.len() == call.args.len()
+                && call.operands.iter().all(Option::is_some)
+                && call
+                    .args
+                    .iter()
+                    .all(|argument| argument.name.is_none() && !argument.unpack)
+                && call.operands.first().is_none_or(|operand| {
+                    operand.is_some_and(|operand| {
+                        matches!(
+                            lowering_operand_fact(value_flow, constants, operand).class,
+                            SsaValueClass::StringHandle | SsaValueClass::Null
+                        )
+                    })
+                })
+                && call.operands.get(1).is_none_or(|operand| {
+                    operand.is_some_and(|operand| {
+                        lowering_operand_fact(value_flow, constants, operand).class
+                            == SsaValueClass::Int
+                    })
+                })
+                && call.operands.get(2).is_none_or(|operand| {
+                    operand.is_some_and(|operand| {
+                        matches!(
+                            lowering_operand_fact(value_flow, constants, operand).class,
+                            SsaValueClass::ObjectHandle
+                                | SsaValueClass::MixedHandle
+                                | SsaValueClass::Null
+                        )
+                    })
+                })
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let null = builder
+                    .ins()
+                    .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
+                let zero = builder.ins().iconst(types::I64, 0);
+                let mut arguments = Vec::with_capacity(call.operands.len());
+                for operand in call.operands.iter().copied().flatten() {
+                    let value = lower_prepared_native_call_operand(
+                        builder, locals, registers, constants, operand, transition,
+                    )?;
+                    arguments.push(lower_optimizing_reference_scalar(
+                        builder, value, false, transition,
+                    )?);
+                }
+                let message = arguments.first().copied().unwrap_or(null);
+                let code = arguments.get(1).copied().unwrap_or(zero);
+                let previous = arguments.get(2).copied().unwrap_or(null);
+                let prepared = lower_optimizing_prepared_exception_pointer(
+                    builder,
+                    function,
+                    instruction.continuation_id,
+                    transition.deopt_out,
+                );
+                let object = emit_total_exact_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.prepared_exception_new,
+                    &[prepared, message, code, previous],
+                    transition,
+                    "prepared internal Throwable constructor was not declared",
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    object,
+                )?;
+            } else if stable_builtin_call_user_func(&call.target)
+                && !call.returns_by_reference
+                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
+                && call.argument_operand_offset == 0
+                && !call.args.is_empty()
+                && call.operands.len() == call.args.len()
+                && call.operands.iter().all(Option::is_some)
+                && call
+                    .args
+                    .iter()
+                    .all(|argument| argument.name.is_none() && !argument.unpack)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                call_user_func_lowering::lower_call_user_func(
+                    module,
+                    builder,
+                    register_variables,
+                    locals,
+                    registers,
+                    call,
+                    instruction,
+                    constants,
+                    value_flow,
+                    runtime,
+                    result_out,
+                    deopt_out,
+                    function,
+                    optimizing_operations,
+                    transition,
+                )?;
+            } else if matches!(
+                &call.target,
+                RegionCallTarget::Constructor { .. } | RegionCallTarget::DynamicConstructor { .. }
+            ) && !call.returns_by_reference
+                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
+                && call.argument_operand_offset
+                    == usize::from(matches!(
+                        &call.target,
+                        RegionCallTarget::DynamicConstructor { .. }
+                    ))
+                && call.operands.len()
+                    == call.args.len().saturating_add(call.argument_operand_offset)
+                && call.operands.iter().all(Option::is_some)
+                && call
+                    .args
+                    .iter()
+                    .all(|argument| argument.name.is_none() && !argument.unpack)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let (class, owns_class) = match &call.target {
+                    RegionCallTarget::Constructor { class_name, .. } => (
+                        lower_optimizing_static_string(
+                            builder,
+                            class_name.trim_start_matches('\\').as_bytes(),
+                            transition,
+                        )?,
+                        true,
+                    ),
+                    RegionCallTarget::DynamicConstructor { .. } => {
+                        let operand = call.operands[0]
+                            .expect("admitted dynamic constructor has a class-name operand");
+                        (
+                            lower_prepared_native_call_operand(
+                                builder, locals, registers, constants, operand, transition,
+                            )?,
+                            false,
+                        )
+                    }
+                    _ => unreachable!("filtered constructor target"),
+                };
+                let mut call_cleanup = lower_optimizing_prevalidate_consumed_dynamic_call_operands(
+                    builder,
+                    call,
+                    instruction,
+                    registers,
+                    value_flow,
+                    transition,
+                )?;
+                if owns_class {
+                    call_cleanup.push(class);
+                }
+                let plan = lower_optimizing_resolve_user_callback_action(
+                    module,
+                    builder,
+                    optimizing_operations.acquire_class_plan,
+                    &[class],
+                    optimizing_operations.acquire_callable,
+                    class,
+                    &call_cleanup,
+                    runtime,
+                    result_out,
+                    deopt_out,
+                    instruction,
+                    call.caller_strict_types,
+                    transition,
+                )?;
+                let prepared = builder.ins().load(
+                    types::I64,
+                    MemFlagsData::new(),
+                    plan,
+                    std::mem::offset_of!(crate::JitNativePreparedClassPlan, prepared) as i32,
+                );
+                let object = emit_total_exact_owned_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.prepared_object_new,
+                    &[prepared],
+                    &call_cleanup,
+                    transition,
+                    "generated constructor has no exact object allocator",
+                )?;
+                let flags = builder.ins().load(
+                    types::I32,
+                    MemFlagsData::new(),
+                    plan,
+                    std::mem::offset_of!(crate::JitNativePreparedClassPlan, flags) as i32,
+                );
+                let has_constructor = builder.ins().band_imm(
+                    flags,
+                    i64::from(crate::JIT_NATIVE_PREPARED_CLASS_HAS_CONSTRUCTOR),
+                );
+                let has_constructor = builder.ins().icmp_imm(IntCC::NotEqual, has_constructor, 0);
+                let invoke_constructor = builder.create_block();
+                let no_constructor = builder.create_block();
+                let constructed = builder.create_block();
+                builder.append_block_param(constructed, types::I64);
+                builder.ins().brif(
+                    has_constructor,
+                    invoke_constructor,
+                    &[],
+                    no_constructor,
+                    &[],
+                );
+
+                builder.switch_to_block(no_constructor);
+                for owner in call_cleanup.iter().copied() {
+                    lower_optimizing_commit_owned_value(builder, owner, transition);
+                }
+                builder.ins().jump(constructed, &[object.into()]);
+
+                builder.switch_to_block(invoke_constructor);
+                let (method, method_length) =
+                    lower_optimizing_static_bytes(module, builder, b"__construct")?;
+                let mut constructor_resolution_cleanup = call_cleanup.clone();
+                constructor_resolution_cleanup.push(object);
+                let caller_function = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(transition.function.raw()));
+                let callable = lower_optimizing_resolve_user_callback_action(
+                    module,
+                    builder,
+                    optimizing_operations.acquire_method_callable,
+                    &[object, method, method_length, caller_function],
+                    optimizing_operations.acquire_callable,
+                    object,
+                    &constructor_resolution_cleanup,
+                    runtime,
+                    result_out,
+                    deopt_out,
+                    instruction,
+                    call.caller_strict_types,
+                    transition,
+                )?;
+                let mut callable_cleanup = call_cleanup.clone();
+                callable_cleanup.extend([callable, object]);
+                let prepared_callable = lower_optimizing_prepare_dynamic_callable(
+                    builder,
+                    callable,
+                    OptimizingDynamicCallableArity::Fixed(call.args.len()),
+                    call.caller_strict_types,
+                    false,
+                    false,
+                    true,
+                    &callable_cleanup,
+                    transition,
+                )?;
+                let mut arguments = Vec::with_capacity(call.args.len());
+                for (argument_index, operand) in call
+                    .operands
+                    .iter()
+                    .skip(call.argument_operand_offset)
+                    .copied()
+                    .flatten()
+                    .enumerate()
+                {
+                    let argument = if let Some(local) = call
+                        .args
+                        .get(argument_index)
+                        .and_then(|argument| argument.by_ref_local)
+                    {
+                        use_local_variable(builder, locals, local)?
+                    } else {
+                        lower_prepared_native_call_operand(
+                            builder, locals, registers, constants, operand, transition,
+                        )?
+                    };
+                    arguments.push(argument);
+                }
+                let mut cleanup = call_cleanup.clone();
+                cleanup.push(callable);
+                let mut propagation_cleanup = cleanup.clone();
+                propagation_cleanup.push(object);
+                let (packed, packed_length) = lower_optimizing_pack_dynamic_fixed_arguments(
+                    builder,
+                    prepared_callable,
+                    &arguments,
+                    transition,
+                );
+                let constructor_result = lower_optimizing_invoke_packed_dynamic(
+                    module,
+                    builder,
+                    prepared_callable.callback,
+                    packed,
+                    packed_length,
+                    &propagation_cleanup,
+                    None,
+                    runtime,
+                    result_out,
+                    deopt_out,
+                    instruction,
+                    transition,
+                )?;
+                lower_optimizing_commit_owned_value(builder, constructor_result, transition);
+                for owner in cleanup {
+                    lower_optimizing_commit_owned_value(builder, owner, transition);
+                }
+                builder.ins().jump(constructed, &[object.into()]);
+
+                builder.switch_to_block(constructed);
+                let object = builder.block_params(constructed)[0];
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    object,
+                )?;
+            } else if let RegionCallTarget::Function {
+                name,
+                function: None,
+                ..
+            } = &call.target
+                && !direct_builtin
+                && !call.returns_by_reference
+                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
+                && call.argument_operand_offset == 0
+                && call.operands.len() == call.args.len()
+                && call.operands.iter().all(Option::is_some)
+                && call.args.iter().all(|argument| !argument.unpack)
+                && (call.args.iter().all(|argument| argument.name.is_none())
+                    || unresolved_function_link_index(call, external_function_signatures).is_some())
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let name_value = lower_optimizing_static_string(
+                    builder,
+                    name.trim_start_matches('\\').as_bytes(),
+                    transition,
+                )?;
+                let callable = emit_total_exact_owned_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.acquire_callable,
+                    &[name_value],
+                    &[name_value],
+                    transition,
+                    "generated function call has no exact callable resolver",
+                )?;
+                let prepared = lower_optimizing_prepare_dynamic_callable(
+                    builder,
+                    callable,
+                    OptimizingDynamicCallableArity::Fixed(call.args.len()),
+                    call.caller_strict_types,
+                    false,
+                    false,
+                    true,
+                    &[name_value, callable],
+                    transition,
+                )?;
+                let mut arguments = Vec::with_capacity(call.args.len());
+                for (argument_index, operand) in call.operands.iter().copied().flatten().enumerate()
+                {
+                    let argument = if let Some(local) = call
+                        .args
+                        .get(argument_index)
+                        .and_then(|argument| argument.by_ref_local)
+                    {
+                        use_local_variable(builder, locals, local)?
+                    } else {
+                        lower_prepared_native_call_operand(
+                            builder, locals, registers, constants, operand, transition,
+                        )?
+                    };
+                    arguments.push(argument);
+                }
+                if call.args.iter().any(|argument| argument.name.is_some()) {
+                    let pointer_type = builder.func.dfg.value_type(transition.deopt_out);
+                    let binding_plan = builder.ins().load(
+                        pointer_type,
+                        MemFlagsData::new(),
+                        prepared.view,
+                        std::mem::offset_of!(crate::JitNativePreparedCallableView, binding_plan)
+                            as i32,
+                    );
+                    arguments = lower_optimizing_bind_dynamic_named_arguments(
+                        builder,
+                        binding_plan,
+                        &call.args,
+                        &arguments,
+                        &[name_value, callable],
+                        transition,
+                    )?;
+                }
+                let mut cleanup = lower_optimizing_prevalidate_consumed_dynamic_call_operands(
+                    builder,
+                    call,
+                    instruction,
+                    registers,
+                    value_flow,
+                    transition,
+                )?;
+                cleanup.extend([name_value, callable]);
+                let (packed, packed_length) = lower_optimizing_pack_dynamic_arguments(
+                    builder, prepared, &arguments, transition,
+                )?;
+                let result = lower_optimizing_invoke_packed_dynamic(
+                    module,
+                    builder,
+                    prepared.callback,
+                    packed,
+                    packed_length,
+                    &cleanup,
+                    None,
+                    runtime,
+                    result_out,
+                    deopt_out,
+                    instruction,
+                    transition,
+                )?;
+                for owner in cleanup {
+                    lower_optimizing_commit_owned_value(builder, owner, transition);
+                }
+                match call.result {
+                    RegionCallResult::Register(destination) => define_region_register(
+                        builder,
+                        register_variables,
+                        registers,
+                        destination,
+                        result,
+                    )?,
+                    RegionCallResult::Discard => {
+                        lower_optimizing_commit_owned_value(builder, result, transition);
+                    }
+                    RegionCallResult::ReferenceLocal(_) => unreachable!("filtered above"),
+                }
+            } else if let Some(method) = stable_throwable_method(&call.target)
+                && total_throwable_method_call
+                && call.args.is_empty()
+                && call.argument_operand_offset == 1
+                && let Some(receiver_operand) = call.operands.first().copied().flatten()
+            {
+                emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+                let receiver = lower_prepared_native_call_operand(
+                    builder,
+                    locals,
+                    registers,
+                    constants,
+                    receiver_operand,
+                    transition,
+                )?;
+                let receiver =
+                    lower_optimizing_reference_scalar(builder, receiver, false, transition)?;
+                let result = emit_total_exact_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.exact_throwable_method[method.index()],
+                    &[receiver],
+                    transition,
+                    "proven internal Throwable accessor has no exact native handler",
+                )?;
+                define_optimizing_call_result(
+                    builder,
+                    register_variables,
+                    registers,
+                    call.result,
+                    result,
+                )?;
+            } else if let RegionCallTarget::Method { method, .. } = &call.target
+                && match call.result {
+                    RegionCallResult::ReferenceLocal(destination) => {
+                        call.returns_by_reference
+                            && matches!(
+                                value_flow.local_storage(destination),
+                                crate::region_ir::LocalStorageClass::MemoryReference
+                                    | crate::region_ir::LocalStorageClass::RequestGlobal
+                            )
+                    }
+                    RegionCallResult::Register(_) | RegionCallResult::Discard => {
+                        !call.returns_by_reference
+                    }
+                }
+                && call.argument_operand_offset == 1
+                && call.operands.len() == call.args.len().saturating_add(1)
+                && call.operands.iter().all(Option::is_some)
+                && call
+                    .args
+                    .iter()
+                    .all(|argument| argument.name.is_none() && !argument.unpack)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let receiver_operand =
+                    call.operands[0].expect("admitted method call has a receiver operand");
+                let receiver = lower_prepared_native_call_operand(
+                    builder,
+                    locals,
+                    registers,
+                    constants,
+                    receiver_operand,
+                    transition,
+                )?;
+                let receiver =
+                    lower_optimizing_reference_scalar(builder, receiver, false, transition)?;
+                let (method_bytes, method_length) =
+                    lower_optimizing_static_bytes(module, builder, method.as_bytes())?;
+                let caller_function = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(transition.function.raw()));
+                let callable = lower_optimizing_resolve_user_callback_action(
+                    module,
+                    builder,
+                    optimizing_operations.acquire_method_callable,
+                    &[receiver, method_bytes, method_length, caller_function],
+                    optimizing_operations.acquire_callable,
+                    receiver,
+                    &[],
+                    runtime,
+                    result_out,
+                    deopt_out,
+                    instruction,
+                    call.caller_strict_types,
+                    transition,
+                )?;
+                let prepared = if call.returns_by_reference {
+                    lower_optimizing_prepare_dynamic_reference_callable(
+                        builder,
+                        callable,
+                        OptimizingDynamicCallableArity::Fixed(call.args.len()),
+                        call.caller_strict_types,
+                        true,
+                        &[callable],
+                        transition,
+                    )?
+                } else {
+                    lower_optimizing_prepare_dynamic_callable(
+                        builder,
+                        callable,
+                        OptimizingDynamicCallableArity::Fixed(call.args.len()),
+                        call.caller_strict_types,
+                        false,
+                        false,
+                        true,
+                        &[callable],
+                        transition,
+                    )?
+                };
+                let mut arguments = Vec::with_capacity(call.args.len());
+                for (argument_index, operand) in
+                    call.operands.iter().skip(1).copied().flatten().enumerate()
+                {
+                    let argument = if let Some(local) = call
+                        .args
+                        .get(argument_index)
+                        .and_then(|argument| argument.by_ref_local)
+                    {
+                        use_local_variable(builder, locals, local)?
+                    } else {
+                        lower_prepared_native_call_operand(
+                            builder, locals, registers, constants, operand, transition,
+                        )?
+                    };
+                    arguments.push(argument);
+                }
+                let mut cleanup = lower_optimizing_prevalidate_consumed_dynamic_call_operands(
+                    builder,
+                    call,
+                    instruction,
+                    registers,
+                    value_flow,
+                    transition,
+                )?;
+                cleanup.push(callable);
+                let (packed, packed_length) = lower_optimizing_pack_dynamic_method_arguments(
+                    builder,
+                    prepared,
+                    method.as_bytes(),
+                    &arguments,
+                    transition,
+                )?;
+                let replaced_reference_destination =
+                    if let RegionCallResult::ReferenceLocal(destination) = call.result {
+                        (value_flow.local_storage(destination)
+                            == crate::region_ir::LocalStorageClass::MemoryReference
+                            && instruction.live_locals.contains(&destination)
+                            && value_release_required(value_flow.local_fact(destination)))
+                        .then(|| use_local_variable(builder, locals, destination))
+                        .transpose()?
+                    } else {
+                        None
+                    };
+                let result = if call.returns_by_reference {
+                    lower_optimizing_invoke_packed_dynamic_reference(
+                        module,
+                        builder,
+                        prepared.callback,
+                        packed,
+                        packed_length,
+                        &cleanup,
+                        runtime,
+                        result_out,
+                        deopt_out,
+                        instruction,
+                        transition,
+                    )?
+                } else {
+                    lower_optimizing_invoke_packed_dynamic(
+                        module,
+                        builder,
+                        prepared.callback,
+                        packed,
+                        packed_length,
+                        &cleanup,
+                        None,
+                        runtime,
+                        result_out,
+                        deopt_out,
+                        instruction,
+                        transition,
+                    )?
+                };
+                for owner in cleanup {
+                    lower_optimizing_commit_owned_value(builder, owner, transition);
+                }
+                if let Some(previous) = replaced_reference_destination {
+                    lower_optimizing_release(builder, previous, transition)?;
+                }
+                match call.result {
+                    RegionCallResult::Register(destination) => define_region_register(
+                        builder,
+                        register_variables,
+                        registers,
+                        destination,
+                        result,
+                    )?,
+                    RegionCallResult::Discard => {
+                        lower_optimizing_commit_owned_value(builder, result, transition);
+                    }
+                    RegionCallResult::ReferenceLocal(destination) => {
+                        if value_flow.local_storage(destination)
+                            == crate::region_ir::LocalStorageClass::RequestGlobal
+                        {
+                            let slot = lower_trusted_request_local_slot(
+                                builder,
+                                deopt_out,
+                                function,
+                                destination,
+                            );
+                            let previous = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::new(),
+                                slot,
+                                std::mem::offset_of!(crate::JitNativeRequestLocalSlot, encoded,)
+                                    as i32,
+                            );
+                            builder.ins().store(
+                                MemFlagsData::new(),
+                                result,
+                                slot,
+                                std::mem::offset_of!(crate::JitNativeRequestLocalSlot, encoded,)
+                                    as i32,
+                            );
+                            lower_mark_native_roots_dirty(builder, deopt_out);
+                            lower_optimizing_release(builder, previous, transition)?;
+                        }
+                        define_local_variable(builder, locals, destination, result)?;
+                    }
+                }
+            } else if let RegionCallTarget::StaticMethod { class_name, method } = &call.target
+                && !call.returns_by_reference
+                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
+                && call.argument_operand_offset == 0
+                && call.operands.len() == call.args.len()
+                && call.operands.iter().all(Option::is_some)
+                && call
+                    .args
+                    .iter()
+                    .all(|argument| argument.name.is_none() && !argument.unpack)
+            {
+                emitted_class = crate::JitProductionLoweringClass::CompiledNativeCall;
+                let class = lower_optimizing_static_string(
+                    builder,
+                    class_name.trim_start_matches('\\').as_bytes(),
+                    transition,
+                )?;
+                let (method_bytes, method_length) =
+                    lower_optimizing_static_bytes(module, builder, method.as_bytes())?;
+                let caller_function = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(transition.function.raw()));
+                let callable = lower_optimizing_resolve_user_callback_action(
+                    module,
+                    builder,
+                    optimizing_operations.acquire_method_callable,
+                    &[class, method_bytes, method_length, caller_function],
+                    optimizing_operations.acquire_callable,
+                    class,
+                    &[class],
+                    runtime,
+                    result_out,
+                    deopt_out,
+                    instruction,
+                    call.caller_strict_types,
+                    transition,
+                )?;
+                let prepared = lower_optimizing_prepare_dynamic_callable(
+                    builder,
+                    callable,
+                    OptimizingDynamicCallableArity::Fixed(call.args.len()),
+                    call.caller_strict_types,
+                    false,
+                    false,
+                    true,
+                    &[class, callable],
+                    transition,
+                )?;
+                let mut arguments = Vec::with_capacity(call.args.len());
+                for (argument_index, operand) in call.operands.iter().copied().flatten().enumerate()
+                {
+                    let argument = if let Some(local) = call
+                        .args
+                        .get(argument_index)
+                        .and_then(|argument| argument.by_ref_local)
+                    {
+                        use_local_variable(builder, locals, local)?
+                    } else {
+                        lower_prepared_native_call_operand(
+                            builder, locals, registers, constants, operand, transition,
+                        )?
+                    };
+                    arguments.push(argument);
+                }
+                let mut cleanup = lower_optimizing_prevalidate_consumed_dynamic_call_operands(
+                    builder,
+                    call,
+                    instruction,
+                    registers,
+                    value_flow,
+                    transition,
+                )?;
+                cleanup.extend([class, callable]);
+                let (packed, packed_length) = lower_optimizing_pack_dynamic_method_arguments(
+                    builder,
+                    prepared,
+                    method.as_bytes(),
+                    &arguments,
+                    transition,
+                )?;
+                let result = lower_optimizing_invoke_packed_dynamic(
+                    module,
+                    builder,
+                    prepared.callback,
+                    packed,
+                    packed_length,
+                    &cleanup,
+                    None,
+                    runtime,
+                    result_out,
+                    deopt_out,
+                    instruction,
+                    transition,
+                )?;
+                for owner in cleanup {
+                    lower_optimizing_commit_owned_value(builder, owner, transition);
+                }
+                match call.result {
+                    RegionCallResult::Register(destination) => define_region_register(
+                        builder,
+                        register_variables,
+                        registers,
+                        destination,
+                        result,
+                    )?,
+                    RegionCallResult::Discard => {
+                        lower_optimizing_commit_owned_value(builder, result, transition);
+                    }
+                    RegionCallResult::ReferenceLocal(_) => unreachable!("filtered above"),
+                }
             } else if matches!(
                 &call.target,
                 RegionCallTarget::Callable { .. }
@@ -29988,18 +34669,27 @@ fn lower_optimizing_region_instruction(
                 let array = lower_optimizing_reference_scalar(builder, array, false, transition)?;
                 let (_, length, entries) =
                     lower_optimizing_direct_array_descriptor(builder, array, transition)?;
+                let callable_owner = emit_total_exact_owned_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.acquire_callable,
+                    &[callable],
+                    &[],
+                    transition,
+                    "exact native callable-acquisition handler was not declared",
+                )?;
                 let prepared = lower_optimizing_prepare_dynamic_callable(
                     builder,
-                    callable,
+                    callable_owner,
                     OptimizingDynamicCallableArity::Native(length),
                     call.caller_strict_types,
                     false,
                     false,
-                    false,
-                    &[],
+                    true,
+                    &[callable_owner],
                     transition,
                 )?;
-                let consumed_call_operands =
+                let mut consumed_call_operands =
                     lower_optimizing_prevalidate_consumed_dynamic_call_operands(
                         builder,
                         call,
@@ -30008,6 +34698,7 @@ fn lower_optimizing_region_instruction(
                         value_flow,
                         transition,
                     )?;
+                consumed_call_operands.push(callable_owner);
                 let result = lower_optimizing_invoke_dynamic_unpack(
                     module,
                     builder,
@@ -30065,27 +34756,49 @@ fn lower_optimizing_region_instruction(
                 )?;
                 let callable =
                     lower_optimizing_reference_scalar(builder, callable, false, transition)?;
+                let callable_owner = emit_total_exact_owned_runtime_value!(
+                    module,
+                    builder,
+                    optimizing_operations.acquire_callable,
+                    &[callable],
+                    &[],
+                    transition,
+                    "exact native callable-acquisition handler was not declared",
+                )?;
                 let prepared = lower_optimizing_prepare_dynamic_callable(
                     builder,
-                    callable,
+                    callable_owner,
                     OptimizingDynamicCallableArity::Fixed(call.args.len()),
                     call.caller_strict_types,
                     false,
                     false,
-                    false,
-                    &[],
+                    true,
+                    &[callable_owner],
                     transition,
                 )?;
                 let mut arguments = Vec::with_capacity(call.args.len());
-                for operand in call.operands.iter().skip(1).copied().flatten() {
-                    let argument = lower_prepared_native_call_operand(
-                        builder, locals, registers, constants, operand, transition,
-                    )?;
-                    arguments.push(lower_optimizing_reference_scalar(
-                        builder, argument, false, transition,
-                    )?);
+                for (argument_index, operand) in
+                    call.operands.iter().skip(1).copied().flatten().enumerate()
+                {
+                    let argument = if let Some(local) = call
+                        .args
+                        .get(argument_index)
+                        .and_then(|argument| argument.by_ref_local)
+                    {
+                        // The runtime-selected signature decides whether this
+                        // lvalue remains a reference or is dereferenced in the
+                        // packed frame. Preserve its canonical identity until
+                        // that immutable binding-plan selection.
+                        use_local_variable(builder, locals, local)?
+                    } else {
+                        let argument = lower_prepared_native_call_operand(
+                            builder, locals, registers, constants, operand, transition,
+                        )?;
+                        lower_optimizing_reference_scalar(builder, argument, false, transition)?
+                    };
+                    arguments.push(argument);
                 }
-                let consumed_call_operands =
+                let mut consumed_call_operands =
                     lower_optimizing_prevalidate_consumed_dynamic_call_operands(
                         builder,
                         call,
@@ -30094,9 +34807,10 @@ fn lower_optimizing_region_instruction(
                         value_flow,
                         transition,
                     )?;
-                let (packed, packed_length) = lower_optimizing_pack_dynamic_fixed_arguments(
+                consumed_call_operands.push(callable_owner);
+                let (packed, packed_length) = lower_optimizing_pack_published_method_arguments(
                     builder, prepared, &arguments, transition,
-                );
+                )?;
                 let result = lower_optimizing_invoke_packed_dynamic(
                     module,
                     builder,
@@ -30128,14 +34842,55 @@ fn lower_optimizing_region_instruction(
                     RegionCallResult::ReferenceLocal(_) => unreachable!("filtered above"),
                 }
             } else {
-                return Err(CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NON_TOTAL_CALL_PUBLICATION",
+                let compiled_detail = compiled_target.map(|target| {
                     format!(
-                        "call target {:?} has no total native ABI or exact handler",
-                        call.target
+                        " compiled_target={{returns_by_reference:{}, requires_trampoline:{}, reference_only_trampoline:{}, arity:{}, params:{}}}",
+                        target.returns_by_reference,
+                        target.requires_trampoline,
+                        target.reference_only_trampoline,
+                        target.arity,
+                        target.params.len(),
+                    )
+                }).unwrap_or_default();
+                let result_detail = match call.result {
+                    RegionCallResult::ReferenceLocal(local) => format!(
+                        " reference_destination={:?}",
+                        value_flow.local_storage(local),
+                    ),
+                    _ => String::new(),
+                };
+                return Err(CraneliftLoweringError::new(
+                    "JIT_CRANELIFT_UNIMPLEMENTED_GENERATED_CALL_SHAPE",
+                    format!(
+                        "generated call shape is not total:{compiled_detail}{result_detail} {call:?}"
                     ),
                 ));
             }
+        }
+        RegionInstructionKind::RuntimeFatal { dst, .. } => {
+            emitted_class = crate::JitProductionLoweringClass::DirectNativeData;
+            if let Some(dst) = dst {
+                let unreachable_value = builder.ins().iconst(types::I64, 0);
+                define_region_register(
+                    builder,
+                    register_variables,
+                    registers,
+                    *dst,
+                    unreachable_value,
+                )?;
+            }
+            let detail = builder.ins().iconst(
+                types::I32,
+                i64::from(crate::JIT_NATIVE_RUNTIME_FATAL_DETAIL),
+            );
+            let value = builder.ins().iconst(types::I64, 0);
+            transition.emit_exact_runtime_error(builder, detail, value)?;
+        }
+        RegionInstructionKind::CompileTimeFatal { diagnostic_id } => {
+            return Err(CraneliftLoweringError::new(
+                "JIT_CRANELIFT_IR_COMPILE_FATAL",
+                diagnostic_id.clone(),
+            ));
         }
         _ => {
             return Err(CraneliftLoweringError::new(
@@ -30153,4025 +34908,45 @@ fn lower_optimizing_region_instruction(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_baseline_region_instruction(
+fn lower_generic_dynamic_code_instruction(
     module: &mut JITModule,
     builder: &mut FunctionBuilder<'_>,
-    functions: &BTreeMap<FunctionId, FuncId>,
-    inline_constants: &BTreeMap<FunctionId, BoundedInlineValue>,
-    function_params: &BTreeMap<FunctionId, NativeFunctionMetadata>,
-    external_function_signatures: &[crate::JitExternalFunctionSignature],
-    native_call_helper: Option<NativeHelper>,
     native_dynamic_code_helper: Option<NativeHelper>,
-    native_operations: BaselineNativeOperations,
-    direct_value_release_commit: Option<ir::FuncRef>,
-    register_variables: &NativeRegisterMap,
-    blocks: &BTreeMap<BlockId, ir::Block>,
-    suspension_blocks: &BTreeMap<u32, ir::Block>,
+    value_release_commit: Option<ir::FuncRef>,
     locals: &NativeLocalMap,
+    register_variables: &NativeRegisterMap,
     registers: &mut NativeRegisterMap,
-    source_block: BlockId,
     instruction: &RegionInstruction,
-    transition_live_registers: &[RegId],
-    constants: &[IrConstant],
-    value_flow: &ExecutableValueFlow,
-    streaming_call_exit: Option<NativeStreamingCallExit>,
     result_out: ir::Value,
+    runtime: ir::Value,
     deopt_out: ir::Value,
-    resume_state: ir::Value,
-    pending_status: Variable,
-    pending_value: Variable,
     function: FunctionId,
-    return_check_required: bool,
-    local_count: u32,
-    native_version: u32,
-    function_is_top_level: bool,
-    function_local_names: &[String],
-    unit_identity: u64,
     pointer_type: ir::Type,
 ) -> Result<(), CraneliftLoweringError> {
-    let native_reference_publish = function_is_top_level
-        .then_some(native_operations.reference_bind)
-        .flatten();
-    match &instruction.kind {
-        RegionInstructionKind::Nop => {}
-        RegionInstructionKind::Move { dst, src } => {
-            let cl_value = lower_region_operand(builder, locals, registers, *src)?;
-            let (cl_value, literal_borrowed) = if let RegionOperand::Constant(index) = *src
-                && constant_requires_native_storage(constants, index)
-            {
-                let (value, borrowed) =
-                    lower_native_literal_value(builder, cl_value, index, deopt_out);
-                (value, Some(borrowed))
-            } else {
-                (cl_value, None)
-            };
-            let fact = lowering_operand_fact(value_flow, constants, *src);
-            let cl_value = if value_copy_requires_retain(fact)
-                && !value_flow.moves_value_into_register(instruction.continuation_id)
-            {
-                lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(0, function, instruction.continuation_id),
-                    cl_value,
-                    result_out,
-                    deopt_out,
-                )?
-            } else if let Some(literal_borrowed) = literal_borrowed {
-                lower_optimizing_retain_if(builder, cl_value, literal_borrowed, deopt_out);
-                cl_value
-            } else {
-                cl_value
-            };
-            define_region_register(builder, register_variables, registers, *dst, cl_value)?;
-        }
-        RegionInstructionKind::LoadLocal { dst, local, quiet } => {
-            let value = use_local_variable(builder, locals, *local)?;
-            let fact = value_flow.local_fact(*local);
-            let direct = !function_is_top_level
-                && value_flow.local_storage(*local).is_promoted()
-                && instruction.live_locals.contains(local)
-                && !*quiet
-                && (!value_copy_requires_retain(fact)
-                    || value_flow.can_borrow_local_load(instruction.continuation_id));
-            let value = if value_flow
-                .passes_reference_to_typed_consumer(instruction.continuation_id)
-            {
-                lower_guarded_reference_dimension_load(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    native_operations.value_release,
-                    value,
-                    *quiet,
-                    ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                    function,
-                    *local,
-                    instruction.span,
-                    result_out,
-                    deopt_out,
-                )?
-            } else if direct {
-                value
-            } else if value_flow.local_storage(*local).is_native_frame_local() {
-                lower_guarded_native_local_fetch(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    native_operations.value_release,
-                    value,
-                    value_flow.can_borrow_local_load(instruction.continuation_id),
-                    *quiet,
-                    ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                    function,
-                    *local,
-                    instruction.span,
-                    result_out,
-                    deopt_out,
-                )?
-            } else {
-                lower_native_local_fetch(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    value,
-                    *quiet,
-                    ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                    function,
-                    *local,
-                    instruction.span,
-                    result_out,
-                )?
-            };
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::StoreLocal { local, src } => {
-            let current = use_local_variable(builder, locals, *local)?;
-            let src_operand = *src;
-            let src = lower_region_operand(builder, locals, registers, src_operand)?;
-            let fact = lowering_operand_fact(value_flow, constants, src_operand);
-            let release_current = instruction.live_locals.contains(local)
-                && value_release_required(value_flow.local_fact(*local));
-            let direct = !function_is_top_level
-                && value_flow.local_storage(*local).is_promoted()
-                && fact.certainty != crate::region_ir::SsaCertainty::Unknown
-                && !matches!(
-                    fact.class,
-                    SsaValueClass::ReferenceHandle | SsaValueClass::MixedHandle
-                );
-            let cl_value = if direct {
-                let stored = if value_copy_requires_retain(fact)
-                    && !value_flow.moves_value_into_local(instruction.continuation_id)
-                {
-                    lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(0, function, instruction.continuation_id),
-                        src,
-                        result_out,
-                        deopt_out,
-                    )?
-                } else {
-                    src
-                };
-                if release_current {
-                    let _ = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(1, function, instruction.continuation_id),
-                        current,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                stored
-            } else if value_flow.local_storage(*local).is_native_frame_local() {
-                lower_guarded_native_local_store(
-                    module,
-                    builder,
-                    native_operations.local_store,
-                    native_operations.value_release,
-                    current,
-                    src,
-                    native_local_store_operation(
-                        function_is_top_level,
-                        function_local_names,
-                        *local,
-                    ),
-                    value_flow.moves_value_into_local(instruction.continuation_id),
-                    release_current,
-                    function,
-                    *local,
-                    instruction.continuation_id,
-                    result_out,
-                    deopt_out,
-                )?
-            } else {
-                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-                lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.local_store,
-                    native_local_store_operation(
-                        function_is_top_level,
-                        function_local_names,
-                        *local,
-                    ) | if value_flow.moves_value_into_local(instruction.continuation_id) {
-                        crate::JIT_LOCAL_STORE_MOVE_INPUT
-                    } else {
-                        0
-                    },
-                    &[current, src, function_value, local_value],
-                    result_out,
-                )?
-            };
-            define_local_variable(builder, locals, *local, cl_value)?;
-        }
-        RegionInstructionKind::AssignLocalResult { dst, local, value } => {
-            let current = use_local_variable(builder, locals, *local)?;
-            let value_operand = *value;
-            let value = lower_region_operand(builder, locals, registers, value_operand)?;
-            let fact = lowering_operand_fact(value_flow, constants, value_operand);
-            let release_current = instruction.live_locals.contains(local)
-                && value_release_required(value_flow.local_fact(*local));
-            let direct = !function_is_top_level
-                && value_flow.local_storage(*local).is_promoted()
-                && !value_copy_requires_retain(fact);
-            let stored = if direct {
-                if release_current {
-                    let _ = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(1, function, instruction.continuation_id),
-                        current,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                value
-            } else if value_flow.local_storage(*local).is_native_frame_local() {
-                lower_guarded_native_local_store(
-                    module,
-                    builder,
-                    native_operations.local_store,
-                    native_operations.value_release,
-                    current,
-                    value,
-                    native_local_store_operation(
-                        function_is_top_level,
-                        function_local_names,
-                        *local,
-                    ),
-                    false,
-                    release_current,
-                    function,
-                    *local,
-                    instruction.continuation_id,
-                    result_out,
-                    deopt_out,
-                )?
-            } else {
-                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-                lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.local_store,
-                    native_local_store_operation(
-                        function_is_top_level,
-                        function_local_names,
-                        *local,
-                    ),
-                    &[current, value, function_value, local_value],
-                    result_out,
-                )?
-            };
-            define_local_variable(builder, locals, *local, stored)?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::BindReference { target, source } => {
-            let source_value = use_local_variable(builder, locals, *source)?;
-            let reference = lower_guarded_reference_binding(
-                module,
-                builder,
-                native_operations.reference_bind,
-                source_value,
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *source, reference)?;
-            if target != source {
-                let previous = use_local_variable(builder, locals, *target)?;
-                if instruction.live_locals.contains(target)
-                    && value_release_required(value_flow.local_fact(*target))
-                {
-                    let _ = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(1, function, instruction.continuation_id),
-                        previous,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                // Each frame-local binding owns its encoded reference handle.
-                // The source keeps the owner's original count; installing the
-                // same alias in a distinct target local creates one additional
-                // owner that frame cleanup releases independently.
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(0, function, instruction.continuation_id),
-                    reference,
-                    result_out,
-                    deopt_out,
-                )?;
-                define_local_variable(builder, locals, *target, reference)?;
-            }
-            publish_native_reference_local(
-                module,
-                builder,
-                native_reference_publish,
-                reference,
-                function,
-                *source,
-                result_out,
-            )?;
-            if target != source {
-                publish_native_reference_local(
-                    module,
-                    builder,
-                    native_reference_publish,
-                    reference,
-                    function,
-                    *target,
-                    result_out,
-                )?;
-            }
-        }
-        RegionInstructionKind::BindReferenceDim {
-            target,
-            array,
-            keys,
-        } => {
-            let current = use_local_variable(builder, locals, *array)?;
-            let root = lower_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                current,
-                false,
-                ordinary_local_fast_path(function_is_top_level, function_local_names, *array),
-                function,
-                *array,
-                instruction.span,
-                result_out,
-            )?;
-            let keys = keys
-                .iter()
-                .map(|key| lower_region_operand(builder, locals, registers, *key))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut arrays = Vec::with_capacity(keys.len());
-            arrays.push(root);
-            let mut nested = root;
-            for key in keys.iter().take(keys.len().saturating_sub(1)) {
-                nested = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    &[nested, *key],
-                    result_out,
-                )?;
-                arrays.push(nested);
-            }
-            let leaf_key = *keys
-                .last()
-                .expect("reference-from-dimension retains at least one key");
-            // Establish a unique leaf container before installing the
-            // reference. Binding directly into a shared direct-array handle
-            // mutates every COW peer because the reference helper cannot also
-            // return the replacement root. A quiet fetch followed by an exact
-            // insert clones only when necessary and preserves missing-entry
-            // reference semantics.
-            let leaf = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.array_fetch,
-                1,
-                &[nested, leaf_key],
-                result_out,
-            )?;
-            let mut updated = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.array_insert,
-                0,
-                &[nested, leaf_key, leaf],
-                result_out,
-            )?;
-            let _ = lower_guarded_value_release(
-                module,
-                builder,
-                native_operations.value_release,
-                native_dim_operation(1, function, instruction.continuation_id),
-                leaf,
-                result_out,
-                deopt_out,
-            )?;
-            let zero = builder.ins().iconst(types::I64, 0);
-            let reference = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.reference_bind,
-                native_dim_operation(1, function, instruction.continuation_id),
-                &[updated, leaf_key, zero],
-                result_out,
-            )?;
-            // `local_fetch` and every intermediate `array_fetch` own their
-            // returned array handle. The leaf insert deliberately COW-clones
-            // that shared handle before installing the reference, so the old
-            // leaf is no longer part of the rebuilt lvalue tree.
-            let _ = lower_guarded_value_release(
-                module,
-                builder,
-                native_operations.value_release,
-                native_dim_operation(1, function, instruction.continuation_id),
-                nested,
-                result_out,
-                deopt_out,
-            )?;
-            for index in (0..keys.len().saturating_sub(1)).rev() {
-                let child = updated;
-                updated = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_insert,
-                    0,
-                    &[arrays[index], keys[index], child],
-                    result_out,
-                )?;
-                // Fetching the child made the parent input shared, so this
-                // insert also COW-clones. Ownership of neither obsolete input
-                // is part of the replacement returned above.
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    child,
-                    result_out,
-                    deopt_out,
-                )?;
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    arrays[index],
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let local_value = builder.ins().iconst(types::I64, i64::from(array.raw()));
-            let stored = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.local_store,
-                native_local_store_operation(function_is_top_level, function_local_names, *array)
-                    | crate::JIT_LOCAL_STORE_MOVE_INPUT,
-                &[current, updated, function_value, local_value],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *array, stored)?;
-            define_local_variable(builder, locals, *target, reference)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                stored,
-                function,
-                *array,
-                result_out,
-            )?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                reference,
-                function,
-                *target,
-                result_out,
-            )?;
-        }
-        RegionInstructionKind::BindReferenceIntoDim {
-            array,
-            keys,
-            append,
-            source,
-        } => {
-            let source_value = use_local_variable(builder, locals, *source)?;
-            let zero = builder.ins().iconst(types::I64, 0);
-            let reference = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.reference_bind,
-                0,
-                &[source_value, zero, zero],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *source, reference)?;
-            let root = use_local_variable(builder, locals, *array)?;
-            let keys = keys
-                .iter()
-                .map(|key| lower_region_operand(builder, locals, registers, *key))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut arrays = Vec::with_capacity(keys.len());
-            arrays.push(root);
-            let mut nested = root;
-            let parent_key_count = if *append {
-                keys.len()
-            } else {
-                keys.len().saturating_sub(1)
-            };
-            for key in keys.iter().take(parent_key_count) {
-                nested = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    &[nested, *key],
-                    result_out,
-                )?;
-                arrays.push(nested);
-            }
-            let target_key = if *append {
-                builder
-                    .ins()
-                    .iconst(types::I64, crate::jit_encode_constant(u32::MAX))
-            } else {
-                *keys
-                    .last()
-                    .expect("non-append reference binding retains a dimension")
-            };
-            let mut updated = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.array_insert,
-                native_dim_operation(u32::from(*append), function, instruction.continuation_id),
-                &[nested, target_key, reference],
-                result_out,
-            )?;
-            for index in (0..parent_key_count).rev() {
-                updated = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_insert,
-                    native_dim_operation(0, function, instruction.continuation_id),
-                    &[arrays[index], keys[index], updated],
-                    result_out,
-                )?;
-            }
-            define_local_variable(builder, locals, *array, updated)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                updated,
-                function,
-                *array,
-                result_out,
-            )?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                reference,
-                function,
-                *source,
-                result_out,
-            )?;
-        }
-        RegionInstructionKind::BindReferenceProperty { object, source, .. } => {
-            let object = lower_region_operand(builder, locals, registers, *object)?;
-            let source_value = use_local_variable(builder, locals, *source)?;
-            let zero = builder.ins().iconst(types::I64, 0);
-            let reference = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.reference_bind,
-                0,
-                &[source_value, zero, zero],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *source, reference)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                reference,
-                function,
-                *source,
-                result_out,
-            )?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let _ = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_assign,
-                1,
-                &[object, reference, function_value, instruction_id],
-                result_out,
-            )?;
-        }
-        RegionInstructionKind::BindReferenceFromProperty { target, object, .. } => {
-            let object = lower_region_operand(builder, locals, registers, *object)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let reference = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.reference_bind,
-                3,
-                &[object, function_value, instruction_id],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *target, reference)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                reference,
-                function,
-                *target,
-                result_out,
-            )?;
-        }
-        RegionInstructionKind::BindReferenceFromPropertyDim {
-            target,
-            object,
-            keys,
-            ..
-        } => {
-            let object = lower_region_operand(builder, locals, registers, *object)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let root = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_fetch,
-                0,
-                &[object, function_value, instruction_id],
-                result_out,
-            )?;
-            let keys = keys
-                .iter()
-                .map(|key| lower_region_operand(builder, locals, registers, *key))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut arrays = Vec::with_capacity(keys.len());
-            arrays.push(root);
-            let mut nested = root;
-            for key in keys.iter().take(keys.len().saturating_sub(1)) {
-                nested = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    &[nested, *key],
-                    result_out,
-                )?;
-                arrays.push(nested);
-            }
-            let zero = builder.ins().iconst(types::I64, 0);
-            let reference = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.reference_bind,
-                native_dim_operation(1, function, instruction.continuation_id),
-                &[
-                    nested,
-                    *keys
-                        .last()
-                        .expect("property-dimension reference retains a leaf key"),
-                    zero,
-                ],
-                result_out,
-            )?;
-            let mut updated = nested;
-            for index in (0..keys.len().saturating_sub(1)).rev() {
-                updated = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_insert,
-                    native_dim_operation(0, function, instruction.continuation_id),
-                    &[arrays[index], keys[index], updated],
-                    result_out,
-                )?;
-            }
-            let _ = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_assign,
-                0,
-                &[object, updated, function_value, instruction_id],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *target, reference)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                reference,
-                function,
-                *target,
-                result_out,
-            )?;
-        }
-        RegionInstructionKind::BindReferenceIntoPropertyDim {
-            object,
-            keys,
-            append,
-            source,
-            ..
-        } => {
-            let object = lower_region_operand(builder, locals, registers, *object)?;
-            let source_value = use_local_variable(builder, locals, *source)?;
-            let zero = builder.ins().iconst(types::I64, 0);
-            let reference = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.reference_bind,
-                0,
-                &[source_value, zero, zero],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *source, reference)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                reference,
-                function,
-                *source,
-                result_out,
-            )?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let root = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_fetch,
-                0,
-                &[object, function_value, instruction_id],
-                result_out,
-            )?;
-            let keys = keys
-                .iter()
-                .map(|key| lower_region_operand(builder, locals, registers, *key))
-                .collect::<Result<Vec<_>, _>>()?;
-            let parent_key_count = if *append {
-                keys.len()
-            } else {
-                keys.len().saturating_sub(1)
-            };
-            let mut arrays = Vec::with_capacity(parent_key_count.saturating_add(1));
-            arrays.push(root);
-            let mut nested = root;
-            for key in keys.iter().take(parent_key_count) {
-                nested = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    &[nested, *key],
-                    result_out,
-                )?;
-                arrays.push(nested);
-            }
-            let target_key = if *append {
-                builder
-                    .ins()
-                    .iconst(types::I64, crate::jit_encode_constant(u32::MAX))
-            } else {
-                *keys.last().ok_or_else(|| {
-                    CraneliftLoweringError::new(
-                        "JIT_CRANELIFT_REJECT_EMPTY_PROPERTY_DIM_REFERENCE",
-                        "property-dimension reference binding has no target dimension",
-                    )
-                })?
-            };
-            let mut updated = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.array_insert,
-                native_dim_operation(u32::from(*append), function, instruction.continuation_id),
-                &[nested, target_key, reference],
-                result_out,
-            )?;
-            for index in (0..parent_key_count).rev() {
-                updated = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_insert,
-                    native_dim_operation(0, function, instruction.continuation_id),
-                    &[arrays[index], keys[index], updated],
-                    result_out,
-                )?;
-            }
-            let _ = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_assign,
-                0,
-                &[object, updated, function_value, instruction_id],
-                result_out,
-            )?;
-        }
-        RegionInstructionKind::BindReferenceDimFromProperty {
-            array,
-            keys,
-            append,
-            object,
-            ..
-        } => {
-            let object = lower_region_operand(builder, locals, registers, *object)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            if keys.is_empty() && !*append {
-                // `$local =& $object->property` must reuse an existing
-                // property reference. Fetching the dereferenced value,
-                // wrapping it, then assigning through the old reference
-                // creates Reference(Reference(...)) on every repeated bind.
-                let reference = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.reference_bind,
-                    3,
-                    &[object, function_value, instruction_id],
-                    result_out,
-                )?;
-                define_local_variable(builder, locals, *array, reference)?;
-                publish_native_reference_local(
-                    module,
-                    builder,
-                    native_operations.reference_bind,
-                    reference,
-                    function,
-                    *array,
-                    result_out,
-                )?;
-            } else {
-                let property = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.property_fetch,
-                    0,
-                    &[object, function_value, instruction_id],
-                    result_out,
-                )?;
-                let zero = builder.ins().iconst(types::I64, 0);
-                let reference = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.reference_bind,
-                    0,
-                    &[property, zero, zero],
-                    result_out,
-                )?;
-                let _ = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.property_assign,
-                    1,
-                    &[object, reference, function_value, instruction_id],
-                    result_out,
-                )?;
-                let root = use_local_variable(builder, locals, *array)?;
-                let keys = keys
-                    .iter()
-                    .map(|key| lower_region_operand(builder, locals, registers, *key))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let parent_key_count = if *append {
-                    keys.len()
-                } else {
-                    keys.len().saturating_sub(1)
-                };
-                let mut arrays = Vec::with_capacity(parent_key_count);
-                arrays.push(root);
-                let mut nested = root;
-                for key in keys.iter().take(parent_key_count) {
-                    nested = lower_native_value_operation(
-                        module,
-                        builder,
-                        native_operations.array_fetch,
-                        native_dim_operation(1, function, instruction.continuation_id),
-                        &[nested, *key],
-                        result_out,
-                    )?;
-                    arrays.push(nested);
-                }
-                let target_key = if *append {
-                    builder
-                        .ins()
-                        .iconst(types::I64, crate::jit_encode_constant(u32::MAX))
-                } else {
-                    keys[keys.len() - 1]
-                };
-                let mut updated = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_insert,
-                    native_dim_operation(u32::from(*append), function, instruction.continuation_id),
-                    &[nested, target_key, reference],
-                    result_out,
-                )?;
-                for index in (0..parent_key_count).rev() {
-                    updated = lower_native_value_operation(
-                        module,
-                        builder,
-                        native_operations.array_insert,
-                        native_dim_operation(0, function, instruction.continuation_id),
-                        &[arrays[index], keys[index], updated],
-                        result_out,
-                    )?;
-                }
-                define_local_variable(builder, locals, *array, updated)?;
-                publish_native_reference_local(
-                    module,
-                    builder,
-                    native_operations.reference_bind,
-                    updated,
-                    function,
-                    *array,
-                    result_out,
-                )?;
-            }
-        }
-        RegionInstructionKind::InitStaticLocal { local, default } => {
-            let default = lower_region_operand(builder, locals, registers, *default)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-            let reference = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.reference_bind,
-                2,
-                &[default, function_value, local_value],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *local, reference)?;
-        }
-        RegionInstructionKind::Discard { src } => {
-            if value_flow.elides_discard(instruction.continuation_id) {
-                return Ok(());
-            }
-            let value = lower_region_operand(builder, locals, registers, *src)?;
-            let fact = lowering_operand_fact(value_flow, constants, *src);
-            if value_release_required(fact) {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    value,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-        }
-        RegionInstructionKind::Binary { dst, op, lhs, rhs } => {
-            let lhs_operand = *lhs;
-            let rhs_operand = *rhs;
-            let lhs = lower_region_operand(builder, locals, registers, lhs_operand)?;
-            let rhs = lower_region_operand(builder, locals, registers, rhs_operand)?;
-            let lhs_fact = lowering_operand_fact(value_flow, constants, lhs_operand);
-            let rhs_fact = lowering_operand_fact(value_flow, constants, rhs_operand);
-            let direct_int = lhs_fact.class == SsaValueClass::Int
-                && rhs_fact.class == SsaValueClass::Int
-                && lhs_fact.certainty != crate::region_ir::SsaCertainty::Unknown
-                && rhs_fact.certainty != crate::region_ir::SsaCertainty::Unknown
-                && matches!(
-                    op,
-                    RegionBinaryOp::Add
-                        | RegionBinaryOp::Sub
-                        | RegionBinaryOp::Mul
-                        | RegionBinaryOp::BitAnd
-                        | RegionBinaryOp::BitOr
-                        | RegionBinaryOp::BitXor
-                        | RegionBinaryOp::ShiftLeft
-                        | RegionBinaryOp::ShiftRight
-                );
-            let cl_value = if direct_int {
-                lower_checked_baseline_binary(
-                    module,
-                    builder,
-                    native_operations.baseline_binary,
-                    *op,
-                    lhs,
-                    rhs,
-                    result_out,
-                    deopt_out,
-                    function,
-                    local_count,
-                    instruction,
-                    locals,
-                    registers,
-                    transition_live_registers,
-                    native_version,
-                )?
-            } else if native_operations.baseline_binary.is_some() {
-                lower_baseline_native_binary_operation(
-                    module,
-                    builder,
-                    native_operations.baseline_binary,
-                    baseline_binary_opcode(*op),
-                    lhs,
-                    rhs,
-                    result_out,
-                    deopt_out,
-                    function,
-                    local_count,
-                    instruction,
-                    locals,
-                    registers,
-                    transition_live_registers,
-                    native_version,
-                )?
-            } else {
-                return Err(CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-                    format!("binary operation {op:?} has no typed runtime helper"),
-                ));
-            };
-            define_region_register(builder, register_variables, registers, *dst, cl_value)?;
-        }
-        RegionInstructionKind::Unary { dst, op, src } => {
-            let src_operand = *src;
-            let src = lower_region_operand(builder, locals, registers, src_operand)?;
-            let fact = lowering_operand_fact(value_flow, constants, src_operand);
-            let unary_operation =
-                if function.raw() <= 0x03ff && instruction.continuation_id <= 0x07_ffff {
-                    0x8000_0000
-                        | native_unary_opcode(*op)
-                        | (function.raw() << 2)
-                        | (instruction.continuation_id << 12)
-                } else {
-                    native_unary_opcode(*op)
-                };
-            let direct = if fact.certainty != crate::region_ir::SsaCertainty::Unknown {
-                match (*op, fact.class) {
-                    (RegionUnaryOp::Not, class) => {
-                        scalar_truthy(builder, src, class).map(|truthy| {
-                            let inverted = builder.ins().bxor_imm(truthy, 1);
-                            encode_native_bool(builder, inverted)
-                        })
-                    }
-                    (RegionUnaryOp::Plus, SsaValueClass::Int) => Some(src),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            let value = if let Some(value) = direct {
-                value
-            } else if *op == RegionUnaryOp::Not {
-                let truthy = terminators::lower_baseline_unknown_condition(
-                    module,
-                    builder,
-                    native_operations.truthy.ok_or_else(|| {
-                        CraneliftLoweringError::new(
-                            "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-                            "native unary truthiness helper was not declared",
-                        )
-                    })?,
-                    src,
-                    deopt_out,
-                )?;
-                let inverted = builder.ins().bxor_imm(truthy, 1);
-                encode_native_bool(builder, inverted)
-            } else {
-                lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.unary,
-                    unary_operation,
-                    &[src],
-                    result_out,
-                )?
-            };
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::NativeCall(call) => {
-            if let Some(operation) = stable_builtin_string_predicate(&call.target)
-                && call.argument_operand_offset == 0
-                && call.args.len() == 2
-                && call
-                    .args
-                    .iter()
-                    .all(|argument| argument.name.is_none() && !argument.unpack)
-                && call.operands.len() == 2
-                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
-                && let (Some(haystack_operand), Some(needle_operand)) =
-                    (call.operands[0], call.operands[1])
-            {
-                let haystack = lower_region_operand(builder, locals, registers, haystack_operand)?;
-                let needle = lower_region_operand(builder, locals, registers, needle_operand)?;
-                let consume_haystack = matches!(
-                    haystack_operand,
-                    RegionOperand::Register(register)
-                        if value_flow.register_fact(register).ownership != SsaOwnership::Borrowed
-                ) && native_argument_has_location(&call.args[0]);
-                let consume_needle = matches!(
-                    needle_operand,
-                    RegionOperand::Register(register)
-                        if value_flow.register_fact(register).ownership != SsaOwnership::Borrowed
-                ) && native_argument_has_location(&call.args[1]);
-                let operation = operation.baseline_opcode()
-                    | if consume_haystack { 1 << 8 } else { 0 }
-                    | if consume_needle { 1 << 9 } else { 0 };
-                let (status, value) = lower_fast_string_predicate(
-                    module,
-                    builder,
-                    native_operations.string_predicate,
-                    operation,
-                    haystack,
-                    needle,
-                    result_out,
-                )?;
-                let fast = builder.create_block();
-                let slow = builder.create_block();
-                let merge = builder.create_block();
-                let result_register = match call.result {
-                    RegionCallResult::Register(destination) => {
-                        builder.append_block_param(merge, types::I64);
-                        Some(destination)
-                    }
-                    RegionCallResult::Discard => None,
-                    RegionCallResult::ReferenceLocal(_) => unreachable!("filtered above"),
-                };
-                let hit = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-                builder.ins().brif(hit, fast, &[], slow, &[]);
-
-                builder.switch_to_block(fast);
-                if result_register.is_some() {
-                    builder.ins().jump(merge, &[value.into()]);
-                } else {
-                    builder.ins().jump(merge, &[]);
-                }
-
-                builder.switch_to_block(slow);
-                lower_native_call_trampoline(
-                    module,
-                    builder,
-                    native_call_helper,
-                    native_operations.reference_bind,
-                    native_operations.value_release,
-                    value_flow,
-                    locals,
-                    register_variables,
-                    registers,
-                    function_params,
-                    external_function_signatures,
-                    call,
-                    source_block,
-                    instruction,
-                    transition_live_registers,
-                    streaming_call_exit,
-                    result_out,
-                    deopt_out,
-                    function,
-                    local_count,
-                    native_version,
-                    pointer_type,
-                )?;
-                if let Some(destination) = result_register {
-                    let slow_value = use_region_register(builder, registers, destination)?;
-                    builder.ins().jump(merge, &[slow_value.into()]);
-                } else {
-                    builder.ins().jump(merge, &[]);
-                }
-                builder.switch_to_block(merge);
-                if let Some(destination) = result_register {
-                    let merged = builder.block_params(merge)[0];
-                    define_region_register(
-                        builder,
-                        register_variables,
-                        registers,
-                        destination,
-                        merged,
-                    )?;
-                }
-                return Ok(());
-            }
-            if stable_builtin_array_key_exists(&call.target)
-                && call.argument_operand_offset == 0
-                && call.args.len() == 2
-                && call
-                    .args
-                    .iter()
-                    .all(|argument| argument.name.is_none() && !argument.unpack)
-                && call.operands.len() == 2
-                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
-                && let (Some(key_operand), Some(array_operand)) =
-                    (call.operands[0], call.operands[1])
-            {
-                let key = lower_region_operand(builder, locals, registers, key_operand)?;
-                let array = lower_region_operand(builder, locals, registers, array_operand)?;
-                let (status, value) = lower_fast_array_key_exists(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    array,
-                    key,
-                    result_out,
-                )?;
-                let fast = builder.create_block();
-                let slow = builder.create_block();
-                let merge = builder.create_block();
-                let result_register = match call.result {
-                    RegionCallResult::Register(destination) => {
-                        builder.append_block_param(merge, types::I64);
-                        Some(destination)
-                    }
-                    RegionCallResult::Discard => None,
-                    RegionCallResult::ReferenceLocal(_) => unreachable!("filtered above"),
-                };
-                let hit = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-                builder.ins().brif(hit, fast, &[], slow, &[]);
-
-                builder.switch_to_block(fast);
-                for (argument, (operand, source)) in call
-                    .args
-                    .iter()
-                    .zip([(key_operand, key), (array_operand, array)])
-                {
-                    if matches!(
-                        operand,
-                        RegionOperand::Register(register)
-                            if value_flow.register_fact(register).ownership
-                                != SsaOwnership::Borrowed
-                    ) && native_argument_has_location(argument)
-                    {
-                        let _ = lower_guarded_value_release(
-                            module,
-                            builder,
-                            native_operations.value_release,
-                            native_dim_operation(1, function, instruction.continuation_id),
-                            source,
-                            result_out,
-                            deopt_out,
-                        )?;
-                    }
-                }
-                if result_register.is_some() {
-                    builder.ins().jump(merge, &[value.into()]);
-                } else {
-                    builder.ins().jump(merge, &[]);
-                }
-
-                builder.switch_to_block(slow);
-                lower_native_call_trampoline(
-                    module,
-                    builder,
-                    native_call_helper,
-                    native_operations.reference_bind,
-                    native_operations.value_release,
-                    value_flow,
-                    locals,
-                    register_variables,
-                    registers,
-                    function_params,
-                    external_function_signatures,
-                    call,
-                    source_block,
-                    instruction,
-                    transition_live_registers,
-                    streaming_call_exit,
-                    result_out,
-                    deopt_out,
-                    function,
-                    local_count,
-                    native_version,
-                    pointer_type,
-                )?;
-                if let Some(destination) = result_register {
-                    let slow_value = use_region_register(builder, registers, destination)?;
-                    builder.ins().jump(merge, &[slow_value.into()]);
-                } else {
-                    builder.ins().jump(merge, &[]);
-                }
-                builder.switch_to_block(merge);
-                if let Some(destination) = result_register {
-                    let merged = builder.block_params(merge)[0];
-                    define_region_register(
-                        builder,
-                        register_variables,
-                        registers,
-                        destination,
-                        merged,
-                    )?;
-                }
-                return Ok(());
-            }
-            if let Some(predicate) = stable_builtin_type_predicate(&call.target)
-                && call.argument_operand_offset == 0
-                && call.args.len() == 1
-                && call.args[0].name.is_none()
-                && !call.args[0].unpack
-                && call.operands.len() == 1
-                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
-                && let Some(operand) = call.operands[0]
-            {
-                let source = lower_region_operand(builder, locals, registers, operand)?;
-                let value = lower_stable_builtin_type_predicate(
-                    module,
-                    builder,
-                    native_operations.type_predicate,
-                    predicate.baseline_opcode(),
-                    source,
-                    result_out,
-                )?;
-                if matches!(
-                    operand,
-                    RegionOperand::Register(register)
-                        if value_flow.register_fact(register).ownership != SsaOwnership::Borrowed
-                ) && native_argument_has_location(&call.args[0])
-                {
-                    let _ = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(1, function, instruction.continuation_id),
-                        source,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                match call.result {
-                    RegionCallResult::Register(destination) => define_region_register(
-                        builder,
-                        register_variables,
-                        registers,
-                        destination,
-                        value,
-                    )?,
-                    RegionCallResult::Discard => {}
-                    RegionCallResult::ReferenceLocal(_) => unreachable!("filtered above"),
-                }
-                return Ok(());
-            }
-            if let Some(length_op) = stable_builtin_length(&call.target)
-                && call.argument_operand_offset == 0
-                && call.args.len() == 1
-                && call.args[0].name.is_none()
-                && !call.args[0].unpack
-                && call.operands.len() == 1
-                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
-                && let Some(operand) = call.operands[0]
-            {
-                let source = lower_region_operand(builder, locals, registers, operand)?;
-                let value = lower_stable_builtin_length(
-                    module,
-                    builder,
-                    native_operations.stable_length,
-                    length_op.baseline_opcode(),
-                    source,
-                    function,
-                    instruction.continuation_id,
-                    result_out,
-                    deopt_out,
-                )?;
-                if matches!(
-                    operand,
-                    RegionOperand::Register(register)
-                        if value_flow.register_fact(register).ownership != SsaOwnership::Borrowed
-                ) && native_argument_has_location(&call.args[0])
-                {
-                    let _ = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(1, function, instruction.continuation_id),
-                        source,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                match call.result {
-                    RegionCallResult::Register(destination) => define_region_register(
-                        builder,
-                        register_variables,
-                        registers,
-                        destination,
-                        value,
-                    )?,
-                    RegionCallResult::Discard => {}
-                    RegionCallResult::ReferenceLocal(_) => unreachable!("filtered above"),
-                }
-                return Ok(());
-            }
-            if let Some(builtin_id) = baseline_builtin_dense_id(&call.target)
-                && call.argument_operand_offset == 0
-                && call.operands.len() == call.args.len()
-                && call.args.iter().enumerate().all(|(index, argument)| {
-                    argument.name.is_none()
-                        && !argument.unpack
-                        && !call.argument_requires_reference_binding(index)
-                })
-                && !call.returns_by_reference
-                && !matches!(call.result, RegionCallResult::ReferenceLocal(_))
-            {
-                lower_baseline_builtin_dispatch_call(
-                    module,
-                    builder,
-                    native_operations.builtin_dispatch,
-                    native_operations.value_release,
-                    value_flow,
-                    locals,
-                    register_variables,
-                    registers,
-                    call,
-                    builtin_id,
-                    instruction,
-                    transition_live_registers,
-                    streaming_call_exit,
-                    result_out,
-                    deopt_out,
-                    resume_state,
-                    pending_status,
-                    pending_value,
-                    function,
-                    local_count,
-                    native_version,
-                    pointer_type,
-                )?;
-                return Ok(());
-            }
-            if let RegionCallTarget::Semantic { operation } = &call.target {
-                if matches!(
-                    operation,
-                    crate::region_ir::RegionSemanticOp::BindGlobal { .. }
-                ) {
-                    lower_cached_bind_global(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        value_flow,
-                        locals,
-                        call,
-                        instruction,
-                        result_out,
-                        deopt_out,
-                        function,
-                    )?;
-                    return Ok(());
-                }
-                lower_direct_semantic_call(
-                    module,
-                    builder,
-                    native_operations.semantic_dispatch,
-                    native_operations.value_release,
-                    value_flow,
-                    locals,
-                    register_variables,
-                    registers,
-                    call,
-                    operation.operation_id(),
-                    instruction,
-                    transition_live_registers,
-                    streaming_call_exit,
-                    result_out,
-                    deopt_out,
-                    function,
-                    local_count,
-                    native_version,
-                    unit_identity,
-                    pointer_type,
-                )?;
-                return Ok(());
-            }
-            let direct_target = call
-                .direct_compiled_target()
-                .filter(|_| {
-                    !matches!(call.result, RegionCallResult::ReferenceLocal(_))
-                        && call
-                            .args
-                            .iter()
-                            .all(|argument| argument.name.is_none() && !argument.unpack)
-                })
-                .filter(|target| {
-                    function_params
-                        .get(target)
-                        .is_some_and(|metadata| !metadata.requires_trampoline)
-                });
-            // Publication already fixes the target, native ABI, and target
-            // runtime view for a cross-unit call. Untyped by-value calls need
-            // no PHP binder work and therefore enter that published native
-            // target directly instead of rebuilding the callee unit through
-            // the generic Rust call dispatcher on every invocation.
-            let linked_signature = direct_linked_signature(call, external_function_signatures);
-            if !matches!(call.result, RegionCallResult::ReferenceLocal(_))
-                && let Some(target) = direct_target
-                && let Some((inline, value)) =
-                    inline_constants.get(&target).copied().and_then(|inline| {
-                        bounded_inline_call_operand(call, inline).map(|value| (inline, value))
-                    })
-            {
-                let mut value = lower_region_operand(builder, locals, registers, value)?;
-                if matches!(inline, BoundedInlineValue::Argument { .. })
-                    && matches!(call.result, RegionCallResult::Register(_))
-                {
-                    value = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(0, function, instruction.continuation_id),
-                        value,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                match call.result {
-                    RegionCallResult::Register(destination) => define_region_register(
-                        builder,
-                        register_variables,
-                        registers,
-                        destination,
-                        value,
-                    )?,
-                    RegionCallResult::Discard => {}
-                    RegionCallResult::ReferenceLocal(_) => unreachable!("filtered above"),
-                }
-                return Ok(());
-            }
-            let direct = direct_target
-                .and_then(|target| {
-                    functions
-                        .get(&target)
-                        .copied()
-                        .map(NativeDirectCallee::Local)
-                        .or_else(|| {
-                            native_operations
-                                .function_resolve
-                                .map(|_| NativeDirectCallee::Resolved(target))
-                        })
-                        .map(|callee| {
-                            let metadata = function_params
-                                .get(&target)
-                                .expect("filtered direct target has metadata");
-                            (
-                                callee,
-                                metadata.params.as_slice(),
-                                metadata.native_arity,
-                                Some(target),
-                            )
-                        })
-                })
-                .or_else(|| {
-                    linked_signature.map(|signature| {
-                        (
-                            NativeDirectCallee::Linked(signature.link_index),
-                            signature.native_params.as_slice(),
-                            signature.native_arity as usize,
-                            None,
-                        )
-                    })
-                })
-                .map(|(callee, params, arity, local_target)| {
-                    (call.result, callee, params, arity, local_target)
-                });
-            let Some((destination, callee, callee_params, callee_arity, local_direct_target)) =
-                direct
-            else {
-                lower_native_call_trampoline(
-                    module,
-                    builder,
-                    native_call_helper,
-                    native_operations.reference_bind,
-                    native_operations.value_release,
-                    value_flow,
-                    locals,
-                    register_variables,
-                    registers,
-                    function_params,
-                    external_function_signatures,
-                    call,
-                    source_block,
-                    instruction,
-                    transition_live_registers,
-                    streaming_call_exit,
-                    result_out,
-                    deopt_out,
-                    function,
-                    local_count,
-                    native_version,
-                    pointer_type,
-                )?;
-                return Ok(());
-            };
-            let expected_return_status = if call.returns_by_reference {
-                crate::JitCallStatus::RETURN_REFERENCE.0
-            } else {
-                crate::JitCallStatus::RETURN.0
-            };
-            let completed_call = begin_native_call_or_resume(
-                builder,
-                pending_status,
-                pending_value,
-                expected_return_status,
-                result_out,
-                resume_state,
-                deopt_out,
-            );
-            let result_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                8,
-                3,
-            ));
-            let callee_result_out = builder.ins().stack_addr(pointer_type, result_slot, 0);
-            let mut prepared_call_args = Vec::with_capacity(call.operands.len());
-            let mut independently_owned_prepared_arguments = std::collections::BTreeSet::new();
-            let mut checked_argument_owners = Vec::new();
-            let mut consumed_call_operands = BTreeMap::new();
-            let argument_plan = call.prepared_argument_plan(callee_params).ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_NATIVE_TRACE_ARGUMENT",
-                    "direct positional call has no prepared PHP argument trace plan",
-                )
-            })?;
-            let prepared_closure = match &call.target {
-                RegionCallTarget::Closure {
-                    callee,
-                    function: Some(_),
-                    bound_object_count,
-                    capture_count,
-                } => Some((
-                    lower_ir_operand(builder, locals, registers, *callee)?,
-                    *bound_object_count,
-                    *capture_count,
-                )),
-                _ => None,
-            };
-            for (index, operand) in call.operands.iter().enumerate() {
-                let operand = operand.ok_or_else(|| {
-                    CraneliftLoweringError::new(
-                        "JIT_CRANELIFT_NATIVE_CALL_BINDER_REQUIRED",
-                        "direct call argument requires the typed native binder",
-                    )
-                })?;
-                if let RegionOperand::Register(register) = operand
-                    && value_flow.consumes_call_operand(instruction.continuation_id, register)
-                {
-                    let owner = use_region_register(builder, registers, register)?;
-                    consumed_call_operands.entry(register).or_insert(owner);
-                }
-                let mut value = if let Some((closure, bound_count, capture_count)) =
-                    prepared_closure
-                    && index < bound_count.saturating_add(capture_count)
-                {
-                    lower_optimizing_prepared_closure_argument(
-                        builder,
-                        closure,
-                        bound_count,
-                        index.checked_sub(bound_count),
-                        deopt_out,
-                    )
-                } else {
-                    lower_region_operand(builder, locals, registers, operand)?
-                };
-                if let Some((visible_index, argument)) = index
-                    .checked_sub(call.argument_operand_offset)
-                    .and_then(|index| call.args.get(index).map(|argument| (index, argument)))
-                    && callee_params
-                        .get(visible_index)
-                        .or_else(|| callee_params.last().filter(|parameter| parameter.variadic))
-                        .is_some_and(|parameter| parameter.by_ref)
-                {
-                    value = lower_direct_reference_argument(
-                        module,
-                        builder,
-                        native_operations.reference_bind,
-                        locals,
-                        registers,
-                        argument,
-                        visible_index,
-                        value,
-                        instruction,
-                        function,
-                        false,
-                        function_is_top_level,
-                        result_out,
-                    )?;
-                }
-                if let Some(target) = local_direct_target
-                    && let Some(visible_index) = index.checked_sub(call.argument_operand_offset)
-                    && callee_params
-                        .get(visible_index)
-                        .or_else(|| callee_params.last().filter(|parameter| parameter.variadic))
-                        .is_some_and(|parameter| parameter.type_.is_some())
-                {
-                    let target = builder.ins().iconst(types::I64, i64::from(target.raw()));
-                    let parameter_flags =
-                        (visible_index as u64) | (u64::from(call.caller_strict_types) << 32);
-                    let parameter_flags = builder.ins().iconst(types::I64, parameter_flags as i64);
-                    let caller = builder.ins().iconst(types::I64, i64::from(function.raw()));
-                    let continuation = builder
-                        .ins()
-                        .iconst(types::I64, i64::from(instruction.continuation_id));
-                    value = lower_native_value_operation_with_state(
-                        module,
-                        builder,
-                        native_operations.argument_check,
-                        0,
-                        &[value, target, parameter_flags, caller, continuation],
-                        result_out,
-                        deopt_out,
-                        function,
-                        local_count,
-                        instruction,
-                        locals,
-                        registers,
-                        transition_live_registers,
-                        native_version,
-                        native_operations.value_release,
-                        &checked_argument_owners,
-                    )?;
-                    independently_owned_prepared_arguments.insert(prepared_call_args.len());
-                    checked_argument_owners.push(value);
-                }
-                prepared_call_args.push(value);
-            }
-            let mut call_args = Vec::with_capacity(prepared_call_args.len());
-            for (index, value) in prepared_call_args.into_iter().enumerate() {
-                if !independently_owned_prepared_arguments.contains(&index) {
-                    let _ = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(0, function, instruction.continuation_id),
-                        value,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                call_args.push(value);
-            }
-            let mut trace_extra_values = Vec::with_capacity(argument_plan.extra_sources.len());
-            for source in &argument_plan.extra_sources {
-                let argument = call.args.get(*source).ok_or_else(|| {
-                    CraneliftLoweringError::new(
-                        "JIT_CRANELIFT_NATIVE_TRACE_ARGUMENT",
-                        "prepared surplus argument source is missing",
-                    )
-                })?;
-                trace_extra_values.push(lower_ir_operand(
-                    builder,
-                    locals,
-                    registers,
-                    argument.value,
-                )?);
-            }
-            let trace_variadic_count = argument_plan.visible_variadic_sources.len();
-            let fixed_start = call.argument_operand_offset;
-            let fixed_end = fixed_start.saturating_add(argument_plan.visible_fixed_count);
-            let mut trace_values = call_args
-                .get(fixed_start..fixed_end)
-                .unwrap_or(&[])
-                .to_vec();
-            if trace_variadic_count != 0 {
-                let variadic_start = call
-                    .argument_operand_offset
-                    .saturating_add(callee_params.len().saturating_sub(1));
-                trace_values.extend(
-                    call_args
-                        .iter()
-                        .skip(variadic_start)
-                        .take(trace_variadic_count)
-                        .copied(),
-                );
-            }
-            trace_values.extend(trace_extra_values);
-            if callee_params
-                .last()
-                .is_some_and(|parameter| parameter.variadic)
-            {
-                let fixed_arity = call
-                    .argument_operand_offset
-                    .saturating_add(callee_params.len().saturating_sub(1));
-                let variadic_values = call_args.split_off(fixed_arity.min(call_args.len()));
-                let mut allocation_cleanup = call_args.clone();
-                allocation_cleanup.extend(variadic_values.iter().copied());
-                let mut variadic_array = lower_native_value_operation_with_state(
-                    module,
-                    builder,
-                    native_operations.array_new,
-                    0,
-                    &[],
-                    result_out,
-                    deopt_out,
-                    function,
-                    local_count,
-                    instruction,
-                    locals,
-                    registers,
-                    transition_live_registers,
-                    native_version,
-                    native_operations.value_release,
-                    &allocation_cleanup,
-                )?;
-                for (index, value) in variadic_values.iter().copied().enumerate() {
-                    let key = builder
-                        .ins()
-                        .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-                    let mut insertion_cleanup =
-                        Vec::with_capacity(call_args.len() + variadic_values.len() - index + 1);
-                    insertion_cleanup.extend(call_args.iter().copied());
-                    insertion_cleanup.push(variadic_array);
-                    insertion_cleanup.extend(variadic_values[index..].iter().copied());
-                    variadic_array = lower_native_value_operation_with_state(
-                        module,
-                        builder,
-                        native_operations.array_insert,
-                        1,
-                        &[variadic_array, key, value],
-                        result_out,
-                        deopt_out,
-                        function,
-                        local_count,
-                        instruction,
-                        locals,
-                        registers,
-                        transition_live_registers,
-                        native_version,
-                        native_operations.value_release,
-                        &insertion_cleanup,
-                    )?;
-                    // Array insertion publishes its own child owner. Drop the
-                    // independently prepared call owner immediately instead
-                    // of leaking one owner for every variadic argument.
-                    let _ = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        1,
-                        value,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                call_args.push(variadic_array);
-            }
-            // Every packed operand above received an independent owner for
-            // the duration of this borrowed-input native call. The callee's
-            // return boundary publishes an independently owned result, so
-            // all packed argument owners are released after the call. A
-            // final-use source owner is released at that same boundary;
-            // otherwise its later IR use or Discard remains authoritative.
-            let released_call_arguments = call_args.clone();
-            if call_args.len() != callee_arity {
-                return Err(CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_NATIVE_CALL_ARITY",
-                    format!(
-                        "direct native call to {} produced {} packed arguments; expected {}",
-                        local_direct_target.map_or_else(
-                            || "published linked target".to_owned(),
-                            |target| format!("function {}", target.raw()),
-                        ),
-                        call_args.len(),
-                        callee_arity
-                    ),
-                ));
-            }
-            let packed_size =
-                u32::try_from(call_args.len().max(1).saturating_mul(8)).map_err(|_| {
-                    CraneliftLoweringError::new(
-                        "JIT_CRANELIFT_NATIVE_CALL_ARITY",
-                        "direct native call argument storage exceeds the native stack-slot ABI",
-                    )
-                })?;
-            // Resolve a compile-on-demand target before taking ownership of
-            // arena-backed argument storage. Resolution can terminate this
-            // native activation when compilation or publication fails; no
-            // generated terminal edge may bypass a live frame allocation.
-            let caller_runtime_view = lower_active_runtime_view(builder, deopt_out);
-            let mut linked_runtime_view = None;
-            let resolved_callee = match callee {
-                NativeDirectCallee::Resolved(target) => {
-                    let helper = native_operations.function_resolve.ok_or_else(|| {
-                        CraneliftLoweringError::new(
-                            "JIT_CRANELIFT_REJECT_NATIVE_FUNCTION_RESOLVER",
-                            "statically known callee has no compile-on-demand resolver",
-                        )
-                    })?;
-                    let resolve = builder.create_block();
-                    let address_ready = builder.create_block();
-                    builder.append_block_param(address_ready, pointer_type);
-
-                    let preferred_entries = builder.ins().load(
-                        pointer_type,
-                        MemFlagsData::new(),
-                        caller_runtime_view,
-                        std::mem::offset_of!(
-                            crate::JitNativeRuntimeView,
-                            trusted_preferred_function_entries,
-                        ) as i32,
-                    );
-                    let entry_offset =
-                        i64::try_from(target.index().saturating_mul(pointer_type.bytes() as usize))
-                            .unwrap_or(i64::MAX);
-                    let entry = builder.ins().iadd_imm(preferred_entries, entry_offset);
-                    // The preferred callee owns its one exact baseline
-                    // continuation. Callers therefore select the published tier
-                    // without embedding a second resume path at every callsite.
-                    let address =
-                        builder
-                            .ins()
-                            .atomic_load(pointer_type, MemFlagsData::new(), entry);
-                    let published = builder.ins().icmp_imm(IntCC::NotEqual, address, 0);
-                    builder
-                        .ins()
-                        .brif(published, address_ready, &[address.into()], resolve, &[]);
-
-                    builder.switch_to_block(resolve);
-                    let address_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        pointer_type.bytes(),
-                        3,
-                    ));
-                    let address_out = builder.ins().stack_addr(pointer_type, address_slot, 0);
-                    let vm_context = builder.ins().iconst(types::I64, 0);
-                    let function_id = builder.ins().iconst(types::I64, i64::from(target.raw()));
-                    let resolve = call_native_helper(
-                        module,
-                        builder,
-                        helper,
-                        &[vm_context, function_id, address_out],
-                    );
-                    require_native_operation_ok(
-                        builder,
-                        builder.inst_results(resolve)[0],
-                        helper.terminal_exit()?,
-                    )?;
-                    let address = builder.ins().stack_load(pointer_type, address_slot, 0);
-                    builder.ins().jump(address_ready, &[address.into()]);
-
-                    builder.switch_to_block(address_ready);
-                    let address = builder.block_params(address_ready)[0];
-                    let signature = builder.import_signature(native_php_entry_signature(module));
-                    Some((address, signature))
-                }
-                NativeDirectCallee::Linked(link_index) => {
-                    // Publication resolves the exact target unit and prepares
-                    // its preferred entry before exposing this link. The
-                    // callee runtime view remains selected until either the
-                    // call returns or its precise side-exit state is handed
-                    // back to the request boundary.
-                    let links = builder.ins().load(
-                        pointer_type,
-                        MemFlagsData::new(),
-                        caller_runtime_view,
-                        std::mem::offset_of!(crate::JitNativeRuntimeView, trusted_linked_functions,)
-                            as i32,
-                    );
-                    let link = builder.ins().iadd_imm(
-                        links,
-                        i64::from(link_index)
-                            * i64::try_from(std::mem::size_of::<crate::JitNativeLinkedFunction>())
-                                .unwrap_or(i64::MAX),
-                    );
-                    let preferred_entry = builder.ins().load(
-                        pointer_type,
-                        MemFlagsData::new(),
-                        link,
-                        std::mem::offset_of!(crate::JitNativeLinkedFunction, preferred_entry)
-                            as i32,
-                    );
-                    let address = builder.ins().atomic_load(
-                        pointer_type,
-                        MemFlagsData::new(),
-                        preferred_entry,
-                    );
-                    linked_runtime_view = Some(builder.ins().load(
-                        pointer_type,
-                        MemFlagsData::new(),
-                        link,
-                        std::mem::offset_of!(crate::JitNativeLinkedFunction, runtime_view) as i32,
-                    ));
-                    let signature = builder.import_signature(native_php_entry_signature(module));
-                    Some((address, signature))
-                }
-                NativeDirectCallee::Local(_) => None,
-            };
-            let arguments = allocate_native_frame_storage(
-                module,
-                builder,
-                native_operations,
-                packed_size,
-                3,
-                result_out,
-            );
-            for (index, value) in call_args.iter().copied().enumerate() {
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    value,
-                    arguments,
-                    i32::try_from(index.saturating_mul(8)).map_err(|_| {
-                        CraneliftLoweringError::new(
-                            "JIT_CRANELIFT_NATIVE_CALL_ARITY",
-                            "direct native call argument offset exceeds the native ABI",
-                        )
-                    })?,
-                );
-            }
-            let trace_publication = publish_native_call_trace(
-                builder,
-                pointer_type,
-                linked_runtime_view.unwrap_or(caller_runtime_view),
-                &trace_values,
-                argument_plan.visible_fixed_count,
-                None,
-            )?;
-            let linked_caller_runtime_view = linked_runtime_view.map(|callee_runtime_view| {
-                let deopt_view_pointer = builder.ins().iadd_imm(
-                    deopt_out,
-                    i64::try_from(std::mem::offset_of!(
-                        crate::JitDeoptState,
-                        runtime_view_pointer,
-                    ))
-                    .unwrap_or(i64::MAX),
-                );
-                let runtime = native_operations
-                    .runtime
-                    .expect("native call must carry request fast state");
-                let fast_view_pointer = builder.ins().iadd_imm(
-                    runtime,
-                    i64::try_from(std::mem::offset_of!(
-                        crate::JitNativeFastStateHeader,
-                        runtime_view_pointer,
-                    ))
-                    .unwrap_or(i64::MAX),
-                );
-                let previous_deopt_view =
-                    builder
-                        .ins()
-                        .load(pointer_type, MemFlagsData::new(), deopt_view_pointer, 0);
-                let previous_fast_view =
-                    builder
-                        .ins()
-                        .load(pointer_type, MemFlagsData::new(), fast_view_pointer, 0);
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    callee_runtime_view,
-                    deopt_view_pointer,
-                    0,
-                );
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    callee_runtime_view,
-                    fast_view_pointer,
-                    0,
-                );
-                (
-                    deopt_view_pointer,
-                    fast_view_pointer,
-                    previous_deopt_view,
-                    previous_fast_view,
-                )
-            });
-            let callee_call_args = [
-                native_operations
-                    .runtime
-                    .expect("native call must carry request fast state"),
-                arguments,
-                callee_result_out,
-                deopt_out,
-                builder.ins().iconst(types::I32, -1),
-                builder.ins().iconst(pointer_type, 0),
-            ];
-            let call = match callee {
-                NativeDirectCallee::Local(callee) => {
-                    let callee_ref = module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(callee_ref, &callee_call_args)
-                }
-                NativeDirectCallee::Resolved(_) => {
-                    let (address, signature) = resolved_callee
-                        .expect("resolved native callee must be prepared before frame allocation");
-                    builder
-                        .ins()
-                        .call_indirect(signature, address, &callee_call_args)
-                }
-                NativeDirectCallee::Linked(_) => {
-                    let (address, signature) = resolved_callee
-                        .expect("linked native callee must be loaded before frame allocation");
-                    builder
-                        .ins()
-                        .call_indirect(signature, address, &callee_call_args)
-                }
-            };
-            let status = builder.inst_results(call)[0];
-            let exception_routes = local_direct_target.filter(|target| {
-                function_params
-                    .get(target)
-                    .is_some_and(|metadata| metadata.has_exception_handlers)
-            });
-            let status_dispatch = builder.create_block();
-            builder.append_block_param(status_dispatch, types::I32);
-            let ok = builder.create_block();
-            let side_exit = builder.create_block();
-            builder.append_block_param(side_exit, types::I32);
-            builder.ins().jump(status_dispatch, &[status.into()]);
-
-            builder.switch_to_block(status_dispatch);
-            let status = builder.block_params(status_dispatch)[0];
-            let is_ok =
-                builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, status, i64::from(expected_return_status));
-            if let Some(exception_callee) = exception_routes {
-                let inspect_throw = builder.create_block();
-                builder.append_block_param(inspect_throw, types::I32);
-                builder
-                    .ins()
-                    .brif(is_ok, ok, &[], inspect_throw, &[status.into()]);
-                builder.switch_to_block(inspect_throw);
-                let status = builder.block_params(inspect_throw)[0];
-                let route_throw = builder.create_block();
-                builder.append_block_param(route_throw, types::I32);
-                let is_throw = builder.ins().icmp_imm(
-                    IntCC::Equal,
-                    status,
-                    i64::from(crate::JitCallStatus::THROW.0),
-                );
-                builder.ins().brif(
-                    is_throw,
-                    route_throw,
-                    &[status.into()],
-                    side_exit,
-                    &[status.into()],
-                );
-
-                builder.switch_to_block(route_throw);
-                let status = builder.block_params(route_throw)[0];
-                let throwable = builder.ins().stack_load(types::I64, result_slot, 0);
-                let (resume_id, pending_status) =
-                    lower_native_exception_route(builder, throwable, exception_callee, deopt_out);
-                let resume = builder.create_block();
-                builder.append_block_param(resume, types::I32);
-                builder.append_block_param(resume, types::I32);
-                builder.append_block_param(resume, types::I64);
-                let available = builder.ins().icmp_imm(IntCC::NotEqual, resume_id, 0);
-                builder.ins().brif(
-                    available,
-                    resume,
-                    &[resume_id.into(), pending_status.into(), throwable.into()],
-                    side_exit,
-                    &[status.into()],
-                );
-
-                builder.switch_to_block(resume);
-                let resume_id = builder.block_params(resume)[0];
-                let pending_status = builder.block_params(resume)[1];
-                let throwable = builder.block_params(resume)[2];
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    pending_status,
-                    deopt_out,
-                    std::mem::offset_of!(crate::JitDeoptState, control_status) as i32,
-                );
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    throwable,
-                    deopt_out,
-                    std::mem::offset_of!(crate::JitDeoptState, control_value) as i32,
-                );
-                let clear_reserved = builder.ins().iconst(types::I32, 0);
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    clear_reserved,
-                    deopt_out,
-                    std::mem::offset_of!(crate::JitDeoptState, control_reserved) as i32,
-                );
-                let resumed_call_args = [
-                    native_operations
-                        .runtime
-                        .expect("native call must carry request fast state"),
-                    arguments,
-                    callee_result_out,
-                    deopt_out,
-                    resume_id,
-                    deopt_out,
-                ];
-                let resumed = match callee {
-                    NativeDirectCallee::Local(callee) => {
-                        let callee_ref = module.declare_func_in_func(callee, builder.func);
-                        builder.ins().call(callee_ref, &resumed_call_args)
-                    }
-                    NativeDirectCallee::Resolved(_) => {
-                        let (address, signature) = resolved_callee
-                            .expect("resolved native callee remains prepared while resuming");
-                        builder
-                            .ins()
-                            .call_indirect(signature, address, &resumed_call_args)
-                    }
-                    NativeDirectCallee::Linked(_) => {
-                        unreachable!("linked callees do not carry same-unit exception routes")
-                    }
-                };
-                let resumed_status = builder.inst_results(resumed)[0];
-                builder
-                    .ins()
-                    .jump(status_dispatch, &[resumed_status.into()]);
-            } else {
-                builder
-                    .ins()
-                    .brif(is_ok, ok, &[], side_exit, &[status.into()]);
-            }
-
-            builder.switch_to_block(side_exit);
-            let status = builder.block_params(side_exit)[0];
-            restore_native_call_trace(builder, trace_publication);
-            if let Some((_, fast_view_pointer, _, previous_fast_view)) = linked_caller_runtime_view
-            {
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    previous_fast_view,
-                    fast_view_pointer,
-                    0,
-                );
-            }
-            release_native_frame_storage(
-                module,
-                builder,
-                native_operations,
-                arguments,
-                result_out,
-            )?;
-            let suspension_link = capture_native_fiber_callee_if_suspended(
-                module, builder, status, deopt_out, result_out,
-            );
-            let control_value = builder.ins().stack_load(types::I64, result_slot, 0);
-            for argument in &released_call_arguments {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    1,
-                    *argument,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            for operand in consumed_call_operands.values().copied() {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    1,
-                    operand,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            builder
-                .ins()
-                .store(MemFlagsData::new(), control_value, result_out, 0);
-            let caller_unwind = builder.create_block();
-            let preserve_callee = builder.create_block();
-            let is_throw = builder.ins().icmp_imm(
-                IntCC::Equal,
-                status,
-                i64::from(crate::JitCallStatus::THROW.0),
-            );
-            let is_exit = builder.ins().icmp_imm(
-                IntCC::Equal,
-                status,
-                i64::from(crate::JitCallStatus::EXIT.0),
-            );
-            let is_suspend = builder.ins().icmp_imm(
-                IntCC::Equal,
-                status,
-                i64::from(crate::JitCallStatus::SUSPEND_FIBER.0),
-            );
-            let unwinds_caller = builder.ins().bor(is_throw, is_exit);
-            let publishes_caller = builder.ins().bor(unwinds_caller, is_suspend);
-            builder
-                .ins()
-                .brif(publishes_caller, caller_unwind, &[], preserve_callee, &[]);
-            builder.switch_to_block(caller_unwind);
-            if let Some((deopt_view_pointer, _, previous_deopt_view, _)) =
-                linked_caller_runtime_view
-            {
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    previous_deopt_view,
-                    deopt_view_pointer,
-                    0,
-                );
-            }
-            // Throw/exit traverse this caller's catch/finally table. A Fiber
-            // suspension retains the copied callee state and publishes this
-            // caller as the next resumable native activation.
-            publish_native_call_state(
-                builder,
-                deopt_out,
-                function,
-                local_count,
-                instruction,
-                locals,
-                native_version,
-            )?;
-            publish_native_register_state(
-                builder,
-                deopt_out,
-                registers,
-                transition_live_registers,
-            )?;
-            publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
-            builder.ins().return_(&[status]);
-            builder.switch_to_block(preserve_callee);
-            // Guard exits and other non-unwind statuses retain the callee's
-            // precise continuation so native transitions can resume it.
-            builder.ins().return_(&[status]);
-            builder.switch_to_block(ok);
-            restore_native_call_trace(builder, trace_publication);
-            if let Some((_, fast_view_pointer, _, previous_fast_view)) = linked_caller_runtime_view
-            {
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    previous_fast_view,
-                    fast_view_pointer,
-                    0,
-                );
-            }
-            release_native_frame_storage(
-                module,
-                builder,
-                native_operations,
-                arguments,
-                result_out,
-            )?;
-            if let Some((deopt_view_pointer, _, previous_deopt_view, _)) =
-                linked_caller_runtime_view
-            {
-                builder.ins().store(
-                    MemFlagsData::new(),
-                    previous_deopt_view,
-                    deopt_view_pointer,
-                    0,
-                );
-            }
-            let value = builder.ins().stack_load(types::I64, result_slot, 0);
-            for argument in &released_call_arguments {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    *argument,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            for operand in consumed_call_operands.into_values() {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    operand,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            builder.ins().jump(completed_call, &[value.into()]);
-            builder.switch_to_block(completed_call);
-            let value = builder.block_params(completed_call)[0];
-            match destination {
-                RegionCallResult::Register(dst) => {
-                    define_region_register(builder, register_variables, registers, dst, value)?;
-                }
-                RegionCallResult::ReferenceLocal(local) => {
-                    define_local_variable(builder, locals, local, value)?;
-                    publish_native_reference_local(
-                        module,
-                        builder,
-                        native_operations.reference_bind,
-                        value,
-                        function,
-                        local,
-                        result_out,
-                    )?;
-                }
-                RegionCallResult::Discard => {}
-            }
-        }
-        RegionInstructionKind::NativeControl(control) => match control {
-            RegionNativeControl::EnterTry { .. } | RegionNativeControl::LeaveTry => {
-                // Handler state is published in `JitRegionStateMetadata` and
-                // consumed by explicit native unwind. These markers do not
-                // enter the explicit native exception-unwind path.
-            }
-            RegionNativeControl::EndFinally {
-                after,
-                outer_finally,
-            } => {
-                let status = builder.use_var(pending_status);
-                let normal = cranelift_block(blocks, *after)?;
-                let pending = builder.create_block();
-                let is_continue = builder.ins().icmp_imm(
-                    IntCC::Equal,
-                    status,
-                    i64::from(crate::JitCallStatus::CONTINUE.0),
-                );
-                builder.ins().brif(is_continue, normal, &[], pending, &[]);
-                builder.switch_to_block(pending);
-                if let Some(finally) = outer_finally {
-                    builder.ins().jump(cranelift_block(blocks, *finally)?, &[]);
-                } else {
-                    let mut value = builder.use_var(pending_value);
-                    if return_check_required {
-                        let check = builder.create_block();
-                        let preserve = builder.create_block();
-                        let checked = builder.create_block();
-                        builder.append_block_param(checked, types::I64);
-                        let is_return = builder.ins().icmp_imm(
-                            IntCC::Equal,
-                            status,
-                            i64::from(crate::JitCallStatus::RETURN.0),
-                        );
-                        let is_reference_return = builder.ins().icmp_imm(
-                            IntCC::Equal,
-                            status,
-                            i64::from(crate::JitCallStatus::RETURN_REFERENCE.0),
-                        );
-                        let requires_check = builder.ins().bor(is_return, is_reference_return);
-                        builder
-                            .ins()
-                            .brif(requires_check, check, &[], preserve, &[]);
-
-                        builder.switch_to_block(check);
-                        let coerced = lower_native_return_check_with_frame_cleanup(
-                            module,
-                            builder,
-                            native_operations,
-                            function,
-                            local_count,
-                            instruction.continuation_id,
-                            native_version,
-                            value,
-                            true,
-                            locals,
-                            value_flow,
-                            result_out,
-                            deopt_out,
-                        )?;
-                        builder.ins().jump(checked, &[coerced.into()]);
-
-                        builder.switch_to_block(preserve);
-                        builder.ins().jump(checked, &[value.into()]);
-
-                        builder.switch_to_block(checked);
-                        value = builder.block_params(checked)[0];
-                    }
-                    lower_owned_frame_locals(
-                        module,
-                        builder,
-                        locals,
-                        native_operations,
-                        value_flow,
-                        function,
-                        result_out,
-                        deopt_out,
-                    )?;
-                    publish_native_call_state(
-                        builder,
-                        deopt_out,
-                        function,
-                        local_count,
-                        instruction,
-                        locals,
-                        native_version,
-                    )?;
-                    builder
-                        .ins()
-                        .store(MemFlagsData::new(), value, result_out, 0);
-                    builder.ins().return_(&[status]);
-                }
-                let unreachable = builder.create_block();
-                builder.switch_to_block(unreachable);
-                builder.seal_block(unreachable);
-            }
-            RegionNativeControl::Throw { value } => {
-                let operand = *value;
-                let fact = lowering_operand_fact(value_flow, constants, operand);
-                let mut value = lower_region_operand(builder, locals, registers, operand)?;
-                if fact.ownership == SsaOwnership::Borrowed {
-                    // Match Return/Exit ownership transfer: the thrown value
-                    // must survive release of the local from which it was
-                    // loaded. Operation zero is the direct retain half of the
-                    // shared native retain/release primitive.
-                    value = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(0, function, instruction.continuation_id),
-                        value,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-                lower_owned_frame_locals(
-                    module,
-                    builder,
-                    locals,
-                    native_operations,
-                    value_flow,
-                    function,
-                    result_out,
-                    deopt_out,
-                )?;
-                publish_native_call_state(
-                    builder,
-                    deopt_out,
-                    function,
-                    local_count,
-                    instruction,
-                    locals,
-                    native_version,
-                )?;
-                builder
-                    .ins()
-                    .store(MemFlagsData::new(), value, result_out, 0);
-                let status = builder
-                    .ins()
-                    .iconst(types::I32, i64::from(crate::JitCallStatus::THROW.0));
-                builder.ins().return_(&[status]);
-                let unreachable = builder.create_block();
-                builder.switch_to_block(unreachable);
-                builder.seal_block(unreachable);
-            }
-            RegionNativeControl::MakeException { dst, message, .. } => {
-                let message = if let Some(message) = message {
-                    lower_region_operand(builder, locals, registers, *message)?
-                } else {
-                    builder
-                        .ins()
-                        .iconst(types::I64, crate::jit_encode_constant(u32::MAX))
-                };
-                let function_id = builder.ins().iconst(types::I64, i64::from(function.raw()));
-                let continuation_id = builder
-                    .ins()
-                    .iconst(types::I64, i64::from(instruction.continuation_id));
-                let value = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.exception_new,
-                    0,
-                    &[message, function_id, continuation_id],
-                    result_out,
-                )?;
-                define_region_register(builder, register_variables, registers, *dst, value)?;
-            }
-        },
-        RegionInstructionKind::NativeSuspend(suspend) => {
-            lower_native_suspension(
-                builder,
-                suspension_blocks,
-                locals,
-                register_variables,
-                registers,
-                transition_live_registers,
-                suspend,
-                constants,
-                instruction,
-                result_out,
-                deopt_out,
-                resume_state,
-                function,
-                local_count,
-            )?;
-        }
-        RegionInstructionKind::NativeDynamicCode(operation) => {
-            lower_native_dynamic_code(
-                module,
-                builder,
-                native_dynamic_code_helper,
-                locals,
-                register_variables,
-                registers,
-                operation,
-                instruction,
-                result_out,
-                function,
-                pointer_type,
-            )?;
-        }
-        RegionInstructionKind::Compare { dst, op, lhs, rhs } => {
-            let lhs_operand = *lhs;
-            let rhs_operand = *rhs;
-            let lhs = lower_region_operand(builder, locals, registers, lhs_operand)?;
-            let rhs = lower_region_operand(builder, locals, registers, rhs_operand)?;
-            let lhs_fact = lowering_operand_fact(value_flow, constants, lhs_operand);
-            let rhs_fact = lowering_operand_fact(value_flow, constants, rhs_operand);
-            let direct = (lhs_fact.certainty != crate::region_ir::SsaCertainty::Unknown
-                && rhs_fact.certainty != crate::region_ir::SsaCertainty::Unknown)
-                .then(|| {
-                    lower_direct_compare(builder, *op, lhs, rhs, lhs_fact.class, rhs_fact.class)
-                })
-                .flatten();
-            let cl_value = if let Some(value) = direct {
-                value
-            } else if matches!(
-                op,
-                RegionCompareOpCode::Identical | RegionCompareOpCode::NotIdentical
-            ) {
-                lower_guarded_strict_identity(
-                    module,
-                    builder,
-                    native_operations.compare,
-                    *op,
-                    lhs,
-                    rhs,
-                    result_out,
-                )?
-            } else if native_operations.compare.is_some() {
-                lower_guarded_integer_compare(
-                    module,
-                    builder,
-                    native_operations.compare,
-                    *op,
-                    lhs,
-                    rhs,
-                    result_out,
-                )?
-            } else {
-                let compared = builder.ins().icmp(region_compare_intcc(*op), lhs, rhs);
-                builder.ins().uextend(types::I64, compared)
-            };
-            define_region_register(builder, register_variables, registers, *dst, cl_value)?;
-        }
-        RegionInstructionKind::Cast { dst, op, src } => {
-            let src_operand = *src;
-            let src = lower_region_operand(builder, locals, registers, src_operand)?;
-            let fact = lowering_operand_fact(value_flow, constants, src_operand);
-            let cast_operation =
-                if function.raw() <= 0x03ff && instruction.continuation_id <= 0x03_ffff {
-                    0x8000_0000
-                        | native_cast_opcode(*op)
-                        | (function.raw() << 3)
-                        | (instruction.continuation_id << 13)
-                } else {
-                    native_cast_opcode(*op)
-                };
-            let direct = (fact.certainty != crate::region_ir::SsaCertainty::Unknown)
-                .then(|| lower_direct_cast(builder, *op, src, fact.class))
-                .flatten();
-            let value = if let Some(value) = direct {
-                value
-            } else {
-                lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.cast,
-                    cast_operation,
-                    &[src],
-                    result_out,
-                )?
-            };
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::Echo { src } => {
-            let src = lower_region_operand(builder, locals, registers, *src)?;
-            let helper = native_operations.echo.ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-                    "native echo helper was not declared",
-                )
-            })?;
-            let call = call_native_helper(module, builder, helper, &[src]);
-            require_native_operation_ok(
-                builder,
-                builder.inst_results(call)[0],
-                helper.terminal_exit()?,
-            )?;
-        }
-        RegionInstructionKind::NewArray { dst } => {
-            let value = lower_baseline_direct_new_array(
-                module,
-                builder,
-                native_operations.array_new,
-                result_out,
-                deopt_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::NewObject { dst, class, .. } => {
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.object_new,
-                *class,
-                &[],
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::FetchProperty { dst, object, .. } => {
-            publish_native_call_state(
-                builder,
-                deopt_out,
-                function,
-                local_count,
-                instruction,
-                locals,
-                native_version,
-            )?;
-            publish_native_register_state(
-                builder,
-                deopt_out,
-                registers,
-                transition_live_registers,
-            )?;
-            let object_operand = *object;
-            let object = lower_region_operand(builder, locals, registers, object_operand)?;
-            let object_fact = lowering_operand_fact(value_flow, constants, object_operand);
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_fetch,
-                0,
-                &[object, function_value, instruction_id],
-                result_out,
-            )?;
-            if value_release_required(object_fact) {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    object,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::FetchDynamicStaticProperty { dst, class_name } => {
-            publish_native_call_state(
-                builder,
-                deopt_out,
-                function,
-                local_count,
-                instruction,
-                locals,
-                native_version,
-            )?;
-            publish_native_register_state(
-                builder,
-                deopt_out,
-                registers,
-                transition_live_registers,
-            )?;
-            let class_name = lower_region_operand(builder, locals, registers, *class_name)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_fetch,
-                2,
-                &[class_name, function_value, instruction_id],
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::FetchObjectClassName { dst, object, .. } => {
-            publish_native_call_state(
-                builder,
-                deopt_out,
-                function,
-                local_count,
-                instruction,
-                locals,
-                native_version,
-            )?;
-            publish_native_register_state(
-                builder,
-                deopt_out,
-                registers,
-                transition_live_registers,
-            )?;
-            let object = lower_region_operand(builder, locals, registers, *object)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_fetch,
-                1,
-                &[object, function_value, instruction_id],
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::AssignProperty {
-            dst, object, value, ..
-        } => {
-            publish_native_call_state(
-                builder,
-                deopt_out,
-                function,
-                local_count,
-                instruction,
-                locals,
-                native_version,
-            )?;
-            publish_native_register_state(
-                builder,
-                deopt_out,
-                registers,
-                transition_live_registers,
-            )?;
-            let object_operand = *object;
-            let object = lower_region_operand(builder, locals, registers, object_operand)?;
-            let object_fact = lowering_operand_fact(value_flow, constants, object_operand);
-            let value_operand = *value;
-            let value = lower_region_operand(builder, locals, registers, value_operand)?;
-            let value_fact = lowering_operand_fact(value_flow, constants, value_operand);
-            let move_value = value_release_required(value_fact);
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let instruction_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.property_assign,
-                u32::from(move_value) << 1,
-                &[object, value, function_value, instruction_id],
-                result_out,
-            )?;
-            if value_release_required(object_fact) {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    object,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::CloneObject { dst, object, .. } => {
-            let object = lower_region_operand(builder, locals, registers, *object)?;
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.object_clone,
-                0,
-                &[object],
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::CloneWith {
-            dst,
-            object,
-            replacements,
-        } => {
-            let object = lower_region_operand(builder, locals, registers, *object)?;
-            let replacements = lower_region_operand(builder, locals, registers, *replacements)?;
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.object_clone_with,
-                0,
-                &[object, replacements],
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::ArrayInsert {
-            array,
-            key,
-            value,
-            by_ref_local,
-        } => {
-            let value_operand = *value;
-            let array_value =
-                lower_region_operand(builder, locals, registers, RegionOperand::Register(*array))?;
-            let append = key.is_none();
-            let constant_string_key =
-                key.is_some_and(|key| array_key_is_string_constant(constants, key));
-            let key = match key {
-                Some(key) => lower_array_key_operand(builder, locals, registers, constants, *key)?,
-                None => builder
-                    .ins()
-                    .iconst(types::I64, crate::jit_encode_constant(u32::MAX)),
-            };
-            let mut value = lower_region_operand(builder, locals, registers, value_operand)?;
-            if let Some(local) = by_ref_local {
-                let zero = builder.ins().iconst(types::I64, 0);
-                value = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.reference_bind,
-                    0,
-                    &[value, zero, zero],
-                    result_out,
-                )?;
-                define_local_variable(builder, locals, *local, value)?;
-                publish_native_reference_local(
-                    module,
-                    builder,
-                    native_operations.reference_bind,
-                    value,
-                    function,
-                    *local,
-                    result_out,
-                )?;
-            } else {
-                value = lower_baseline_by_value_array_operand(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    native_operations.value_release,
-                    value_operand,
-                    value,
-                    function,
-                    local_count,
-                    instruction.span,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            let operation =
-                native_dim_operation(u32::from(append), function, instruction.continuation_id);
-            let updated = if append && by_ref_local.is_none() {
-                lower_direct_array_append(
-                    module,
-                    builder,
-                    array_value,
-                    None,
-                    value,
-                    false,
-                    result_out,
-                    deopt_out,
-                    NativeBaselineArrayWriteFallback::Baseline {
-                        helper: native_operations.array_insert,
-                        lifecycle: native_operations.value_release,
-                        operation,
-                        function,
-                        local_count,
-                        instruction,
-                        locals,
-                        registers,
-                        live_registers: transition_live_registers,
-                        native_version,
-                    },
-                )?
-            } else if !append && by_ref_local.is_none() {
-                lower_direct_array_insert(
-                    module,
-                    builder,
-                    array_value,
-                    key,
-                    constant_string_key,
-                    value,
-                    false,
-                    result_out,
-                    deopt_out,
-                    NativeBaselineArrayWriteFallback::Baseline {
-                        helper: native_operations.array_insert,
-                        lifecycle: native_operations.value_release,
-                        operation,
-                        function,
-                        local_count,
-                        instruction,
-                        locals,
-                        registers,
-                        live_registers: transition_live_registers,
-                        native_version,
-                    },
-                )?
-            } else {
-                lower_native_value_operation_with_state(
-                    module,
-                    builder,
-                    native_operations.array_insert,
-                    operation,
-                    &[array_value, key, value],
-                    result_out,
-                    deopt_out,
-                    function,
-                    local_count,
-                    instruction,
-                    locals,
-                    registers,
-                    transition_live_registers,
-                    native_version,
-                    None,
-                    &[],
-                )?
-            };
-            define_region_register(builder, register_variables, registers, *array, updated)?;
-        }
-        RegionInstructionKind::ArraySpread { array, source } => {
-            let array_value =
-                lower_region_operand(builder, locals, registers, RegionOperand::Register(*array))?;
-            let source_operand = *source;
-            let source = lower_region_operand(builder, locals, registers, source_operand)?;
-            let source = lower_baseline_by_value_array_operand(
-                module,
-                builder,
-                native_operations.local_fetch,
-                native_operations.value_release,
-                source_operand,
-                source,
-                function,
-                local_count,
-                instruction.span,
-                result_out,
-                deopt_out,
-            )?;
-            let updated = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.array_spread,
-                0,
-                &[array_value, source],
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *array, updated)?;
-        }
-        RegionInstructionKind::FetchDim {
-            dst,
-            array,
-            key,
-            quiet,
-            mode,
-        } => {
-            // An lvalue probe prepares a later write/reference bind. Missing
-            // entries become null without PHP's read-side undefined-key
-            // warning; the subsequent binding operation creates the slot.
-            let quiet = *quiet || *mode == php_ir::instruction::DimFetchMode::Lvalue;
-            // The dimension helper borrows and dereferences its target. Passing
-            // the encoded local directly avoids manufacturing an owned copy
-            // solely to release it again after the helper returns.
-            let (array, release_array) = if let RegionOperand::Local(local) = array {
-                let current = use_local_variable(builder, locals, *local)?;
-                if ordinary_local_fast_path(function_is_top_level, function_local_names, *local) {
-                    (current, false)
-                } else {
-                    (
-                        lower_native_local_fetch(
-                            module,
-                            builder,
-                            native_operations.local_fetch,
-                            current,
-                            quiet,
-                            false,
-                            function,
-                            *local,
-                            instruction.span,
-                            result_out,
-                        )?,
-                        true,
-                    )
-                }
-            } else {
-                (
-                    lower_region_operand(builder, locals, registers, *array)?,
-                    false,
-                )
-            };
-            let key = lower_array_key_operand(builder, locals, registers, constants, *key)?;
-            let operation =
-                native_dim_operation(u32::from(quiet), function, instruction.continuation_id);
-            let value = if *mode == php_ir::instruction::DimFetchMode::Read {
-                lower_baseline_array_fetch(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_operations.value_release,
-                    operation,
-                    array,
-                    key,
-                    false,
-                    unit_identity,
-                    result_out,
-                    deopt_out,
-                )?
-            } else {
-                lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    operation,
-                    &[array, key],
-                    result_out,
-                )?
-            };
-            if release_array {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    array,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::FetchConst { dst } => {
-            let function_id = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let continuation_id = builder
-                .ins()
-                .iconst(types::I64, i64::from(instruction.continuation_id));
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.constant_fetch,
-                0,
-                &[function_id, continuation_id],
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::AssignDim {
-            dst,
-            local,
-            keys,
-            value,
-        } => {
-            let value_operand = *value;
-            // Dimension writes may raise a catchable TypeError (for example
-            // when a string is indexed with a string key). Publish the
-            // current continuation before entering the helper so native
-            // unwind can resume this function's catch/finally table.
-            publish_native_call_state(
-                builder,
-                deopt_out,
-                function,
-                local_count,
-                instruction,
-                locals,
-                native_version,
-            )?;
-            publish_native_register_state(
-                builder,
-                deopt_out,
-                registers,
-                transition_live_registers,
-            )?;
-            let current = use_local_variable(builder, locals, *local)?;
-            let local_fact = value_flow.local_fact(*local);
-            let direct_array_local = value_flow.local_storage(*local).is_promoted()
-                && local_fact.certainty != crate::region_ir::SsaCertainty::Unknown
-                && local_fact.class == SsaValueClass::ArrayHandle;
-            let local_array_write =
-                ordinary_local_fast_path(function_is_top_level, function_local_names, *local);
-            let root = if direct_array_local || local_array_write {
-                current
-            } else {
-                lower_native_local_fetch(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    current,
-                    true,
-                    ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                    function,
-                    *local,
-                    instruction.span,
-                    result_out,
-                )?
-            };
-            let value = lower_region_operand(builder, locals, registers, value_operand)?;
-            let value = lower_baseline_by_value_array_operand(
-                module,
-                builder,
-                native_operations.local_fetch,
-                native_operations.value_release,
-                value_operand,
-                value,
-                function,
-                local_count,
-                instruction.span,
-                result_out,
-                deopt_out,
-            )?;
-            if keys.len() == 1 && (direct_array_local || local_array_write) {
-                let constant_string_key = array_key_is_string_constant(constants, keys[0]);
-                let key = lower_array_key_operand(builder, locals, registers, constants, keys[0])?;
-                let operation = native_dim_operation(0, function, instruction.continuation_id);
-                let updated = lower_direct_array_insert(
-                    module,
-                    builder,
-                    root,
-                    key,
-                    constant_string_key,
-                    value,
-                    false,
-                    result_out,
-                    deopt_out,
-                    NativeBaselineArrayWriteFallback::Baseline {
-                        helper: if local_array_write {
-                            native_operations.array_insert_local
-                        } else {
-                            native_operations.array_insert
-                        },
-                        lifecycle: native_operations.value_release,
-                        operation,
-                        function,
-                        local_count,
-                        instruction,
-                        locals,
-                        registers,
-                        live_registers: transition_live_registers,
-                        native_version,
-                    },
-                )?;
-                define_local_variable(builder, locals, *local, updated)?;
-                define_region_register(builder, register_variables, registers, *dst, value)?;
-                return Ok(());
-            }
-            let keys = keys
-                .iter()
-                .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut arrays = Vec::with_capacity(keys.len());
-            arrays.push(root);
-            let mut nested = root;
-            for key in keys.iter().take(keys.len().saturating_sub(1)) {
-                nested = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    // Intermediate write dimensions are lvalue
-                    // auto-vivification probes. Missing keys must not emit
-                    // the read-side undefined-array-key warning.
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    &[nested, *key],
-                    result_out,
-                )?;
-                arrays.push(nested);
-            }
-            let array_insert_operation =
-                native_dim_operation(0, function, instruction.continuation_id);
-            let mut updated = lower_native_value_operation(
-                module,
-                builder,
-                if local_array_write && keys.len() == 1 {
-                    native_operations.array_insert_local
-                } else {
-                    native_operations.array_insert
-                },
-                array_insert_operation,
-                &[
-                    nested,
-                    *keys.last().expect("AssignDim retains at least one key"),
-                    value,
-                ],
-                result_out,
-            )?;
-            for index in (0..keys.len().saturating_sub(1)).rev() {
-                updated = lower_native_value_operation(
-                    module,
-                    builder,
-                    if local_array_write && index == 0 {
-                        native_operations.array_insert_local
-                    } else {
-                        native_operations.array_insert
-                    },
-                    array_insert_operation,
-                    &[arrays[index], keys[index], updated],
-                    result_out,
-                )?;
-            }
-            let stored = if direct_array_local || local_array_write {
-                updated
-            } else {
-                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-                lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.local_store,
-                    native_local_store_operation(
-                        function_is_top_level,
-                        function_local_names,
-                        *local,
-                    ) | crate::JIT_LOCAL_STORE_MOVE_INPUT,
-                    &[current, updated, function_value, local_value],
-                    result_out,
-                )?
-            };
-            define_local_variable(builder, locals, *local, stored)?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::AppendDim {
-            dst,
-            local,
-            keys,
-            value,
-        } => {
-            let value_operand = *value;
-            let current = use_local_variable(builder, locals, *local)?;
-            let local_fact = value_flow.local_fact(*local);
-            let direct_array_local = value_flow.local_storage(*local).is_promoted()
-                && local_fact.certainty != crate::region_ir::SsaCertainty::Unknown
-                && local_fact.class == SsaValueClass::ArrayHandle;
-            let local_array_write =
-                ordinary_local_fast_path(function_is_top_level, function_local_names, *local);
-            let root = if direct_array_local || local_array_write {
-                current
-            } else {
-                lower_native_local_fetch(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    current,
-                    true,
-                    ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                    function,
-                    *local,
-                    instruction.span,
-                    result_out,
-                )?
-            };
-            let value = lower_region_operand(builder, locals, registers, value_operand)?;
-            let value = lower_baseline_by_value_array_operand(
-                module,
-                builder,
-                native_operations.local_fetch,
-                native_operations.value_release,
-                value_operand,
-                value,
-                function,
-                local_count,
-                instruction.span,
-                result_out,
-                deopt_out,
-            )?;
-            if keys.is_empty() && (direct_array_local || local_array_write) {
-                let operation = native_dim_operation(1, function, instruction.continuation_id);
-                let updated = lower_direct_array_append(
-                    module,
-                    builder,
-                    root,
-                    None,
-                    value,
-                    false,
-                    result_out,
-                    deopt_out,
-                    NativeBaselineArrayWriteFallback::Baseline {
-                        helper: if local_array_write {
-                            native_operations.array_insert_local
-                        } else {
-                            native_operations.array_insert
-                        },
-                        lifecycle: native_operations.value_release,
-                        operation,
-                        function,
-                        local_count,
-                        instruction,
-                        locals,
-                        registers,
-                        live_registers: transition_live_registers,
-                        native_version,
-                    },
-                )?;
-                define_local_variable(builder, locals, *local, updated)?;
-                define_region_register(builder, register_variables, registers, *dst, value)?;
-                return Ok(());
-            }
-            let keys = keys
-                .iter()
-                .map(|key| lower_array_key_operand(builder, locals, registers, constants, *key))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut arrays = Vec::with_capacity(keys.len());
-            arrays.push(root);
-            let mut nested = root;
-            for key in &keys {
-                nested = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    &[nested, *key],
-                    result_out,
-                )?;
-                arrays.push(nested);
-            }
-            let key = builder
-                .ins()
-                .iconst(types::I64, crate::jit_encode_constant(u32::MAX));
-            let mut updated = lower_native_value_operation(
-                module,
-                builder,
-                if local_array_write && keys.is_empty() {
-                    native_operations.array_insert_local
-                } else {
-                    native_operations.array_insert
-                },
-                native_dim_operation(1, function, instruction.continuation_id),
-                &[nested, key, value],
-                result_out,
-            )?;
-            for index in (0..keys.len()).rev() {
-                updated = lower_native_value_operation(
-                    module,
-                    builder,
-                    if local_array_write && index == 0 {
-                        native_operations.array_insert_local
-                    } else {
-                        native_operations.array_insert
-                    },
-                    native_dim_operation(0, function, instruction.continuation_id),
-                    &[arrays[index], keys[index], updated],
-                    result_out,
-                )?;
-            }
-            let stored = if direct_array_local || local_array_write {
-                updated
-            } else {
-                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-                lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.local_store,
-                    native_local_store_operation(
-                        function_is_top_level,
-                        function_local_names,
-                        *local,
-                    ) | crate::JIT_LOCAL_STORE_MOVE_INPUT,
-                    &[current, updated, function_value, local_value],
-                    result_out,
-                )?
-            };
-            define_local_variable(builder, locals, *local, stored)?;
-            define_region_register(builder, register_variables, registers, *dst, value)?;
-        }
-        RegionInstructionKind::IssetDim { dst, local, keys } => {
-            let mut value = use_local_variable(builder, locals, *local)?;
-            if !ordinary_local_fast_path(function_is_top_level, function_local_names, *local) {
-                value = lower_native_local_fetch(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    value,
-                    true,
-                    false,
-                    function,
-                    *local,
-                    instruction.span,
-                    result_out,
-                )?;
-            }
-            for key in keys {
-                let key = lower_array_key_operand(builder, locals, registers, constants, *key)?;
-                value = lower_baseline_array_fetch(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    value,
-                    key,
-                    false,
-                    unit_identity,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            let result = lower_guarded_isset_value(
-                module,
-                builder,
-                native_operations.compare,
-                value,
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, result)?;
-        }
-        RegionInstructionKind::EmptyDim { dst, local, keys } => {
-            let mut value = use_local_variable(builder, locals, *local)?;
-            if !ordinary_local_fast_path(function_is_top_level, function_local_names, *local) {
-                value = lower_native_local_fetch(
-                    module,
-                    builder,
-                    native_operations.local_fetch,
-                    value,
-                    true,
-                    false,
-                    function,
-                    *local,
-                    instruction.span,
-                    result_out,
-                )?;
-            }
-            for key in keys {
-                let key = lower_array_key_operand(builder, locals, registers, constants, *key)?;
-                value = lower_baseline_array_fetch(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    value,
-                    key,
-                    false,
-                    unit_identity,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-            let truthy = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.cast,
-                native_cast_opcode(RegionCastOp::Bool),
-                &[value],
-                result_out,
-            )?;
-            let result = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.unary,
-                native_unary_opcode(RegionUnaryOp::Not),
-                &[truthy],
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *dst, result)?;
-        }
-        RegionInstructionKind::UnsetDim { local, keys } => {
-            let current = use_local_variable(builder, locals, *local)?;
-            let root = lower_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                current,
-                true,
-                ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                function,
-                *local,
-                instruction.span,
-                result_out,
-            )?;
-            let keys = keys
-                .iter()
-                .map(|key| lower_region_operand(builder, locals, registers, *key))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut arrays = Vec::with_capacity(keys.len());
-            arrays.push(root);
-            let mut nested = root;
-            for key in keys.iter().take(keys.len().saturating_sub(1)) {
-                nested = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_fetch,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    &[nested, *key],
-                    result_out,
-                )?;
-                arrays.push(nested);
-            }
-            let mut updated = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.array_unset,
-                native_dim_operation(0, function, instruction.continuation_id),
-                &[
-                    nested,
-                    *keys.last().expect("UnsetDim retains at least one key"),
-                ],
-                result_out,
-            )?;
-            for index in (0..keys.len().saturating_sub(1)).rev() {
-                updated = lower_native_value_operation(
-                    module,
-                    builder,
-                    native_operations.array_insert,
-                    0,
-                    &[arrays[index], keys[index], updated],
-                    result_out,
-                )?;
-            }
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-            let stored = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.local_store,
-                native_local_store_operation(function_is_top_level, function_local_names, *local)
-                    | crate::JIT_LOCAL_STORE_MOVE_INPUT,
-                &[current, updated, function_value, local_value],
-                result_out,
-            )?;
-            define_local_variable(builder, locals, *local, stored)?;
-            if let Some(global_name) = instruction.native_global_name.as_deref() {
-                // `unset($GLOBALS["name"])` replaces the symbol-table
-                // binding without clearing aliases that still own the old
-                // reference cell. Rebind every top-level local for that exact
-                // symbol to the freshly published uninitialized request
-                // reference; the old frame owner is released independently.
-                for (index, local_name) in function_local_names.iter().enumerate() {
-                    if local_name != global_name {
-                        continue;
-                    }
-                    let Ok(local_id) = u32::try_from(index).map(LocalId::new) else {
-                        continue;
-                    };
-                    let previous = use_local_variable(builder, locals, local_id)?;
-                    let replacement = lower_trusted_request_local_reference(
-                        builder, deopt_out, function, local_id,
-                    );
-                    let replacement = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(0, function, instruction.continuation_id),
-                        replacement,
-                        result_out,
-                        deopt_out,
-                    )?;
-                    define_local_variable(builder, locals, local_id, replacement)?;
-                    let _ = lower_guarded_value_release(
-                        module,
-                        builder,
-                        native_operations.value_release,
-                        native_dim_operation(1, function, instruction.continuation_id),
-                        previous,
-                        result_out,
-                        deopt_out,
-                    )?;
-                }
-            }
-        }
-        RegionInstructionKind::IssetLocal { dst, local } => {
-            let value = use_local_variable(builder, locals, *local)?;
-            let value = lower_guarded_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                native_operations.value_release,
-                value,
-                true,
-                true,
-                ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                function,
-                *local,
-                instruction.span,
-                result_out,
-                deopt_out,
-            )?;
-            let is_null =
-                builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, value, crate::jit_encode_constant(u32::MAX));
-            let is_uninitialized = builder.ins().icmp_imm(
-                IntCC::Equal,
-                value,
-                crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
-            );
-            let absent = builder.ins().bor(is_null, is_uninitialized);
-            let present = builder.ins().icmp_imm(IntCC::Equal, absent, 0);
-            let result = encode_native_bool(builder, present);
-            define_region_register(builder, register_variables, registers, *dst, result)?;
-        }
-        RegionInstructionKind::EmptyLocal { dst, local } => {
-            let value = use_local_variable(builder, locals, *local)?;
-            let value = lower_guarded_native_local_fetch(
-                module,
-                builder,
-                native_operations.local_fetch,
-                native_operations.value_release,
-                value,
-                true,
-                true,
-                ordinary_local_fast_path(function_is_top_level, function_local_names, *local),
-                function,
-                *local,
-                instruction.span,
-                result_out,
-                deopt_out,
-            )?;
-            let truthy = lower_guarded_empty_condition(
-                module,
-                builder,
-                native_operations.truthy,
-                native_operations.stable_length,
-                value,
-                function,
-                instruction.continuation_id,
-                result_out,
-                deopt_out,
-            )?;
-            let empty = builder.ins().bxor_imm(truthy, 1);
-            let result = encode_native_bool(builder, empty);
-            define_region_register(builder, register_variables, registers, *dst, result)?;
-        }
-        RegionInstructionKind::UnsetLocal { local } => {
-            let current = use_local_variable(builder, locals, *local)?;
-            let uninitialized = builder.ins().iconst(
-                types::I64,
-                crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
-            );
-            define_local_variable(builder, locals, *local, uninitialized)?;
-            if let Some(helper) = native_operations.reference_bind {
-                let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-                let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-                let _ = lower_native_value_operation(
-                    module,
-                    builder,
-                    Some(helper),
-                    7,
-                    &[uninitialized, function_value, local_value],
-                    result_out,
-                )?;
-            }
-            // Request globals and superglobals borrow their canonical
-            // request-owned reference. Publishing the uninitialized payload
-            // performs PHP's unset; releasing that borrowed handle here would
-            // steal the global map's owner when the trusted slot is cleared.
-            if value_flow.local_storage(*local).is_native_frame_local() {
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    current,
-                    result_out,
-                    deopt_out,
-                )?;
-            }
-        }
-        RegionInstructionKind::ForeachInit { iterator, source } => {
-            let source_operand = *source;
-            let source_fact = lowering_operand_fact(value_flow, constants, source_operand);
-            let transfer_source = source_fact.ownership == SsaOwnership::Owned;
-            let source = lower_region_operand(builder, locals, registers, source_operand)?;
-            let value = lower_direct_foreach_init(
-                module,
-                builder,
-                source,
-                None,
-                true,
-                result_out,
-                deopt_out,
-                native_operations.foreach_init,
-                function,
-                instruction.continuation_id,
-            )?;
-            if transfer_source && let RegionOperand::Register(source_register) = source_operand {
-                // Baseline foreach initialization always borrows its operand
-                // and publishes an independent iterator owner. Retire the
-                // consumed SSA owner after publication; otherwise temporary
-                // object/generator sources retain a hidden extra owner for
-                // the remainder of the request.
-                let _ = lower_guarded_value_release(
-                    module,
-                    builder,
-                    native_operations.value_release,
-                    native_dim_operation(1, function, instruction.continuation_id),
-                    source,
-                    result_out,
-                    deopt_out,
-                )?;
-                let consumed = builder.ins().iconst(
-                    types::I64,
-                    crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
-                );
-                define_region_register(
-                    builder,
-                    register_variables,
-                    registers,
-                    source_register,
-                    consumed,
-                )?;
-            }
-            define_region_register(builder, register_variables, registers, *iterator, value)?;
-        }
-        RegionInstructionKind::ForeachInitRef { iterator, local } => {
-            let source = use_local_variable(builder, locals, *local)?;
-            let function_value = builder.ins().iconst(types::I64, i64::from(function.raw()));
-            let local_value = builder.ins().iconst(types::I64, i64::from(local.raw()));
-            let value = lower_native_value_operation(
-                module,
-                builder,
-                native_operations.foreach_init,
-                1,
-                &[source, function_value, local_value],
-                result_out,
-            )?;
-            // Foreach-by-reference replaces the array elements with reference
-            // cells during initialization. Publish that changed root before
-            // the loop so script-scope/global reads observe the same cells
-            // instead of the pre-separation COW snapshot.
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                source,
-                function,
-                *local,
-                result_out,
-            )?;
-            define_region_register(builder, register_variables, registers, *iterator, value)?;
-        }
-        RegionInstructionKind::ForeachNext {
-            has_value,
-            iterator,
-            key,
-            value,
-        } => {
-            let iterator_value = lower_region_operand(
-                builder,
-                locals,
-                registers,
-                RegionOperand::Register(*iterator),
-            )?;
-            let (next_key, next_value, has) = lower_direct_arena_foreach_next(
-                module,
-                builder,
-                iterator_value,
-                result_out,
-                deopt_out,
-                native_operations.foreach_next,
-                native_operations.value_release,
-                Some(NativeForeachSuspension {
-                    pending_status,
-                    pending_value,
-                    resume_state,
-                    function,
-                    local_count,
-                    instruction,
-                    locals,
-                    registers,
-                    live_registers: transition_live_registers,
-                    native_version,
-                }),
-            )?;
-            define_region_register(builder, register_variables, registers, *has_value, has)?;
-            define_region_register(builder, register_variables, registers, *value, next_value)?;
-            if let Some(key) = key {
-                define_region_register(builder, register_variables, registers, *key, next_key)?;
-            }
-        }
-        RegionInstructionKind::ForeachCleanup { iterator } => {
-            let iterator_register = *iterator;
-            let iterator_value = lower_region_operand(
-                builder,
-                locals,
-                registers,
-                RegionOperand::Register(iterator_register),
-            )?;
-            lower_direct_arena_foreach_cleanup(
-                module,
-                builder,
-                iterator_value,
-                result_out,
-                deopt_out,
-                native_operations.foreach_cleanup,
-                native_operations.value_release,
-                direct_value_release_commit,
-            )?;
-            let consumed = builder.ins().iconst(
-                types::I64,
-                crate::jit_encode_constant(crate::JIT_VALUE_UNINITIALIZED),
-            );
-            define_region_register(
-                builder,
-                register_variables,
-                registers,
-                iterator_register,
-                consumed,
-            )?;
-        }
-        RegionInstructionKind::ForeachNextRef {
-            has_value,
-            iterator,
-            key,
-            value_local,
-        } => {
-            let previous = use_local_variable(builder, locals, *value_local)?;
-            let helper = native_operations.foreach_next.ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-                    "native foreach-next helper was not declared",
-                )
-            })?;
-            let key_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                8,
-                3,
-            ));
-            let value_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                8,
-                3,
-            ));
-            let has_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                8,
-                3,
-            ));
-            let iterator_value = lower_region_operand(
-                builder,
-                locals,
-                registers,
-                RegionOperand::Register(*iterator),
-            )?;
-            let key_out = builder.ins().stack_addr(pointer_type, key_slot, 0);
-            let value_out = builder.ins().stack_addr(pointer_type, value_slot, 0);
-            let has_out = builder.ins().stack_addr(pointer_type, has_slot, 0);
-            let call = call_native_helper(
-                module,
-                builder,
-                helper,
-                &[iterator_value, key_out, value_out, has_out, deopt_out],
-            );
-            require_native_operation_ok(
-                builder,
-                builder.inst_results(call)[0],
-                helper.terminal_exit()?,
-            )?;
-            let has = builder.ins().stack_load(types::I64, has_slot, 0);
-            let next_value = builder.ins().stack_load(types::I64, value_slot, 0);
-            let present = builder.ins().icmp_imm(IntCC::NotEqual, has, 0);
-            let next_value = builder.ins().select(present, next_value, previous);
-            define_region_register(builder, register_variables, registers, *has_value, has)?;
-            define_local_variable(builder, locals, *value_local, next_value)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_operations.reference_bind,
-                next_value,
-                function,
-                *value_local,
-                result_out,
-            )?;
-            if let Some(key) = key {
-                let next_key = builder.ins().stack_load(types::I64, key_slot, 0);
-                define_region_register(builder, register_variables, registers, *key, next_key)?;
-            }
-        }
-        RegionInstructionKind::RuntimeFatal { dst, .. } => {
-            if let Some(dst) = dst {
-                let unreachable_value = builder.ins().iconst(types::I64, 0);
-                define_region_register(
-                    builder,
-                    register_variables,
-                    registers,
-                    *dst,
-                    unreachable_value,
-                )?;
-            }
-            let helper = native_operations.runtime_fatal.ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-                    "native runtime-fatal helper was not declared",
-                )
-            })?;
-            let function_id = builder.ins().iconst(types::I32, i64::from(function.raw()));
-            let continuation_id = builder
-                .ins()
-                .iconst(types::I32, i64::from(instruction.continuation_id));
-            let call = call_native_helper(module, builder, helper, &[function_id, continuation_id]);
-            let status = builder.inst_results(call)[0];
-            builder.ins().return_(&[status]);
-            let unreachable = builder.create_block();
-            builder.switch_to_block(unreachable);
-            builder.seal_block(unreachable);
-        }
-        RegionInstructionKind::CompileTimeFatal { diagnostic_id } => {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_IR_COMPILE_FATAL",
-                diagnostic_id.clone(),
-            ));
-        }
-        RegionInstructionKind::ArrayCallback(_) | RegionInstructionKind::PregCallbackArray(_) => {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_BASELINE_ARRAY_CALLBACK_PLAN",
-                "optimizing-only array callback plan reached baseline lowering",
-            ));
-        }
-    }
-    Ok(())
+    let RegionInstructionKind::NativeDynamicCode(operation) = &instruction.kind else {
+        return Err(CraneliftLoweringError::new(
+            "JIT_CRANELIFT_GENERIC_EXACT_ROUTING",
+            "only dynamic-code publication may enter the Generic cold resolver",
+        ));
+    };
+    lower_native_dynamic_code(
+        module,
+        builder,
+        native_dynamic_code_helper,
+        value_release_commit,
+        locals,
+        register_variables,
+        registers,
+        operation,
+        instruction,
+        result_out,
+        runtime,
+        deopt_out,
+        function,
+        pointer_type,
+    )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn lower_native_suspension(
     builder: &mut FunctionBuilder<'_>,
     suspension_blocks: &BTreeMap<u32, ir::Block>,
@@ -34357,7 +35132,7 @@ fn lower_native_suspension(
         std::mem::offset_of!(crate::JitDeoptState, delegation_handle) as i32,
     );
     let status_value = builder.ins().iconst(types::I32, i64::from(status.0));
-    builder.ins().return_(&[status_value]);
+    return_native_or_fragment_control(builder, status_value, result_out);
 
     let resume_block = *suspension_blocks
         .get(&instruction.continuation_id)
@@ -34397,7 +35172,7 @@ fn lower_native_suspension(
     builder
         .ins()
         .store(MemFlagsData::new(), resume_value, result_out, 0);
-    builder.ins().return_(&[resume_status]);
+    return_native_or_fragment_control(builder, resume_status, result_out);
     builder.switch_to_block(resume_ok);
     registers.clear();
     for (snapshot_slot, register) in register_ids.into_iter().enumerate() {
@@ -34410,44 +35185,6 @@ fn lower_native_suspension(
         define_region_register(builder, register_variables, registers, register, value)?;
     }
     define_region_register(builder, register_variables, registers, dst, resume_value)?;
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_cached_bind_global(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    lifecycle: Option<NativeHelper>,
-    value_flow: &ExecutableValueFlow,
-    locals: &NativeLocalMap,
-    call: &RegionNativeCall,
-    instruction: &RegionInstruction,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    function: FunctionId,
-) -> Result<(), CraneliftLoweringError> {
-    let RegionCallResult::ReferenceLocal(destination) = call.result else {
-        return Err(CraneliftLoweringError::new(
-            "JIT_CRANELIFT_BIND_GLOBAL_RESULT",
-            "BindGlobal must publish a reference local",
-        ));
-    };
-    let previous = use_local_variable(builder, locals, destination)?;
-    let release_previous = instruction.live_locals.contains(&destination)
-        && value_release_required(value_flow.local_fact(destination));
-    let encoded = lower_direct_global_binding_value(builder, function, instruction, deopt_out)?;
-    if release_previous {
-        let _ = lower_guarded_value_release(
-            module,
-            builder,
-            lifecycle,
-            native_dim_operation(1, function, instruction.continuation_id),
-            previous,
-            result_out,
-            deopt_out,
-        )?;
-    }
-    define_local_variable(builder, locals, destination, encoded)?;
     Ok(())
 }
 
@@ -34598,7 +35335,10 @@ fn lower_trusted_global_reference_at_continuation(
 fn lower_optimizing_trusted_static_local(
     builder: &mut FunctionBuilder<'_>,
     locals: &NativeLocalMap,
+    registers: &NativeRegisterMap,
+    constants: &[IrConstant],
     local: LocalId,
+    default: RegionOperand,
     transition: NativeOptimizingTransition<'_>,
     function: FunctionId,
 ) -> Result<(), CraneliftLoweringError> {
@@ -34630,1128 +35370,63 @@ fn lower_optimizing_trusted_static_local(
     let wide_plan_index = builder.ins().uextend(pointer_type, plan_index);
     let plan_offset = builder.ins().ishl_imm(wide_plan_index, 4);
     let plan = builder.ins().iadd(plans, plan_offset);
+    let state = builder.ins().load(
+        types::I32,
+        MemFlagsData::new(),
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticLocalSlot, state) as i32,
+    );
+    let use_published = builder.create_block();
+    let initialize = builder.create_block();
+    let ready = builder.create_block();
+    builder.append_block_param(ready, types::I64);
+    let published = builder.ins().icmp_imm(
+        IntCC::Equal,
+        state,
+        i64::from(crate::JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED),
+    );
+    builder
+        .ins()
+        .brif(published, use_published, &[], initialize, &[]);
+
+    builder.switch_to_block(use_published);
     let encoded = builder.ins().load(
         types::I64,
         MemFlagsData::new(),
         plan,
         std::mem::offset_of!(crate::JitNativeTrustedStaticLocalSlot, encoded) as i32,
     );
+    builder.ins().jump(ready, &[encoded.into()]);
+
+    builder.switch_to_block(initialize);
+    let default = lower_prepared_native_call_operand(
+        builder, locals, registers, constants, default, transition,
+    )?;
+    let encoded = lower_total_native_bind_reference(builder, default, transition.deopt_out);
+    builder.ins().store(
+        MemFlagsData::new(),
+        encoded,
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticLocalSlot, encoded) as i32,
+    );
+    let published = builder.ins().iconst(
+        types::I32,
+        i64::from(crate::JIT_NATIVE_TRUSTED_STATIC_LOCAL_PUBLISHED),
+    );
+    builder.ins().store(
+        MemFlagsData::new(),
+        published,
+        plan,
+        std::mem::offset_of!(crate::JitNativeTrustedStaticLocalSlot, state) as i32,
+    );
+    lower_mark_native_roots_dirty(builder, transition.deopt_out);
+    builder.ins().jump(ready, &[encoded.into()]);
+
+    builder.switch_to_block(ready);
+    let encoded = builder.block_params(ready)[0];
     lower_optimizing_retain(builder, encoded, transition.deopt_out);
     define_local_variable(builder, locals, local, encoded)?;
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_direct_semantic_call(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    semantic_helper: Option<NativeHelper>,
-    native_value_release_helper: Option<NativeHelper>,
-    value_flow: &ExecutableValueFlow,
-    locals: &NativeLocalMap,
-    register_variables: &NativeRegisterMap,
-    registers: &mut NativeRegisterMap,
-    call: &RegionNativeCall,
-    operation: crate::region_ir::RegionSemanticOperationId,
-    instruction: &RegionInstruction,
-    transition_live_registers: &[RegId],
-    streaming_call_exit: Option<NativeStreamingCallExit>,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    function: FunctionId,
-    local_count: u32,
-    native_version: u32,
-    unit_identity: u64,
-    pointer_type: ir::Type,
-) -> Result<(), CraneliftLoweringError> {
-    let helper = semantic_helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_SEMANTIC_DISPATCH",
-            "typed semantic operation has no direct dispatcher",
-        )
-    })?;
-    let operand_count = call.operands.len();
-    let mut consumed_operands = BTreeMap::new();
-    let operands_ptr = if operand_count == 0 {
-        builder.ins().iconst(pointer_type, 0)
-    } else {
-        let bytes = operand_count
-            .checked_mul(std::mem::size_of::<i64>())
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_SEMANTIC_OPERANDS",
-                    "semantic operand table exceeds native stack limits",
-                )
-            })?;
-        let pointer = allocate_native_stack_storage(builder, pointer_type, bytes, 3);
-        for (index, operand) in call.operands.iter().enumerate() {
-            let operand = operand.ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_SEMANTIC_OPERANDS",
-                    "semantic operation is missing a materialized operand",
-                )
-            })?;
-            let value = lower_region_operand(builder, locals, registers, operand)?;
-            // Semantic operands are synchronous borrows in the runtime ABI,
-            // but Region IR moves every non-borrowed register owner into this
-            // call boundary.  The semantic result owns an independent handle,
-            // so the caller must relinquish the moved operand after success.
-            // Without this, assignment temporaries retain complete native
-            // arrays/objects until request teardown and postpone destructors.
-            if let RegionOperand::Register(register) = operand
-                && value_flow.consumes_call_operand(instruction.continuation_id, register)
-            {
-                consumed_operands.entry(register).or_insert(value);
-            }
-            builder.ins().store(
-                MemFlagsData::new(),
-                value,
-                pointer,
-                i32::try_from(index.saturating_mul(8)).unwrap_or(i32::MAX),
-            );
-        }
-        pointer
-    };
-
-    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        std::mem::size_of::<crate::JitCallResult>() as u32,
-        3,
-    ));
-    let out_ptr = builder.ins().stack_addr(pointer_type, out_slot, 0);
-    let function_id = builder.ins().iconst(types::I32, i64::from(function.raw()));
-    let unit_identity = builder.ins().iconst(types::I64, unit_identity as i64);
-    let continuation = builder
-        .ins()
-        .iconst(types::I32, i64::from(instruction.continuation_id));
-    let operation_id = builder.ins().iconst(types::I32, i64::from(operation.raw()));
-    let operand_count = builder
-        .ins()
-        .iconst(types::I32, i64::try_from(operand_count).unwrap_or(i64::MAX));
-    let helper_call = call_native_helper(
-        module,
-        builder,
-        helper,
-        &[
-            unit_identity,
-            function_id,
-            continuation,
-            operation_id,
-            operands_ptr,
-            operand_count,
-            deopt_out,
-            out_ptr,
-        ],
-    );
-    let status = builder.inst_results(helper_call)[0];
-    let ok = builder.create_block();
-    let side_exit = builder.create_block();
-    let is_ok = builder.ins().icmp_imm(
-        IntCC::Equal,
-        status,
-        i64::from(crate::JitCallStatus::RETURN.0),
-    );
-    builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
-
-    builder.switch_to_block(side_exit);
-    let suspension_link =
-        capture_native_fiber_callee_if_suspended(module, builder, status, deopt_out, result_out);
-    let control_value = builder.ins().stack_load(types::I64, out_slot, 16);
-    if let Some(streaming_call_exit) = streaming_call_exit {
-        publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
-        let continuation = builder
-            .ins()
-            .iconst(types::I32, i64::from(instruction.continuation_id));
-        let masks = native_local_mask_words(&instruction.live_locals)
-            .into_iter()
-            .map(|mask| builder.ins().iconst(types::I64, mask as i64))
-            .map(Into::into)
-            .collect::<Vec<ir::BlockArg>>();
-        let mut args = Vec::<ir::BlockArg>::with_capacity(4 + masks.len());
-        args.push(status.into());
-        args.push(control_value.into());
-        args.push(continuation.into());
-        args.push(suspension_link.into());
-        args.extend(masks);
-        builder.ins().jump(streaming_call_exit.block, &args);
-    } else {
-        publish_native_call_state(
-            builder,
-            deopt_out,
-            function,
-            local_count,
-            instruction,
-            locals,
-            native_version,
-        )?;
-        publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
-        publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
-        builder
-            .ins()
-            .store(MemFlagsData::new(), control_value, result_out, 0);
-        builder.ins().return_(&[status]);
-    }
-
-    builder.switch_to_block(ok);
-    for operand in consumed_operands.into_values() {
-        let _ = lower_guarded_value_release(
-            module,
-            builder,
-            native_value_release_helper,
-            native_dim_operation(1, function, instruction.continuation_id),
-            operand,
-            result_out,
-            deopt_out,
-        )?;
-    }
-    let value = builder.ins().stack_load(types::I64, out_slot, 16);
-    match call.result {
-        RegionCallResult::Register(register) => {
-            define_region_register(builder, register_variables, registers, register, value)?;
-        }
-        RegionCallResult::ReferenceLocal(local) => {
-            define_local_variable(builder, locals, local, value)?;
-        }
-        RegionCallResult::Discard => {
-            // Semantic operations return an independently owned native value.
-            // Ignoring a discarded result kept arrays, objects, references,
-            // and their complete child graphs alive until request teardown;
-            // it also postponed PHP destructors past the following statement.
-            let _ = lower_guarded_value_release(
-                module,
-                builder,
-                native_value_release_helper,
-                native_dim_operation(1, function, instruction.continuation_id),
-                value,
-                result_out,
-                deopt_out,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_baseline_builtin_dispatch_call(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    builtin_helper: Option<NativeHelper>,
-    native_value_release_helper: Option<NativeHelper>,
-    value_flow: &ExecutableValueFlow,
-    locals: &NativeLocalMap,
-    register_variables: &NativeRegisterMap,
-    registers: &mut NativeRegisterMap,
-    call: &RegionNativeCall,
-    builtin_id: u32,
-    instruction: &RegionInstruction,
-    transition_live_registers: &[RegId],
-    streaming_call_exit: Option<NativeStreamingCallExit>,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    resume_state: ir::Value,
-    pending_status: Variable,
-    pending_value: Variable,
-    function: FunctionId,
-    local_count: u32,
-    native_version: u32,
-    pointer_type: ir::Type,
-) -> Result<(), CraneliftLoweringError> {
-    let helper = builtin_helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_BUILTIN_DISPATCH",
-            "direct builtin call has no stable-ID dispatcher",
-        )
-    })?;
-    let argument_count = call.args.len();
-    let mut consumed_arguments = Vec::new();
-    let arguments_ptr = if argument_count == 0 {
-        builder.ins().iconst(pointer_type, 0)
-    } else {
-        let bytes = argument_count
-            .checked_mul(std::mem::size_of::<i64>())
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_BUILTIN_ARGUMENTS",
-                    "direct builtin argument table exceeds native stack limits",
-                )
-            })?;
-        let pointer = allocate_native_stack_storage(builder, pointer_type, bytes, 3);
-        for (index, (argument, operand)) in call.args.iter().zip(&call.operands).enumerate() {
-            let operand = operand.ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_BUILTIN_ARGUMENTS",
-                    "direct builtin argument is missing its native operand",
-                )
-            })?;
-            let value = lower_region_operand(builder, locals, registers, operand)?;
-            if matches!(
-                operand,
-                RegionOperand::Register(register)
-                    if value_flow.register_fact(register).ownership != SsaOwnership::Borrowed
-            ) && native_argument_has_location(argument)
-            {
-                consumed_arguments.push(value);
-            }
-            builder.ins().store(
-                MemFlagsData::new(),
-                value,
-                pointer,
-                i32::try_from(index.saturating_mul(8)).unwrap_or(i32::MAX),
-            );
-        }
-        pointer
-    };
-
-    let publishes_locals = matches!(&call.target, RegionCallTarget::Function { name, .. }
-    if matches!(
-        name.trim_start_matches('\\').to_ascii_lowercase().as_str(),
-        "compact"
-            | "get_defined_vars"
-            | "func_num_args"
-            | "func_get_arg"
-            | "func_get_args"
-    ));
-    let published_local_count = if publishes_locals { local_count } else { 0 };
-    let local_slots_ptr = if published_local_count == 0 {
-        builder.ins().iconst(pointer_type, 0)
-    } else {
-        let slot_size = std::mem::size_of::<crate::JitAbiSlot>();
-        let bytes = (published_local_count as usize)
-            .checked_mul(slot_size)
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_BUILTIN_LOCALS",
-                    "direct builtin local publication exceeds native stack limits",
-                )
-            })?;
-        let pointer = allocate_native_stack_storage(builder, pointer_type, bytes, 3);
-        for index in 0..published_local_count {
-            let base = i32::try_from(index as usize * slot_size).unwrap_or(i32::MAX);
-            let tag = builder.ins().iconst(types::I32, 3);
-            builder.ins().store(MemFlagsData::new(), tag, pointer, base);
-            let flags = builder.ins().iconst(types::I32, 0);
-            builder
-                .ins()
-                .store(MemFlagsData::new(), flags, pointer, base + 4);
-            let value = use_local_variable(builder, locals, LocalId::new(index))?;
-            builder
-                .ins()
-                .store(MemFlagsData::new(), value, pointer, base + 8);
-        }
-        pointer
-    };
-
-    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        std::mem::size_of::<crate::JitCallResult>() as u32,
-        3,
-    ));
-    let out_ptr = builder.ins().stack_addr(pointer_type, out_slot, 0);
-    let builtin_id = builder.ins().iconst(types::I32, i64::from(builtin_id));
-    let function_id = builder.ins().iconst(types::I32, i64::from(function.raw()));
-    let source_file = builder
-        .ins()
-        .iconst(types::I32, i64::from(instruction.span.file.raw()));
-    let source_start = builder
-        .ins()
-        .iconst(types::I32, i64::from(instruction.span.start));
-    let source_end = builder
-        .ins()
-        .iconst(types::I32, i64::from(instruction.span.end));
-    let argument_count_value = builder.ins().iconst(
-        types::I32,
-        i64::try_from(argument_count).unwrap_or(i64::MAX),
-    );
-    let local_count_value = builder
-        .ins()
-        .iconst(types::I32, i64::from(published_local_count));
-    let completed_call = begin_native_call_or_resume(
-        builder,
-        pending_status,
-        pending_value,
-        crate::JitCallStatus::RETURN.0,
-        result_out,
-        resume_state,
-        deopt_out,
-    );
-    let helper_call = call_native_helper(
-        module,
-        builder,
-        helper,
-        &[
-            builtin_id,
-            function_id,
-            source_file,
-            source_start,
-            source_end,
-            arguments_ptr,
-            argument_count_value,
-            local_slots_ptr,
-            local_count_value,
-            deopt_out,
-            out_ptr,
-        ],
-    );
-    let status = builder.inst_results(helper_call)[0];
-    let ok = builder.create_block();
-    let side_exit = builder.create_block();
-    let is_ok = builder.ins().icmp_imm(
-        IntCC::Equal,
-        status,
-        i64::from(crate::JitCallStatus::RETURN.0),
-    );
-    builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
-
-    builder.switch_to_block(side_exit);
-    let suspension_link =
-        capture_native_fiber_callee_if_suspended(module, builder, status, deopt_out, result_out);
-    let control_value = builder.ins().stack_load(types::I64, out_slot, 16);
-    if let Some(streaming_call_exit) = streaming_call_exit {
-        publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
-        let continuation = builder
-            .ins()
-            .iconst(types::I32, i64::from(instruction.continuation_id));
-        let masks = native_local_mask_words(&instruction.live_locals)
-            .into_iter()
-            .map(|mask| builder.ins().iconst(types::I64, mask as i64))
-            .map(Into::into)
-            .collect::<Vec<ir::BlockArg>>();
-        let mut args = Vec::<ir::BlockArg>::with_capacity(4 + masks.len());
-        args.push(status.into());
-        args.push(control_value.into());
-        args.push(continuation.into());
-        args.push(suspension_link.into());
-        args.extend(masks);
-        builder.ins().jump(streaming_call_exit.block, &args);
-    } else {
-        publish_native_call_state(
-            builder,
-            deopt_out,
-            function,
-            local_count,
-            instruction,
-            locals,
-            native_version,
-        )?;
-        publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
-        publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
-        builder
-            .ins()
-            .store(MemFlagsData::new(), control_value, result_out, 0);
-        builder.ins().return_(&[status]);
-    }
-
-    builder.switch_to_block(ok);
-    let value = builder.ins().stack_load(types::I64, out_slot, 16);
-    builder.ins().jump(completed_call, &[value.into()]);
-
-    builder.switch_to_block(completed_call);
-    let value = builder.block_params(completed_call)[0];
-    for argument in consumed_arguments {
-        let _ = lower_guarded_value_release(
-            module,
-            builder,
-            native_value_release_helper,
-            native_dim_operation(1, function, instruction.continuation_id),
-            argument,
-            result_out,
-            deopt_out,
-        )?;
-    }
-    match call.result {
-        RegionCallResult::Register(register) => {
-            define_region_register(builder, register_variables, registers, register, value)?;
-        }
-        RegionCallResult::Discard => {}
-        RegionCallResult::ReferenceLocal(_) => unreachable!("filtered before direct builtin call"),
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_native_call_trampoline(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    native_call_helper: Option<NativeHelper>,
-    native_reference_bind_helper: Option<NativeHelper>,
-    native_value_release_helper: Option<NativeHelper>,
-    value_flow: &ExecutableValueFlow,
-    locals: &NativeLocalMap,
-    register_variables: &NativeRegisterMap,
-    registers: &mut NativeRegisterMap,
-    function_params: &BTreeMap<FunctionId, NativeFunctionMetadata>,
-    external_function_signatures: &[crate::JitExternalFunctionSignature],
-    call: &RegionNativeCall,
-    source_block: BlockId,
-    instruction: &RegionInstruction,
-    transition_live_registers: &[RegId],
-    streaming_call_exit: Option<NativeStreamingCallExit>,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    function: FunctionId,
-    local_count: u32,
-    native_version: u32,
-    pointer_type: ir::Type,
-) -> Result<(), CraneliftLoweringError> {
-    let helper = native_call_helper.ok_or_else(|| {
-        CraneliftLoweringError::new(
-            "JIT_CRANELIFT_REJECT_NATIVE_CALL_TRAMPOLINE",
-            "native call site has no typed dispatch trampoline",
-        )
-    })?;
-    let direct_builtin_helper = baseline_builtin_helper_id(&call.target);
-    let compact_builtin_arguments = direct_builtin_helper.is_some()
-        && call.argument_operand_offset == 0
-        && call.operands.len() == call.args.len()
-        && call.args.iter().enumerate().all(|(index, argument)| {
-            argument.name.is_none()
-                && !argument.unpack
-                && !call.argument_requires_reference_binding(index)
-        });
-    let argument_size = if compact_builtin_arguments {
-        std::mem::size_of::<i64>()
-    } else {
-        std::mem::size_of::<crate::JitNativeCallArgument>()
-    };
-    // Direct-call regions append scalar defaults to `operands` so compiled
-    // callees can receive a complete fixed-arity frame. Once a call falls
-    // back to the runtime binder, however, those defaults must be bound by
-    // the callee and must not masquerade as explicitly supplied PHP
-    // arguments. Keep only target operands (receiver/callable/captures) and
-    // the arguments that actually occur at the call site.
-    let argument_count = if matches!(
-        call.target,
-        RegionCallTarget::Function {
-            function: Some(_),
-            ..
-        }
-    ) {
-        call.argument_operand_offset
-            .checked_add(call.args.len())
-            .ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_CALL_ARGUMENTS",
-                    "native call argument count overflowed",
-                )
-            })?
-    } else {
-        // Runtime operations represented by synthetic function targets have
-        // no PHP call arguments; every lowered operand belongs to the
-        // operation and still has to cross the trampoline.
-        call.args.len().max(call.operands.len())
-    };
-    let mut consumed_arguments = Vec::new();
-    let mut speculative_local_bindings = BTreeMap::<LocalId, (ir::Value, Vec<i32>)>::new();
-    let prepared_argument_sources = call
-        .direct_compiled_target()
-        .and_then(|target| function_params.get(&target))
-        .and_then(|metadata| call.prepared_argument_sources(&metadata.params));
-    let arguments_ptr = if argument_count == 0 {
-        builder.ins().iconst(pointer_type, 0)
-    } else {
-        let bytes = argument_size.checked_mul(argument_count).ok_or_else(|| {
-            CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_NATIVE_CALL_ARGUMENTS",
-                "native call argument table size overflowed",
-            )
-        })?;
-        let bytes = u32::try_from(bytes).map_err(|_| {
-            CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_NATIVE_CALL_ARGUMENTS",
-                "native call argument table exceeds stack-slot limits",
-            )
-        })?;
-        let pointer = allocate_native_stack_storage(builder, pointer_type, bytes, 3);
-        for index in 0..argument_count {
-            let source_index = index.checked_sub(call.argument_operand_offset);
-            let argument = source_index.and_then(|index| call.args.get(index));
-            let operand_index = source_index
-                .and_then(|source| {
-                    prepared_argument_sources.as_ref().and_then(|sources| {
-                        sources
-                            .iter()
-                            .position(|candidate| *candidate == Some(source))
-                    })
-                })
-                .map_or(index, |parameter| {
-                    call.argument_operand_offset.saturating_add(parameter)
-                });
-            let base = i32::try_from(index.saturating_mul(argument_size)).unwrap_or(i32::MAX);
-            let mut lowered = call
-                .operands
-                .get(operand_index)
-                .copied()
-                .flatten()
-                .map(|operand| lower_region_operand(builder, locals, registers, operand))
-                .transpose()?;
-            let visible_index = index.saturating_sub(call.argument_operand_offset);
-            let known_reference_requirement = known_user_argument_requires_reference(
-                call,
-                visible_index,
-                function_params,
-                external_function_signatures,
-                function,
-            );
-            let requires_reference = known_reference_requirement
-                .unwrap_or_else(|| call.argument_requires_reference_binding(visible_index));
-            let defer_until_signature_published = requires_reference
-                && known_reference_requirement.is_none()
-                && matches!(
-                    &call.target,
-                    RegionCallTarget::Function { function: None, .. }
-                        | RegionCallTarget::Callable { .. }
-                        | RegionCallTarget::Closure { .. }
-                        | RegionCallTarget::Pipe { .. }
-                )
-                && argument
-                    .and_then(|argument| argument.by_ref_local)
-                    .is_some();
-            let speculative_original_local = if requires_reference
-                && !defer_until_signature_published
-                && call
-                    .declared_argument_reference_requirement(visible_index)
-                    .is_none()
-                && matches!(
-                    call.target,
-                    RegionCallTarget::Function { function: None, .. }
-                        | RegionCallTarget::Method { .. }
-                )
-                && let Some(local) = argument.and_then(|argument| argument.by_ref_local)
-            {
-                Some((local, use_local_variable(builder, locals, local)?))
-            } else {
-                None
-            };
-            if call
-                .operands
-                .get(operand_index)
-                .copied()
-                .flatten()
-                .is_some_and(|operand| matches!(operand, RegionOperand::Register(_)))
-                && !call
-                    .operands
-                    .get(operand_index)
-                    .copied()
-                    .flatten()
-                    .is_some_and(|operand| {
-                        matches!(
-                            operand,
-                            RegionOperand::Register(register)
-                                if value_flow.register_fact(register).ownership
-                                    == SsaOwnership::Borrowed
-                        )
-                    })
-                && matches!(
-                    call.target,
-                    RegionCallTarget::Function { function: None, .. }
-                )
-                && !requires_reference
-                && argument.is_some_and(native_argument_has_location)
-                && let Some(value) = lowered
-            {
-                consumed_arguments.push(value);
-            }
-            // A declared by-reference parameter does not make an arbitrary
-            // expression referenceable. Preserve non-lvalues as values so
-            // the runtime binder emits PHP's "could not be passed by
-            // reference" error instead of manufacturing a temporary cell.
-            if requires_reference
-                && argument.is_some_and(native_argument_has_location)
-                && let (Some(argument), Some(value)) = (argument, lowered)
-            {
-                lowered = Some(lower_direct_reference_argument(
-                    module,
-                    builder,
-                    native_reference_bind_helper,
-                    locals,
-                    registers,
-                    argument,
-                    visible_index,
-                    value,
-                    instruction,
-                    function,
-                    defer_until_signature_published,
-                    true,
-                    result_out,
-                )?);
-                if let Some((local, original)) = speculative_original_local {
-                    let flags_offset = base + 24;
-                    speculative_local_bindings
-                        .entry(local)
-                        .and_modify(|(_, offsets)| offsets.push(flags_offset))
-                        .or_insert_with(|| (original, vec![flags_offset]));
-                }
-            }
-            let payload = lowered.unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-            if compact_builtin_arguments {
-                builder
-                    .ins()
-                    .store(MemFlagsData::new(), payload, pointer, base);
-                continue;
-            }
-            let tag = if lowered.is_some() { 3 } else { 0 };
-            let tag = builder.ins().iconst(types::I32, tag);
-            builder.ins().store(MemFlagsData::new(), tag, pointer, base);
-            let abi_flags = builder.ins().iconst(types::I32, 0);
-            builder
-                .ins()
-                .store(MemFlagsData::new(), abi_flags, pointer, base + 4);
-            builder
-                .ins()
-                .store(MemFlagsData::new(), payload, pointer, base + 8);
-            let name_hash = argument
-                .and_then(|argument| argument.name.as_deref())
-                .map_or(0, stable_call_symbol_hash);
-            let name_hash = builder.ins().iconst(types::I64, name_hash as i64);
-            builder
-                .ins()
-                .store(MemFlagsData::new(), name_hash, pointer, base + 16);
-            let flags = builder.ins().iconst(
-                types::I32,
-                i64::from(argument.map_or(0, native_argument_flags)),
-            );
-            builder
-                .ins()
-                .store(MemFlagsData::new(), flags, pointer, base + 24);
-            let source_slot = argument
-                .and_then(|argument| argument.by_ref_local)
-                .map_or(u32::MAX, LocalId::raw);
-            let source_slot = builder.ins().iconst(types::I32, i64::from(source_slot));
-            builder
-                .ins()
-                .store(MemFlagsData::new(), source_slot, pointer, base + 28);
-            let property_receiver = argument
-                .and_then(|argument| argument.by_ref_property.as_ref())
-                .map(|target| lower_ir_operand(builder, locals, registers, target.object))
-                .transpose()?
-                .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
-            builder
-                .ins()
-                .store(MemFlagsData::new(), property_receiver, pointer, base + 32);
-        }
-        pointer
-    };
-
-    let published_local_count = match &call.target {
-        RegionCallTarget::Function { name, .. }
-            if name
-                .trim_start_matches('\\')
-                .eq_ignore_ascii_case("compact")
-                || name
-                    .trim_start_matches('\\')
-                    .eq_ignore_ascii_case("get_defined_vars") =>
-        {
-            local_count
-        }
-        _ => 0,
-    };
-    let local_slot_size = std::mem::size_of::<crate::JitAbiSlot>();
-    let local_slots_ptr = if published_local_count == 0 {
-        builder.ins().iconst(pointer_type, 0)
-    } else {
-        let bytes = local_slot_size
-            .checked_mul(published_local_count as usize)
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or_else(|| {
-                CraneliftLoweringError::new(
-                    "JIT_CRANELIFT_REJECT_NATIVE_CALL_LOCALS",
-                    "native call local table exceeds stack-slot limits",
-                )
-            })?;
-        let pointer = allocate_native_stack_storage(builder, pointer_type, bytes, 3);
-        for index in 0..published_local_count {
-            let base = i32::try_from(index as usize * local_slot_size).unwrap_or(i32::MAX);
-            let tag = builder.ins().iconst(types::I32, 3);
-            builder.ins().store(MemFlagsData::new(), tag, pointer, base);
-            let flags = builder.ins().iconst(types::I32, 0);
-            builder
-                .ins()
-                .store(MemFlagsData::new(), flags, pointer, base + 4);
-            let value = use_local_variable(builder, locals, LocalId::new(index))?;
-            builder
-                .ins()
-                .store(MemFlagsData::new(), value, pointer, base + 8);
-        }
-        pointer
-    };
-
-    let frame_size =
-        u32::try_from(std::mem::size_of::<crate::JitNativeCallFrame>()).map_err(|_| {
-            CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_NATIVE_CALL_FRAME",
-                "native call frame exceeds stack-slot limits",
-            )
-        })?;
-    let frame_ptr = allocate_native_stack_storage(builder, pointer_type, frame_size, 3);
-    let zero = builder.ins().iconst(types::I64, 0);
-    let store_i32 = |builder: &mut FunctionBuilder<'_>, offset: usize, value: u32| {
-        let value = builder.ins().iconst(types::I32, i64::from(value));
-        builder.ins().store(
-            MemFlagsData::new(),
-            value,
-            frame_ptr,
-            i32::try_from(offset).unwrap_or(i32::MAX),
-        );
-    };
-    store_i32(
-        builder,
-        std::mem::offset_of!(crate::JitNativeCallFrame, function_id),
-        function.raw(),
-    );
-    store_i32(
-        builder,
-        std::mem::offset_of!(crate::JitNativeCallFrame, continuation_id),
-        instruction.continuation_id,
-    );
-    store_i32(
-        builder,
-        std::mem::offset_of!(crate::JitNativeCallFrame, source_block_id),
-        source_block.raw(),
-    );
-    store_i32(
-        builder,
-        std::mem::offset_of!(crate::JitNativeCallFrame, source_instruction_id),
-        instruction.id.raw(),
-    );
-    store_i32(
-        builder,
-        std::mem::offset_of!(crate::JitNativeCallFrame, local_count),
-        published_local_count,
-    );
-    store_i32(
-        builder,
-        std::mem::offset_of!(crate::JitNativeCallFrame, argument_count),
-        u32::try_from(argument_count).unwrap_or(u32::MAX),
-    );
-    let direct_external = direct_builtin_helper.is_none()
-        && matches!(&call.target, RegionCallTarget::Function { name, function: None }
-        if function_params.values().any(|metadata| {
-            metadata.name.trim_start_matches('\\').eq_ignore_ascii_case(name.trim_start_matches('\\'))
-        }));
-    let frame_flags = if call.caller_strict_types {
-        crate::JitNativeCallFrame::FLAG_STRICT_TYPES
-    } else {
-        0
-    } | if call.returns_by_reference {
-        crate::JitNativeCallFrame::FLAG_RETURN_REFERENCE
-    } else {
-        0
-    } | if direct_builtin_helper.is_some() {
-        crate::JitNativeCallFrame::FLAG_DIRECT_BUILTIN
-    } else {
-        0
-    } | if direct_external {
-        crate::JitNativeCallFrame::FLAG_DIRECT_EXTERNAL
-    } else {
-        0
-    } | if compact_builtin_arguments {
-        crate::JitNativeCallFrame::FLAG_COMPACT_ARGUMENTS
-    } else {
-        0
-    };
-    store_i32(
-        builder,
-        std::mem::offset_of!(crate::JitNativeCallFrame, flags),
-        frame_flags,
-    );
-    builder.ins().store(
-        MemFlagsData::new(),
-        local_slots_ptr,
-        frame_ptr,
-        std::mem::offset_of!(crate::JitNativeCallFrame, local_slots) as i32,
-    );
-    builder.ins().store(
-        MemFlagsData::new(),
-        arguments_ptr,
-        frame_ptr,
-        std::mem::offset_of!(crate::JitNativeCallFrame, arguments) as i32,
-    );
-    builder.ins().store(
-        MemFlagsData::new(),
-        deopt_out,
-        frame_ptr,
-        std::mem::offset_of!(crate::JitNativeCallFrame, transition_state) as i32,
-    );
-    let receiver = if let RegionCallTarget::StaticMethod { class_name, .. } = &call.target
-        && matches!(
-            class_name.to_ascii_lowercase().as_str(),
-            "self" | "parent" | "static"
-        ) {
-        use_local_variable(builder, locals, LocalId::new(0)).unwrap_or(zero)
-    } else {
-        zero
-    };
-    builder.ins().store(
-        MemFlagsData::new(),
-        receiver,
-        frame_ptr,
-        std::mem::offset_of!(crate::JitNativeCallFrame, receiver_handle) as i32,
-    );
-    let (kind, target_function, _, _) = baseline_call_target_metadata(&call.target);
-    let target_offset = std::mem::offset_of!(crate::JitNativeCallFrame, target);
-    store_i32(
-        builder,
-        target_offset + std::mem::offset_of!(crate::JitNativeCallTarget, kind),
-        kind,
-    );
-    store_i32(
-        builder,
-        target_offset + std::mem::offset_of!(crate::JitNativeCallTarget, function_id),
-        direct_builtin_helper.unwrap_or(target_function),
-    );
-
-    let out_size = std::mem::size_of::<crate::JitCallResult>() as u32;
-    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        out_size,
-        3,
-    ));
-    let out_ptr = builder.ins().stack_addr(pointer_type, out_slot, 0);
-    let vm_context = builder.ins().iconst(types::I64, 0);
-    let helper_call =
-        call_native_helper(module, builder, helper, &[vm_context, frame_ptr, out_ptr]);
-    let status = builder.inst_results(helper_call)[0];
-    let ok = builder.create_block();
-    let side_exit = builder.create_block();
-    let expected_return_status = if call.returns_by_reference {
-        crate::JitCallStatus::RETURN_REFERENCE.0
-    } else {
-        crate::JitCallStatus::RETURN.0
-    };
-    let is_ok = builder
-        .ins()
-        .icmp_imm(IntCC::Equal, status, i64::from(expected_return_status));
-    builder.ins().brif(is_ok, ok, &[], side_exit, &[]);
-    builder.switch_to_block(side_exit);
-    let suspension_link =
-        capture_native_fiber_callee_if_suspended(module, builder, status, deopt_out, result_out);
-    let control_value = builder.ins().stack_load(types::I64, out_slot, 16);
-    if let Some(streaming_call_exit) = streaming_call_exit {
-        publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
-        let continuation = builder
-            .ins()
-            .iconst(types::I32, i64::from(instruction.continuation_id));
-        let masks = native_local_mask_words(&instruction.live_locals)
-            .into_iter()
-            .map(|mask| builder.ins().iconst(types::I64, mask as i64))
-            .map(Into::into)
-            .collect::<Vec<ir::BlockArg>>();
-        let mut args = Vec::<ir::BlockArg>::with_capacity(4 + masks.len());
-        args.push(status.into());
-        args.push(control_value.into());
-        args.push(continuation.into());
-        args.push(suspension_link.into());
-        args.extend(masks);
-        builder.ins().jump(streaming_call_exit.block, &args);
-    } else {
-        publish_native_call_state(
-            builder,
-            deopt_out,
-            function,
-            local_count,
-            instruction,
-            locals,
-            native_version,
-        )?;
-        publish_native_register_state(builder, deopt_out, registers, transition_live_registers)?;
-        publish_native_fiber_suspension_link(builder, deopt_out, suspension_link);
-        builder
-            .ins()
-            .store(MemFlagsData::new(), control_value, result_out, 0);
-        builder.ins().return_(&[status]);
-    }
-    builder.switch_to_block(ok);
-    for (local, (original, flag_offsets)) in speculative_local_bindings {
-        let mut actual_reference = None;
-        for offset in flag_offsets {
-            let flags = builder
-                .ins()
-                .load(types::I32, MemFlagsData::new(), arguments_ptr, offset);
-            let mask = builder.ins().iconst(
-                types::I32,
-                i64::from(crate::JitNativeArgFlags::BY_REFERENCE.0),
-            );
-            let bound = builder.ins().band(flags, mask);
-            actual_reference =
-                Some(actual_reference.map_or(bound, |current| builder.ins().bor(current, bound)));
-        }
-        let is_actual_reference = builder.ins().icmp_imm(
-            IntCC::NotEqual,
-            actual_reference.expect("speculative binding retains one argument flag"),
-            0,
-        );
-        let keep = builder.create_block();
-        let restore = builder.create_block();
-        let merge = builder.create_block();
-        builder.append_block_param(merge, types::I64);
-        let current = use_local_variable(builder, locals, local)?;
-        builder
-            .ins()
-            .brif(is_actual_reference, keep, &[], restore, &[]);
-
-        builder.switch_to_block(keep);
-        let keep_args = [current.into()];
-        builder.ins().jump(merge, &keep_args);
-
-        builder.switch_to_block(restore);
-        let restore_without_release = builder.create_block();
-        let restore_after_release = builder.create_block();
-        let reuses_original = builder.ins().icmp(IntCC::Equal, current, original);
-        builder.ins().brif(
-            reuses_original,
-            restore_without_release,
-            &[],
-            restore_after_release,
-            &[],
-        );
-
-        builder.switch_to_block(restore_after_release);
-        let _ = lower_guarded_value_release(
-            module,
-            builder,
-            native_value_release_helper,
-            native_dim_operation(1, function, instruction.continuation_id),
-            current,
-            result_out,
-            deopt_out,
-        )?;
-        let restore_args = [original.into()];
-        builder.ins().jump(merge, &restore_args);
-
-        builder.switch_to_block(restore_without_release);
-        builder.ins().jump(merge, &restore_args);
-
-        builder.switch_to_block(merge);
-        define_local_variable(builder, locals, local, builder.block_params(merge)[0])?;
-    }
-    for argument in consumed_arguments {
-        let _ = lower_guarded_value_release(
-            module,
-            builder,
-            native_value_release_helper,
-            native_dim_operation(1, function, instruction.continuation_id),
-            argument,
-            result_out,
-            deopt_out,
-        )?;
-    }
-    let value = builder.ins().stack_load(types::I64, out_slot, 16);
-    match call.result {
-        RegionCallResult::Register(register) => {
-            define_region_register(builder, register_variables, registers, register, value)?;
-        }
-        RegionCallResult::ReferenceLocal(local) => {
-            define_local_variable(builder, locals, local, value)?;
-            publish_native_reference_local(
-                module,
-                builder,
-                native_reference_bind_helper,
-                value,
-                function,
-                local,
-                result_out,
-            )?;
-        }
-        RegionCallResult::Discard => {}
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lower_checked_baseline_binary(
-    module: &mut JITModule,
-    builder: &mut FunctionBuilder<'_>,
-    helper: Option<NativeHelper>,
-    op: RegionBinaryOp,
-    lhs: ir::Value,
-    rhs: ir::Value,
-    result_out: ir::Value,
-    deopt_out: ir::Value,
-    function: FunctionId,
-    local_count: u32,
-    instruction: &RegionInstruction,
-    locals: &NativeLocalMap,
-    registers: &NativeRegisterMap,
-    live_registers: &[RegId],
-    native_version: u32,
-) -> Result<ir::Value, CraneliftLoweringError> {
-    let (result, overflow) = match op {
-        RegionBinaryOp::Add => builder.ins().sadd_overflow(lhs, rhs),
-        RegionBinaryOp::Sub => builder.ins().ssub_overflow(lhs, rhs),
-        RegionBinaryOp::Mul => builder.ins().smul_overflow(lhs, rhs),
-        RegionBinaryOp::BitAnd
-        | RegionBinaryOp::BitOr
-        | RegionBinaryOp::BitXor
-        | RegionBinaryOp::ShiftLeft
-        | RegionBinaryOp::ShiftRight => {
-            return lower_baseline_native_binary_operation(
-                module,
-                builder,
-                helper,
-                baseline_binary_opcode(op),
-                lhs,
-                rhs,
-                result_out,
-                deopt_out,
-                function,
-                local_count,
-                instruction,
-                locals,
-                registers,
-                live_registers,
-                native_version,
-            );
-        }
-        RegionBinaryOp::Div
-        | RegionBinaryOp::Mod
-        | RegionBinaryOp::Concat
-        | RegionBinaryOp::Pow => {
-            return Err(CraneliftLoweringError::new(
-                "JIT_CRANELIFT_REJECT_NATIVE_OPERATION",
-                format!("binary operation {op:?} requires its typed runtime helper"),
-            ));
-        }
-    };
-    let overflow_block = builder.create_block();
-    let ok_block = builder.create_block();
-    let merge_block = builder.create_block();
-    builder.append_block_param(merge_block, types::I64);
-    let runtime_collision = lower_is_runtime_handle(builder, result);
-    let constant_collision =
-        lower_value_has_namespace_tag(builder, result, crate::JIT_VALUE_CONSTANT_TAG);
-    let collision = builder.ins().bor(runtime_collision, constant_collision);
-    let rejected = builder.ins().bor(overflow, collision);
-    builder
-        .ins()
-        .brif(rejected, overflow_block, &[], ok_block, &[]);
-    builder.switch_to_block(overflow_block);
-    let slow = lower_baseline_native_binary_operation(
-        module,
-        builder,
-        helper,
-        baseline_binary_opcode(op),
-        lhs,
-        rhs,
-        result_out,
-        deopt_out,
-        function,
-        local_count,
-        instruction,
-        locals,
-        registers,
-        live_registers,
-        native_version,
-    )?;
-    let slow_args = [slow.into()];
-    builder.ins().jump(merge_block, &slow_args);
-    builder.switch_to_block(ok_block);
-    let result_args = [result.into()];
-    builder.ins().jump(merge_block, &result_args);
-    builder.switch_to_block(merge_block);
-    Ok(builder.block_params(merge_block)[0])
 }
 
 fn region_compare_intcc(op: RegionCompareOpCode) -> IntCC {

@@ -32,22 +32,28 @@ pub use modules::bcmath::{
 #[doc(hidden)]
 pub use modules::core::{
     NativeCookieOptions, NativePrintfScalar, baseline_count_recursive_value,
-    build_native_cookie_header_value, native_parse_intval_string_base, native_random_fill,
-    visit_native_printf_scalars,
+    build_native_cookie_header_value, native_parse_intval_string_base, native_phpinfo_output,
+    native_random_fill, native_uniqid, visit_native_printf_scalars,
 };
 #[doc(hidden)]
 pub use modules::curl::{CurlNetworkTestOverride, set_curl_network_tests_override_for_tests};
-pub use modules::fileinfo::validate_fileinfo_options;
+#[doc(hidden)]
+pub use modules::debug_output::php_float_export_string;
+pub use modules::fileinfo::{
+    ImageInfo, native_fileinfo_detect_buffer, native_fileinfo_detect_file, native_image_app_info,
+    native_image_size, native_image_type, native_image_type_to_mime_type,
+    validate_fileinfo_options,
+};
 #[doc(hidden)]
 pub use modules::filesystem::{
-    NativeGlobPublished, NativeStatRecord, native_basename, native_chdir_target, native_chmod,
-    native_directory_entries, native_dirname, native_disk_space, native_file_exists,
-    native_file_get_contents, native_file_lines_into, native_file_put_contents, native_filegroup,
-    native_filemtime, native_fileowner, native_fileperms, native_filesize, native_filetype,
-    native_glob_into, native_is_dir, native_is_file, native_is_link, native_is_readable,
-    native_is_writable, native_mkdir, native_pathinfo_into, native_realpath, native_rename,
-    native_rmdir, native_scandir_into, native_stat, native_symlink, native_tempnam, native_tmpfile,
-    native_touch, native_unlink,
+    NativeGlobPublished, NativeMoveUploadedFileResult, NativeStatRecord, native_basename,
+    native_chdir_target, native_chmod, native_directory_entries, native_dirname, native_disk_space,
+    native_file_exists, native_file_get_contents, native_file_lines_into, native_file_put_contents,
+    native_filegroup, native_filemtime, native_fileowner, native_fileperms, native_filesize,
+    native_filetype, native_glob_into, native_is_dir, native_is_file, native_is_link,
+    native_is_readable, native_is_writable, native_mkdir, native_move_uploaded_file,
+    native_pathinfo_into, native_realpath, native_rename, native_rmdir, native_scandir_into,
+    native_stat, native_symlink, native_tempnam, native_tmpfile, native_touch, native_unlink,
 };
 #[doc(hidden)]
 pub use modules::filter::{
@@ -55,6 +61,8 @@ pub use modules::filter::{
     FILTER_REQUIRE_SCALAR, NativeFilterResult, NativeFilterValue, native_filter_id,
     native_filter_input_source_index, native_filter_names, native_filter_scalar,
 };
+#[doc(hidden)]
+pub use modules::iconv::{NativeIconvConversion, native_iconv_convert};
 #[doc(hidden)]
 pub use modules::igbinary::{
     serialize_value as igbinary_serialize_value, unserialize_value as igbinary_unserialize_value,
@@ -65,9 +73,9 @@ pub use modules::intl::{
 };
 #[doc(hidden)]
 pub use modules::json::{
-    NativeStructuredValuePublisher, decode_native_json_associative_into, exact_json_decode,
-    exact_json_encode, exact_json_last_error, exact_json_last_error_msg, exact_json_validate,
-    validate_native_json,
+    NativeStructuredValuePublisher, decode_native_json_associative_into, decode_native_json_into,
+    exact_json_decode, exact_json_encode, exact_json_last_error, exact_json_last_error_msg,
+    exact_json_validate, validate_native_json,
 };
 pub use modules::json_fast::{
     NATIVE_JSON_DIRECT_ENCODE_FLAGS, NATIVE_JSON_FORCE_OBJECT, NATIVE_JSON_HEX_AMP,
@@ -115,6 +123,8 @@ pub use modules::sockets::{
     NativeNetworkAddress, native_inet_ntop, native_inet_pton, native_ip2long, native_long2ip,
 };
 #[doc(hidden)]
+pub use modules::sodium::{native_sodium_bin2base64, native_sodium_crypto_generichash};
+#[doc(hidden)]
 pub use modules::streams::{native_stream_is_local, native_stream_resolve_include_path};
 #[doc(hidden)]
 pub use modules::strings::{
@@ -128,18 +138,19 @@ pub use modules::strings::{
     native_hash_hmac_into, native_hash_hmac_output_length, native_hash_into,
     native_hash_output_length, native_hex2bin_into, native_hex2bin_output_length,
     native_html_entity_decode_into, native_html_entity_decode_output_length,
-    native_html_escape_into, native_html_escape_output_length, native_md5_into,
-    native_md5_output_length, native_natural_compare, native_parse_str_into, native_parse_url_into,
-    native_quoted_printable_decode_into, native_quoted_printable_decode_output_length,
-    native_quotemeta_into, native_quotemeta_output_length, native_sha1_into,
-    native_sha1_output_length, native_str_pad_into, native_str_pad_output_length,
-    native_string_search_slice, native_stripcslashes_into, native_stripcslashes_output_length,
-    native_stripslashes_into, native_stripslashes_output_length, native_strpbrk, native_strrchr,
-    native_strtr_into, native_substr_compare, native_substr_replace_into,
-    native_substr_replace_output_length, native_ucwords_into, native_unpack_hex_into,
-    native_url_decode_into, native_url_decode_output_length, native_url_encode_into,
-    native_url_encode_output_length, native_version_compare, native_version_operator_matches,
-    visit_native_pack, visit_native_unpack,
+    native_html_escape_into, native_html_escape_output_length, native_html_translation_entries,
+    native_md5_into, native_md5_output_length, native_natural_compare, native_parse_str_into,
+    native_parse_url_into, native_quoted_printable_decode_into,
+    native_quoted_printable_decode_output_length, native_quotemeta_into,
+    native_quotemeta_output_length, native_sha1_into, native_sha1_output_length,
+    native_str_pad_into, native_str_pad_output_length, native_string_search_slice,
+    native_stripcslashes_into, native_stripcslashes_output_length, native_stripslashes_into,
+    native_stripslashes_output_length, native_strpbrk, native_strrchr, native_strtr_into,
+    native_substr_compare, native_substr_replace_into, native_substr_replace_output_length,
+    native_ucwords_into, native_unpack_hex_into, native_url_decode_into,
+    native_url_decode_output_length, native_url_encode_into, native_url_encode_output_length,
+    native_version_compare, native_version_operator_matches, visit_native_pack,
+    visit_native_unpack,
 };
 #[doc(hidden)]
 pub use modules::zlib::{

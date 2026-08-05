@@ -51,7 +51,7 @@ def main() -> int:
             failures.append(f"{operation} does not enter native dynamic-code IR")
     for required in (
         "lower_native_dynamic_code",
-        "NATIVE_DYNAMIC_CODE_SYMBOL",
+        "COLD_DYNAMIC_UNIT_RESOLVE_SYMBOL",
         "JitNativeDynamicCodeRequest",
         "JitCallStatus::RETURN",
     ):
@@ -67,7 +67,7 @@ def main() -> int:
     ):
         if required not in coordinator:
             failures.append(f"compile-once coordinator lacks {required}")
-    if "jit_native_dynamic_code_abi" not in vm_abi:
+    if "jit_cold_dynamic_unit_resolve_abi" not in vm_abi:
         failures.append("VM does not publish native dynamic-code ABI")
     forbidden = re.compile(
         "execute_" + "dense|rich_" + "dispatch|execute_" + "ir|execute_" + "instruction"

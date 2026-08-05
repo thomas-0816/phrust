@@ -20,9 +20,8 @@ fn exact_query_autoload(fast: &NativeRequestFastState, encoded: i64) -> Option<b
 }
 
 fn exact_class_kind_exists<const KIND: u8>(
-    fast: &NativeRequestFastState,
-    symbols: &NativeSymbolQueryCapability,
-    arguments: [i64; 2],
+    fast: &mut NativeRequestFastState,
+    arguments: [i64; 3],
 ) -> php_jit::JitNativeControlResult {
     let Some(name) = exact_query_class_name(fast, arguments[0]) else {
         return exact_query_contract_violation();
@@ -30,7 +29,18 @@ fn exact_class_kind_exists<const KIND: u8>(
     let Some(autoload) = exact_query_autoload(fast, arguments[1]) else {
         return exact_query_contract_violation();
     };
+    let callback_completed = arguments[2] != 0;
     let normalized_name = normalize_class_name(&name);
+    if fast
+        .complete_direct_class_autoload_callback(
+            normalized_name.as_bytes(),
+            callback_completed,
+        )
+        .is_err()
+    {
+        return exact_query_contract_violation();
+    }
+    let symbols = &fast.symbol_query;
     let matches_kind = |class: &php_ir::ClassEntry| match KIND {
         1 => class.flags.is_interface,
         2 => class.flags.is_trait,
@@ -72,12 +82,23 @@ fn exact_class_kind_exists<const KIND: u8>(
     {
         exists = true;
     }
-    if exists || !autoload {
-        exact_query_return_bool(exists)
-    } else {
-        // Publication admits class-kind queries only with autoload disabled.
-        // Reaching this edge means the compiled argument contract was broken.
-        exact_query_contract_violation()
+    if exists {
+        fast.discard_direct_class_autoload_action(normalized_name.as_bytes());
+        return exact_query_return_bool(true);
+    }
+    if !autoload {
+        return exact_query_return_bool(false);
+    }
+    match fast.next_direct_class_autoload_callback(
+        Box::<[u8]>::from(normalized_name.as_bytes()),
+    ) {
+        Ok(Some(callback)) => php_jit::JitNativeControlResult::control(
+            php_jit::JitCallStatus::INVOKE_USER_CALLBACK,
+            0,
+            callback,
+        ),
+        Ok(None) => exact_query_return_bool(false),
+        Err(_) => exact_query_runtime_error(),
     }
 }
 
@@ -145,7 +166,7 @@ macro_rules! exact_symbol_query_abi {
             // SAFETY: optimizing publication passes the stable request-owned
             // FastState pointer. The exact query reads only its native values
             // and the narrow live symbol capability published at activation.
-            #[allow(unsafe_code)]
+            #[allow(unsafe_code)] // Safety: the generated callback preserves the request state.
             // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
             let $fast = unsafe { &*runtime };
             let $symbols = &$fast.symbol_query;
@@ -159,20 +180,30 @@ pub(crate) extern "C" fn jit_native_define_abi(
     runtime: *mut NativeRequestFastState,
     argument_0: i64,
     argument_1: i64,
+    file: i64,
+    start: i64,
 ) -> php_jit::JitNativeControlResult {
     debug_assert!(!runtime.is_null());
     // SAFETY: exact-handler publication passes the request-owned FastState
     // and the call remains synchronous.
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code)] // Safety: the generated site publishes this immutable exception plan.
     // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
     let fast = unsafe { &mut *runtime };
     let Some(name) = exact_query_class_name(fast, argument_0) else {
         return exact_query_contract_violation();
     };
     if fast.symbol_query.constant_exists(&name) {
-        // Publication excludes duplicate-definition diagnostics because they
-        // require a source-aware semantic control result.
-        return exact_query_contract_violation();
+        if super::exact_runtime_ops::emit_exact_native_structured_warning(
+            fast,
+            "E_PHP_RUNTIME_CONSTANT_ALREADY_DEFINED_WARNING",
+            format!("Constant {name} already defined"),
+            file,
+            start,
+        ) != 0
+        {
+            return exact_query_runtime_error();
+        }
+        return exact_query_return_bool(false);
     }
     if !fast.publish_native_dynamic_constant(name, argument_1) {
         return exact_query_contract_violation();
@@ -257,18 +288,31 @@ exact_symbol_query_abi!(jit_native_function_exists_abi, fast, symbols, arguments
         exact_query_contract_violation()
     }
 });
-exact_symbol_query_abi!(jit_native_class_exists_abi, fast, symbols, arguments, {
-    exact_class_kind_exists::<0>(fast, symbols, arguments)
-});
-exact_symbol_query_abi!(jit_native_interface_exists_abi, fast, symbols, arguments, {
-    exact_class_kind_exists::<1>(fast, symbols, arguments)
-});
-exact_symbol_query_abi!(jit_native_trait_exists_abi, fast, symbols, arguments, {
-    exact_class_kind_exists::<2>(fast, symbols, arguments)
-});
-exact_symbol_query_abi!(jit_native_enum_exists_abi, fast, symbols, arguments, {
-    exact_class_kind_exists::<3>(fast, symbols, arguments)
-});
+macro_rules! exact_class_query_abi {
+    ($abi:ident, $kind:expr) => {
+        pub(crate) extern "C" fn $abi(
+            runtime: *mut NativeRequestFastState,
+            argument_0: i64,
+            argument_1: i64,
+            callback_completed: i64,
+        ) -> php_jit::JitNativeControlResult {
+            debug_assert!(!runtime.is_null());
+            // SAFETY: generated code passes the request-owned fast state and
+            // re-enters this leaf only after its generated callback returns.
+            #[allow(unsafe_code)]
+            let fast = unsafe { &mut *runtime };
+            exact_class_kind_exists::<$kind>(
+                fast,
+                [argument_0, argument_1, callback_completed],
+            )
+        }
+    };
+}
+
+exact_class_query_abi!(jit_native_class_exists_abi, 0);
+exact_class_query_abi!(jit_native_interface_exists_abi, 1);
+exact_class_query_abi!(jit_native_trait_exists_abi, 2);
+exact_class_query_abi!(jit_native_enum_exists_abi, 3);
 exact_symbol_query_abi!(jit_native_method_exists_abi, fast, symbols, arguments, {
     exact_member_exists::<true>(fast, symbols, arguments)
 });
@@ -284,7 +328,7 @@ pub(crate) extern "C" fn jit_native_preg_match_abi(
     argument_3: i64,
     argument_4: i64,
 ) -> php_jit::JitNativeControlResult {
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code)] // Safety: the generated site publishes this immutable exception plan.
     // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
     let fast = unsafe { &mut *runtime };
     let missing = php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING);
@@ -696,47 +740,222 @@ pub(crate) extern "C" fn jit_native_json_encode_abi(
     php_jit::JitNativeControlResult::returning(encoded)
 }
 
+fn exact_json_decode_error(
+    fast: &mut NativeRequestFastState,
+    prepared_error: u64,
+    value_error: bool,
+    message: &[u8],
+) -> php_jit::JitNativeControlResult {
+    if prepared_error == 0 {
+        return exact_query_contract_violation();
+    }
+    // SAFETY: generated code loads this pointer from the immutable
+    // per-continuation exception-plan table.
+    #[allow(unsafe_code)]
+    let prepared =
+        unsafe { &*(prepared_error as usize as *const PreparedNativeCountThrowableSites) };
+    let prepared = if value_error {
+        &prepared.value_error
+    } else {
+        &prepared.type_error
+    };
+    let throwable = super::exact_runtime_ops::publish_prepared_exception(
+        fast,
+        prepared,
+        message,
+        0,
+        php_jit::jit_encode_constant(u32::MAX),
+    );
+    if throwable.status == php_jit::JitCallStatus::RETURN {
+        php_jit::JitNativeControlResult::control(
+            php_jit::JitCallStatus::THROW,
+            0,
+            throwable.value,
+        )
+    } else {
+        throwable
+    }
+}
+
+fn exact_json_decode_failure(
+    fast: &mut NativeRequestFastState,
+    prepared_error: u64,
+    code: i64,
+    message: &[u8],
+) -> php_jit::JitNativeControlResult {
+    if prepared_error == 0 {
+        return exact_query_contract_violation();
+    }
+    // SAFETY: generated code loads this pointer from the immutable
+    // per-continuation exception-plan table.
+    #[allow(unsafe_code)]
+    let prepared =
+        unsafe { &*(prepared_error as usize as *const PreparedNativeCountThrowableSites) };
+    let throwable = super::exact_runtime_ops::publish_prepared_exception(
+        fast,
+        &prepared.json_exception,
+        message,
+        code,
+        php_jit::jit_encode_constant(u32::MAX),
+    );
+    if throwable.status == php_jit::JitCallStatus::RETURN {
+        php_jit::JitNativeControlResult::control(
+            php_jit::JitCallStatus::THROW,
+            0,
+            throwable.value,
+        )
+    } else {
+        throwable
+    }
+}
+
 pub(crate) extern "C" fn jit_native_json_decode_abi(
     runtime: *mut NativeRequestFastState,
     argument_0: i64,
     argument_1: i64,
     argument_2: i64,
     argument_3: i64,
+    prepared_error: u64,
 ) -> php_jit::JitNativeControlResult {
     #[allow(unsafe_code)]
     // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
     let fast = unsafe { &mut *runtime };
-    if !matches!(
-        fast.native_printf_scalar(argument_1),
-        Some(php_runtime::api::NativePrintfScalar::Bool(true))
-    ) {
-        return exact_query_contract_violation();
-    }
+    let coerced_input = if fast.native_string_view(argument_0).is_some() {
+        None
+    } else if let Some(bytes) = fast.native_scalar_bytes(argument_0) {
+        Some(bytes.as_bytes().to_vec())
+    } else {
+        let Some(actual) = fast.exact_type_name(argument_0, true) else {
+            return exact_query_contract_violation();
+        };
+        let message = format!(
+            "json_decode(): Argument #1 ($json) must be of type string, {} given",
+            String::from_utf8_lossy(&actual)
+        );
+        return exact_json_decode_error(fast, prepared_error, false, message.as_bytes());
+    };
     let missing = php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING);
-    let depth = if argument_2 != missing {
-        match fast.native_printf_scalar(argument_2) {
-            Some(php_runtime::api::NativePrintfScalar::Int(depth)) => depth,
-            _ => return exact_query_contract_violation(),
+    let associative = if argument_1 == missing {
+        false
+    } else {
+        match fast.native_printf_scalar(argument_1) {
+            Some(php_runtime::api::NativePrintfScalar::Null) => false,
+            Some(php_runtime::api::NativePrintfScalar::Bool(value)) => value,
+            Some(value) => match value {
+                php_runtime::api::NativePrintfScalar::Null => false,
+                php_runtime::api::NativePrintfScalar::Bool(value) => value,
+                php_runtime::api::NativePrintfScalar::Int(value) => value != 0,
+                php_runtime::api::NativePrintfScalar::Float(value) => value != 0.0,
+                php_runtime::api::NativePrintfScalar::String(value) => {
+                    !value.is_empty() && value != b"0"
+                }
+            },
+            None => {
+                let Some(actual) = fast.exact_type_name(argument_1, true) else {
+                    return exact_query_contract_violation();
+                };
+                let message = format!(
+                    "json_decode(): Argument #2 ($associative) must be of type ?bool, {} given",
+                    String::from_utf8_lossy(&actual)
+                );
+                return exact_json_decode_error(
+                    fast,
+                    prepared_error,
+                    false,
+                    message.as_bytes(),
+                );
+            }
         }
+    };
+    let depth = if argument_2 != missing {
+        let Some(depth) = exact_native_weak_integer(fast, argument_2) else {
+            let Some(actual) = fast.exact_type_name(argument_2, true) else {
+                return exact_query_contract_violation();
+            };
+            let message = format!(
+                "json_decode(): Argument #3 ($depth) must be of type int, {} given",
+                String::from_utf8_lossy(&actual)
+            );
+            return exact_json_decode_error(fast, prepared_error, false, message.as_bytes());
+        };
+        if depth <= 0 {
+            return exact_json_decode_error(
+                fast,
+                prepared_error,
+                true,
+                b"json_decode(): Argument #3 ($depth) must be greater than 0",
+            );
+        }
+        if depth > i64::from(i32::MAX) {
+            return exact_json_decode_error(
+                fast,
+                prepared_error,
+                true,
+                b"json_decode(): Argument #3 ($depth) must be less than 2147483647",
+            );
+        }
+        depth
     } else {
         512
     };
     let flags = if argument_3 != missing {
-        match fast.native_printf_scalar(argument_3) {
-            Some(php_runtime::api::NativePrintfScalar::Int(flags)) => flags,
-            _ => return exact_query_contract_violation(),
-        }
+        let Some(flags) = exact_native_weak_integer(fast, argument_3) else {
+            let Some(actual) = fast.exact_type_name(argument_3, true) else {
+                return exact_query_contract_violation();
+            };
+            let message = format!(
+                "json_decode(): Argument #4 ($flags) must be of type int, {} given",
+                String::from_utf8_lossy(&actual)
+            );
+            return exact_json_decode_error(fast, prepared_error, false, message.as_bytes());
+        };
+        flags
     } else {
         0
     };
-    if flags != 0 {
-        return exact_query_contract_violation();
+    const JSON_OBJECT_AS_ARRAY: i64 = 1;
+    const JSON_THROW_ON_ERROR: i64 = 1 << 22;
+    let associative = associative || flags & JSON_OBJECT_AS_ARRAY != 0;
+    let (input, owned_input) = if let Some(bytes) = coerced_input {
+        let Ok(input) = fast.publish_direct_string_bytes(&bytes) else {
+            return exact_query_contract_violation();
+        };
+        (input, Some(input))
+    } else {
+        (argument_0, None)
+    };
+    let previous_json_error = fast.native_json_last_error().map(|(code, _)| code);
+    let result = decode_native_json_direct(fast, input, depth, associative, flags);
+    if let Some(input) = owned_input {
+        let _ = fast.discard_owned_direct_value(input);
     }
-    let Some(result) = fast.decode_native_json_associative_direct(argument_0, depth) else {
+    let Some(result) = result else {
         return exact_query_contract_violation();
     };
     match result {
-        Ok(Some(value)) => php_jit::JitNativeControlResult::returning(value),
+        Ok(Some(value)) => {
+            let Some((code, message)) = fast.native_json_last_error() else {
+                return exact_query_contract_violation();
+            };
+            let message = message.as_bytes().to_vec();
+            if flags & JSON_THROW_ON_ERROR != 0 {
+                let Some(previous_json_error) = previous_json_error else {
+                    return exact_query_contract_violation();
+                };
+                if fast.set_json_error(previous_json_error).is_err() {
+                    return exact_query_contract_violation();
+                }
+                if code != 0 {
+                    return exact_json_decode_failure(
+                        fast,
+                        prepared_error,
+                        code,
+                        &message,
+                    );
+                }
+            }
+            php_jit::JitNativeControlResult::returning(value)
+        }
         Ok(None) | Err(_) => exact_query_contract_violation(),
     }
 }
@@ -1401,6 +1620,21 @@ fn exact_native_integer(fast: &NativeRequestFastState, value: i64) -> Option<i64
     }
 }
 
+fn exact_native_weak_integer(fast: &NativeRequestFastState, value: i64) -> Option<i64> {
+    match fast.native_printf_scalar(value)? {
+        php_runtime::api::NativePrintfScalar::Null
+        | php_runtime::api::NativePrintfScalar::Bool(false) => Some(0),
+        php_runtime::api::NativePrintfScalar::Bool(true) => Some(1),
+        php_runtime::api::NativePrintfScalar::Int(value) => Some(value),
+        php_runtime::api::NativePrintfScalar::Float(value) => {
+            Some(php_runtime::api::php_float_to_int(value))
+        }
+        php_runtime::api::NativePrintfScalar::String(value) => {
+            php_runtime::api::native_bytes_to_weak_int_parameter(value)
+        }
+    }
+}
+
 fn exact_native_intval_value(value: NativeComparisonValue<'_>, base: i64) -> Option<i64> {
     match value {
         NativeComparisonValue::Null => Some(0),
@@ -1600,6 +1834,79 @@ pub(crate) extern "C" fn jit_native_hash_equals_abi(
             difference | (left ^ right)
         });
     exact_query_return_bool(difference == 0)
+}
+
+pub(crate) extern "C" fn jit_native_sodium_crypto_generichash_abi(
+    runtime: *mut NativeRequestFastState,
+    argument_0: i64,
+    argument_1: i64,
+    argument_2: i64,
+) -> php_jit::JitNativeControlResult {
+    #[allow(unsafe_code)]
+    // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
+    let fast = unsafe { &mut *runtime };
+    let missing = php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING);
+    let length = if argument_2 == missing {
+        32
+    } else {
+        let Some(length) = exact_native_integer(fast, argument_2) else {
+            return exact_query_contract_violation();
+        };
+        length
+    };
+    let Ok(length) = usize::try_from(length) else {
+        return exact_query_contract_violation();
+    };
+    if !(16..=64).contains(&length) {
+        return exact_query_contract_violation();
+    }
+    let output = {
+        let Some(message) = fast.native_string_view(argument_0) else {
+            return exact_query_contract_violation();
+        };
+        let key = if argument_1 == missing {
+            &[][..]
+        } else {
+            let Some(key) = fast.native_string_view(argument_1) else {
+                return exact_query_contract_violation();
+            };
+            key
+        };
+        if !key.is_empty() && !(16..=64).contains(&key.len()) {
+            return exact_query_contract_violation();
+        }
+        php_runtime::api::native_sodium_crypto_generichash(message, key, length)
+    };
+    fast.publish_direct_string_bytes(&output).map_or_else(
+        |_| exact_query_contract_violation(),
+        php_jit::JitNativeControlResult::returning,
+    )
+}
+
+pub(crate) extern "C" fn jit_native_sodium_bin2base64_abi(
+    runtime: *mut NativeRequestFastState,
+    argument_0: i64,
+    argument_1: i64,
+) -> php_jit::JitNativeControlResult {
+    #[allow(unsafe_code)]
+    // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
+    let fast = unsafe { &mut *runtime };
+    let Some(variant) = exact_native_integer(fast, argument_1) else {
+        return exact_query_contract_violation();
+    };
+    let output = {
+        let Some(input) = fast.native_string_view(argument_0) else {
+            return exact_query_contract_violation();
+        };
+        let Some(output) = php_runtime::api::native_sodium_bin2base64(input, variant) else {
+            return exact_query_contract_violation();
+        };
+        output
+    };
+    fast.publish_direct_string_bytes(&output).map_or_else(
+        |_| exact_query_contract_violation(),
+        php_jit::JitNativeControlResult::returning,
+    )
 }
 
 macro_rules! exact_native_direct_byte_transform_abi {
@@ -2005,7 +2312,12 @@ pub(crate) extern "C" fn jit_native_strtr_abi(
     // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
     let fast = unsafe { &mut *runtime };
     if argument_2 == php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING) {
-        return exact_query_contract_violation();
+        return fast
+            .publish_direct_strtr_map(argument_0, argument_1)
+            .map_or_else(
+                exact_query_contract_violation,
+                php_jit::JitNativeControlResult::returning,
+            );
     }
     fast.publish_direct_string_transform3(
         argument_0,
@@ -2581,6 +2893,86 @@ pub(crate) extern "C" fn jit_native_htmlspecialchars_decode_abi(
     )
 }
 
+pub(crate) extern "C" fn jit_native_get_html_translation_table_abi(
+    runtime: *mut NativeRequestFastState,
+    argument_0: i64,
+    argument_1: i64,
+    argument_2: i64,
+) -> php_jit::JitNativeControlResult {
+    #[allow(unsafe_code)]
+    // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
+    let fast = unsafe { &mut *runtime };
+    let missing = php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING);
+    let table = if argument_0 == missing {
+        0
+    } else {
+        let Some(table) = exact_native_integer(fast, argument_0) else {
+            return exact_query_contract_violation();
+        };
+        table
+    };
+    let flags = if argument_1 == missing {
+        php_runtime::api::NATIVE_HTML_ESCAPE_DEFAULT_FLAGS
+    } else {
+        let Some(flags) = exact_native_integer(fast, argument_1) else {
+            return exact_query_contract_violation();
+        };
+        flags
+    };
+    let encoding = if argument_2 == missing {
+        None
+    } else {
+        let Some(encoding) = exact_native_date_string(fast, argument_2) else {
+            return exact_query_contract_violation();
+        };
+        Some(encoding)
+    };
+    let entries = php_runtime::api::native_html_translation_entries(
+        table,
+        flags,
+        encoding.as_deref().map(str::as_bytes),
+    );
+    let Some(mut writer) = fast
+        .begin_owned_direct_array(entries.len(), entries.len())
+        .ok()
+    else {
+        return exact_query_contract_violation();
+    };
+    for (key_bytes, value_bytes) in entries {
+        let key = match fast.publish_direct_string_bytes(key_bytes) {
+            Ok(key) => key,
+            Err(_) => {
+                fast.abort_owned_direct_array(writer);
+                return exact_query_contract_violation();
+            }
+        };
+        let value = match fast.publish_direct_string_bytes(value_bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                let _ = fast.discard_owned_direct_value(key);
+                fast.abort_owned_direct_array(writer);
+                return exact_query_contract_violation();
+            }
+        };
+        if fast
+            .push_owned_direct_array_entry(
+                &mut writer,
+                php_jit::JitNativeDirectArrayEntry { key, value },
+            )
+            .is_err()
+        {
+            let _ = fast.discard_owned_direct_value(value);
+            let _ = fast.discard_owned_direct_value(key);
+            fast.abort_owned_direct_array(writer);
+            return exact_query_contract_violation();
+        }
+    }
+    fast.finish_owned_direct_array(writer).map_or_else(
+        |_| exact_query_contract_violation(),
+        php_jit::JitNativeControlResult::returning,
+    )
+}
+
 pub(crate) extern "C" fn jit_native_http_build_query_abi(
     runtime: *mut NativeRequestFastState,
     argument_0: i64,
@@ -2948,6 +3340,172 @@ fn exact_mb_publish_bytes(
         |_| exact_query_contract_violation(),
         php_jit::JitNativeControlResult::returning,
     )
+}
+
+pub(crate) extern "C" fn jit_native_iconv_abi(
+    runtime: *mut NativeRequestFastState,
+    argument_0: i64,
+    argument_1: i64,
+    argument_2: i64,
+    file: i64,
+    start: i64,
+) -> php_jit::JitNativeControlResult {
+    #[allow(unsafe_code)]
+    // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
+    let fast = unsafe { &mut *runtime };
+    let Some(from) = fast.native_string_view(argument_0).map(<[u8]>::to_vec) else {
+        return exact_query_contract_violation();
+    };
+    let Some(to) = fast.native_string_view(argument_1).map(<[u8]>::to_vec) else {
+        return exact_query_contract_violation();
+    };
+    let Some(input) = fast.native_string_view(argument_2).map(<[u8]>::to_vec) else {
+        return exact_query_contract_violation();
+    };
+    match php_runtime::api::native_iconv_convert(&from, &to, &input) {
+        php_runtime::api::NativeIconvConversion::Converted(output) => {
+            exact_mb_publish_bytes(fast, &output)
+        }
+        php_runtime::api::NativeIconvConversion::EncodingTooLong => {
+            if super::exact_runtime_ops::emit_exact_native_structured_warning(
+                fast,
+                "E_PHP_RUNTIME_ICONV_ENCODING_TOO_LONG",
+                "iconv(): Encoding parameter exceeds the maximum allowed length of 64 characters"
+                    .to_owned(),
+                file,
+                start,
+            ) != 0
+            {
+                return exact_query_runtime_error();
+            }
+            exact_query_return_bool(false)
+        }
+        php_runtime::api::NativeIconvConversion::WrongEncoding { from, to } => {
+            if super::exact_runtime_ops::emit_exact_native_structured_warning(
+                fast,
+                "E_PHP_RUNTIME_ICONV_WRONG_ENCODING",
+                format!(
+                    "iconv(): Wrong encoding, conversion from \"{from}\" to \"{to}\" is not allowed"
+                ),
+                file,
+                start,
+            ) != 0
+            {
+                return exact_query_runtime_error();
+            }
+            exact_query_return_bool(false)
+        }
+        php_runtime::api::NativeIconvConversion::InvalidInput => {
+            if super::exact_runtime_ops::emit_exact_native_structured_warning(
+                fast,
+                "E_PHP_RUNTIME_ICONV_INVALID_INPUT",
+                "iconv(): Detected an illegal character in input string".to_owned(),
+                file,
+                start,
+            ) != 0
+            {
+                return exact_query_runtime_error();
+            }
+            exact_query_return_bool(false)
+        }
+        php_runtime::api::NativeIconvConversion::Unrepresentable => {
+            exact_query_return_bool(false)
+        }
+    }
+}
+
+fn exact_normalizer_input(
+    fast: &mut NativeRequestFastState,
+    encoded: i64,
+    prepared_error: u64,
+    name: &'static str,
+) -> Result<String, php_jit::JitNativeControlResult> {
+    let Some(bytes) = fast.native_string_view(encoded) else {
+        return Err(exact_query_contract_violation());
+    };
+    std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
+        exact_json_decode_error(
+            fast,
+            prepared_error,
+            true,
+            format!("{name}(): input must be valid UTF-8").as_bytes(),
+        )
+    })
+}
+
+fn exact_normalizer_form(
+    fast: &NativeRequestFastState,
+    encoded: i64,
+) -> Option<i64> {
+    if encoded == php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING) {
+        Some(php_runtime::api::NORMALIZER_FORM_C)
+    } else {
+        exact_native_integer(fast, encoded)
+    }
+}
+
+pub(crate) extern "C" fn jit_native_normalizer_normalize_abi(
+    runtime: *mut NativeRequestFastState,
+    argument_0: i64,
+    argument_1: i64,
+    prepared_error: u64,
+) -> php_jit::JitNativeControlResult {
+    #[allow(unsafe_code)]
+    // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
+    let fast = unsafe { &mut *runtime };
+    let input = match exact_normalizer_input(
+        fast,
+        argument_0,
+        prepared_error,
+        "normalizer_normalize",
+    ) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    let Some(form) = exact_normalizer_form(fast, argument_1) else {
+        return exact_query_contract_violation();
+    };
+    match php_runtime::api::normalize_string(&input, form) {
+        Some(output) => exact_mb_publish_bytes(fast, output.as_bytes()),
+        None => exact_json_decode_error(
+            fast,
+            prepared_error,
+            true,
+            b"normalizer_normalize(): Argument #2 ($form) must be a valid normalization form",
+        ),
+    }
+}
+
+pub(crate) extern "C" fn jit_native_normalizer_is_normalized_abi(
+    runtime: *mut NativeRequestFastState,
+    argument_0: i64,
+    argument_1: i64,
+    prepared_error: u64,
+) -> php_jit::JitNativeControlResult {
+    #[allow(unsafe_code)]
+    // Safety: the compiled ABI passes the request-owned fast state for this synchronous call.
+    let fast = unsafe { &mut *runtime };
+    let input = match exact_normalizer_input(
+        fast,
+        argument_0,
+        prepared_error,
+        "normalizer_is_normalized",
+    ) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    let Some(form) = exact_normalizer_form(fast, argument_1) else {
+        return exact_query_contract_violation();
+    };
+    match php_runtime::api::is_normalized_string(&input, form) {
+        Some(normalized) => exact_query_return_bool(normalized),
+        None => exact_json_decode_error(
+            fast,
+            prepared_error,
+            true,
+            b"normalizer_is_normalized(): Argument #2 ($form) must be a valid normalization form",
+        ),
+    }
 }
 
 fn exact_mb_publish_string_list<I>(
@@ -3865,6 +4423,104 @@ fn exact_filter_array_single(
     exact_filter_recursive_array(fast, source, filter, 0)
 }
 
+fn exact_filter_array_key_eq(fast: &NativeRequestFastState, left: i64, right: i64) -> bool {
+    match (
+        fast.native_string_view(left),
+        fast.native_string_view(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => exact_native_integer(fast, left) == exact_native_integer(fast, right),
+        _ => false,
+    }
+}
+
+fn exact_filter_spec(
+    fast: &NativeRequestFastState,
+    spec: i64,
+) -> Option<(i64, i64)> {
+    let Some(entries) = fast.native_direct_array_entries(spec) else {
+        return exact_native_integer(fast, spec).map(|filter| (filter, 0));
+    };
+    let mut filter = php_runtime::api::FILTER_DEFAULT;
+    let mut flags = 0;
+    for entry in entries {
+        match fast.native_string_view(entry.key) {
+            Some(b"filter") => filter = exact_native_integer(fast, entry.value)?,
+            Some(b"flags") => flags = exact_native_integer(fast, entry.value)?,
+            // Range, regexp, callback, and other option payloads require their
+            // dedicated compiled implementations; do not silently erase them.
+            Some(b"options") => return None,
+            _ => {}
+        }
+    }
+    Some((filter, flags))
+}
+
+fn exact_filter_array_specs(
+    fast: &mut NativeRequestFastState,
+    source: i64,
+    specs: i64,
+    add_empty: bool,
+) -> Option<i64> {
+    let (source_entries, source_length) = fast.stable_native_array_range(source)?;
+    let (spec_entries, spec_length) = fast.stable_native_array_range(specs)?;
+    let output_length = if add_empty {
+        spec_length
+    } else {
+        let mut present = 0usize;
+        for spec_index in 0..spec_length {
+            #[allow(unsafe_code)]
+            // Safety: the stable native array ranges remain request-owned for
+            // this synchronous exact call.
+            let spec = unsafe { *spec_entries.add(spec_index) };
+            for source_index in 0..source_length {
+                #[allow(unsafe_code)]
+                // Safety: see the stable-range argument above.
+                let input = unsafe { *source_entries.add(source_index) };
+                if exact_filter_array_key_eq(fast, spec.key, input.key) {
+                    present += 1;
+                    break;
+                }
+            }
+        }
+        present
+    };
+    let mut spec_index = 0usize;
+    fast.publish_owned_direct_array_with(output_length, |fast, _| loop {
+        #[allow(unsafe_code)]
+        // Safety: the stable specification range remains request-owned while
+        // the output is published into a disjoint native arena range.
+        let spec = unsafe { *spec_entries.add(spec_index) };
+        spec_index += 1;
+        let mut input_value = None;
+        for source_index in 0..source_length {
+            #[allow(unsafe_code)]
+            // Safety: the stable source range remains request-owned here.
+            let input = unsafe { *source_entries.add(source_index) };
+            if exact_filter_array_key_eq(fast, spec.key, input.key) {
+                input_value = Some(input.value);
+                break;
+            }
+        }
+        let value = match input_value {
+            Some(input) => {
+                let (filter, flags) = exact_filter_spec(fast, spec.value)
+                    .ok_or("native filter array specification is unsupported")?;
+                exact_filter_value(fast, input, filter, flags)
+                    .ok_or("native filter array entry could not be published")?
+            }
+            None if add_empty => php_jit::jit_encode_constant(u32::MAX),
+            None => continue,
+        };
+        fast.retain_direct_encoded(spec.key)?;
+        return Ok(php_jit::JitNativeDirectArrayEntry {
+            key: spec.key,
+            value,
+        });
+    })
+    .ok()
+}
+
 fn exact_filter_lookup_input(
     fast: &NativeRequestFastState,
     root: i64,
@@ -4045,18 +4701,28 @@ fn exact_filter_array_abi_impl(
     add_empty: i64,
 ) -> php_jit::JitNativeControlResult {
     let missing = php_jit::jit_encode_constant(php_jit::JIT_VALUE_ARGUMENT_MISSING);
-    if add_empty != missing && exact_native_boolean_flag(fast, add_empty).is_none() {
-        return exact_query_contract_violation();
-    }
-    let filter = if options != missing {
-        let Some(filter) = exact_native_integer(fast, options) else {
+    let add_empty = if add_empty != missing {
+        let Some(add_empty) = exact_native_boolean_flag(fast, add_empty) else {
             return exact_query_contract_violation();
         };
-        filter
+        add_empty
     } else {
-        php_runtime::api::FILTER_DEFAULT
+        true
     };
-    exact_filter_array_single(fast, source, filter).map_or_else(
+    let filtered = if options != missing && fast.native_direct_array_entries(options).is_some() {
+        exact_filter_array_specs(fast, source, options, add_empty)
+    } else {
+        let filter = if options != missing {
+            let Some(filter) = exact_native_integer(fast, options) else {
+                return exact_query_contract_violation();
+            };
+            filter
+        } else {
+            php_runtime::api::FILTER_DEFAULT
+        };
+        exact_filter_array_single(fast, source, filter)
+    };
+    filtered.map_or_else(
         exact_query_contract_violation,
         php_jit::JitNativeControlResult::returning,
     )
